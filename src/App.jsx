@@ -779,7 +779,15 @@ function MixerDevice({ device, onChange, animState }) {
         ))}
       </div>
       <div style={{ display:"flex", gap:5, marginTop:6, flexWrap:"wrap" }}>
-        <button onClick={() => { const color = COLORS[grouped.length % COLORS.length]; onChange({ ...device, balls:[...device.balls, { id:uid(), label:`New${grouped.length + 1}`, color }] }); }}
+        <button onClick={() => {
+            // Pick a label that doesn't already exist, so removing a middle type
+            // then adding one creates a NEW type instead of merging into an existing one.
+            const existing = new Set(device.balls.map(b => b.label));
+            let n = grouped.length + 1;
+            while (existing.has(`New${n}`)) n++;
+            const color = COLORS[grouped.length % COLORS.length];
+            onChange({ ...device, balls:[...device.balls, { id:uid(), label:`New${n}`, color }] });
+          }}
           style={btnPlus}>+ ball type</button>
         <button onClick={() => setRangeOpen(r => !r)}
           style={{ ...btnPlus, color:"#7c3aed", borderColor:"#c4b5fd", background:"#f5f3ff" }}>… range</button>
@@ -1252,14 +1260,6 @@ function parseCSV(text) {
   return { headers, rows };
 }
 
-// Decide if a column is numeric: >80% of non-empty values parse as numbers
-function isNumericColumn(rows, col) {
-  const vals = rows.map(r => r[col]).filter(v => v !== undefined && v !== "");
-  if (!vals.length) return false;
-  const numCount = vals.filter(v => !isNaN(Number(v)) && v !== "").length;
-  return numCount / vals.length >= 0.8;
-}
-
 function quantile(sortedNums, q) {
   if (!sortedNums.length) return NaN;
   const pos = (sortedNums.length - 1) * q;
@@ -1276,10 +1276,28 @@ function numericSummary(nums) {
   const mean = s.reduce((a, b) => a + b, 0) / n;
   const variance = s.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
   const sd = Math.sqrt(variance);
-  return {
-    n, min: s[0], max: s[n - 1], mean, sd,
-    q1: quantile(s, 0.25), median: quantile(s, 0.5), q3: quantile(s, 0.75),
-  };
+  const q1 = quantile(s, 0.25), median = quantile(s, 0.5), q3 = quantile(s, 0.75);
+  // Tukey whiskers: extend to the most extreme datum within 1.5·IQR of the box.
+  const iqr = q3 - q1, lf = q1 - 1.5 * iqr, uf = q3 + 1.5 * iqr;
+  let whiskerLo = s[0], whiskerHi = s[n - 1];
+  for (let i = 0; i < n; i++) { if (s[i] >= lf) { whiskerLo = s[i]; break; } }
+  for (let i = n - 1; i >= 0; i--) { if (s[i] <= uf) { whiskerHi = s[i]; break; } }
+  // With interpolated quartiles on tiny samples a quartile can fall outside the
+  // nearest in-fence datum; never let a whisker retract inside the box.
+  whiskerLo = Math.min(whiskerLo, q1);
+  whiskerHi = Math.max(whiskerHi, q3);
+  return { n, min: s[0], max: s[n - 1], mean, sd, q1, median, q3, whiskerLo, whiskerHi };
+}
+
+// Largest dot radius (px) so `count` circles fit in a w×h box with `gap` spacing,
+// clamped to [min,max]. Used to keep stacked-dot cells from overflowing.
+function fitDotR(count, w, h, min = 2, max = 8, gap = 2) {
+  for (let r = max; r >= min; r--) {
+    const cols = Math.floor((w + gap) / (2 * r + gap));
+    const rowsFit = Math.floor((h + gap) / (2 * r + gap));
+    if (cols >= 1 && rowsFit >= 1 && cols * rowsFit >= count) return r;
+  }
+  return min;
 }
 
 function lsFit(pairs) {
@@ -1299,6 +1317,83 @@ function lsFit(pairs) {
   return { slope, intercept, r2 };
 }
 
+// ── Time parsing: recognize 24h "13:05" and 12h "1:05pm" as numeric minutes ────
+// Returns minutes since midnight (0–1439) or null when v is not a time string.
+function parseTimeToMinutes(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  // 12-hour with am/pm, e.g. "1:05pm", "12:00 AM", "9:30 a.m."
+  let m = s.match(/^(\d{1,2}):(\d{2})\s*([ap])\.?m\.?$/i);
+  if (m) {
+    let h = +m[1]; const min = +m[2];
+    if (h < 1 || h > 12 || min > 59) return null;
+    if (h === 12) h = 0;
+    return (m[3].toLowerCase() === "p" ? h + 12 : h) * 60 + min;
+  }
+  // 24-hour, e.g. "13:05", "9:30"
+  m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) {
+    const h = +m[1], min = +m[2];
+    if (h > 23 || min > 59) return null;
+    return h * 60 + min;
+  }
+  return null;
+}
+
+function minutesToTime(mins) {
+  let m = ((Math.round(mins) % 1440) + 1440) % 1440;
+  return Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0");
+}
+
+// Convert a cell value to a number, understanding time strings.
+function toNum(v) {
+  if (v === undefined || v === null || v === "") return NaN;
+  const n = Number(v);
+  if (!isNaN(n)) return n;
+  const t = parseTimeToMinutes(v);
+  return t === null ? NaN : t;
+}
+
+// Classify a column: numeric if ≥80% of values parse as numbers or times;
+// `time` marks columns whose numeric values came (mostly) from time parsing.
+function colKind(rows, col) {
+  const vals = rows.map(r => r[col]).filter(v => v !== undefined && v !== "");
+  if (!vals.length) return { numeric: false, time: false };
+  let numCount = 0, plainNum = 0, timeCount = 0;
+  vals.forEach(v => {
+    if (!isNaN(Number(v))) { numCount++; plainNum++; }
+    else if (parseTimeToMinutes(v) !== null) { numCount++; timeCount++; }
+  });
+  const numeric = numCount / vals.length >= 0.8;
+  return { numeric, time: numeric && timeCount > plainNum };
+}
+
+// Collapse a list of categories to the top `limit` by count plus an aggregated
+// "Other" bucket. Returns the displayed categories and whether collapsing happened.
+const OTHER_CAT = "Other";
+function collapseCats(cats, countByCat, expanded, limit = 10) {
+  if (expanded || cats.length <= limit) return { shown: cats, isCollapsed: false, hidden: 0 };
+  const sorted = [...cats].sort((a, b) => (countByCat[b] || 0) - (countByCat[a] || 0));
+  const top = sorted.slice(0, limit);
+  return { shown: [...top, OTHER_CAT], isCollapsed: true, hidden: cats.length - limit };
+}
+
+// Measure a wrapping element's width (ResizeObserver), clamped to [min,max].
+function useContainerWidth(ref, min = 320, max = 900) {
+  const [w, setW] = useState(min);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(entries => {
+      const cw = entries[0].contentRect.width;
+      if (cw) setW(clamp(Math.round(cw), min, max));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref, min, max]);
+  return w;
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // EDA PLOT — exploratory plot with toggleable statistics overlays
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1307,44 +1402,56 @@ function EDAPlot({ rows, headers }) {
   const [yVar, setYVar] = useState("none");
   const [dotSize, setDotSize] = useState(5);
 
-  // Stat toggles
+  // Stat overlay toggles
   const [showBox, setShowBox] = useState(false);
   const [showMean, setShowMean] = useState(false);
   const [showSD, setShowSD] = useState(false);
   const [showLS, setShowLS] = useState(false);
-  const [showCounts, setShowCounts] = useState(true);
+  const [showValues, setShowValues] = useState(false);
+  // Categorical cell labels
+  const [showCount, setShowCount] = useState(true);
+  const [showPct, setShowPct] = useState(false);
+  // Collapse high-cardinality categorical axes (>10 categories)
+  const [expandCats, setExpandCats] = useState(false);
 
-  // Detect each column's type once per (rows, headers) instead of re-scanning
-  // the data on every reference. numericByCol[col] = true/false.
-  const numericByCol = useMemo(() => {
+  const plotRef = useRef(null);
+  const plotW = useContainerWidth(plotRef, 280, 760);
+
+  // Detect each column's type once per (rows, headers). colInfo[col] = {numeric,time}.
+  const colInfo = useMemo(() => {
     const map = {};
-    headers.forEach(h => { map[h] = isNumericColumn(rows, h); });
+    headers.forEach(h => { map[h] = colKind(rows, h); });
     return map;
   }, [rows, headers]);
 
   useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
+  // Keep Y valid: reset to "none" if it's no longer a column or collides with X
+  useEffect(() => { if (yVar !== "none" && (!headers.includes(yVar) || yVar === xVar)) setYVar("none"); }, [headers.join(","), xVar]);
 
   if (!rows.length) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data loaded.</div>;
   if (!xVar) return null;
 
-  const xNumeric = !!numericByCol[xVar];
-  const yNumeric = yVar !== "none" && !!numericByCol[yVar];
+  const xInfo = colInfo[xVar] || { numeric:false, time:false };
+  const yInfo = (yVar !== "none" && colInfo[yVar]) || { numeric:false, time:false };
+  const xNumeric = xInfo.numeric, xTime = xInfo.time;
+  const yNumeric = yVar !== "none" && yInfo.numeric, yTime = yInfo.time;
   const bivariate = yVar !== "none";
 
-  const W = 520, H = 300, PL = 56, PR = 20, PT = 20, PB = 70;
-  const iW = W - PL - PR, iH = H - PT - PB;
+  const W = plotW, PL = 56, PR = 20, PT = 20;
+  const iW = W - PL - PR, iH = 210; // plot area; footer height is computed below
   const R = dotSize;
 
-  // ── Build scales ──
-  const makeScale = (col, size, isNum) => {
+  // ── Build scales (numeric / time only; categorical handled by cell plots) ──
+  const makeScale = (col, size, isNum, isTime) => {
     const vals = rows.map(r => r[col]).filter(v => v !== undefined && v !== "");
     if (isNum) {
-      const nums = vals.map(Number).filter(v => !isNaN(v));
+      const nums = vals.map(toNum).filter(v => !isNaN(v));
       const mn = Math.min(...nums), mx = Math.max(...nums);
       const range = mx - mn || 1, pad = range * 0.05, lo = mn - pad, hi = mx + pad;
       const nT = 6;
       const ticks = Array.from({ length: nT }, (_, i) => mn + (i / (nT - 1)) * range);
-      return { numeric: true, lo, hi, scale: v => ((Number(v) - lo) / (hi - lo)) * size, ticks, fmt: v => parseFloat(v.toFixed(2)) };
+      const fmt = isTime ? (v => minutesToTime(v)) : (v => parseFloat(v.toFixed(2)));
+      return { numeric: true, lo, hi, scale: v => ((toNum(v) - lo) / (hi - lo)) * size, ticks, fmt };
     } else {
       const cats = [...new Set(vals)].sort();
       const step = size / cats.length;
@@ -1353,8 +1460,8 @@ function EDAPlot({ rows, headers }) {
     }
   };
 
-  const xS = makeScale(xVar, iW, xNumeric);
-  const yS = bivariate ? makeScale(yVar, iH, yNumeric) : null;
+  const xS = makeScale(xVar, iW, xNumeric, xTime);
+  const yS = bivariate ? makeScale(yVar, iH, yNumeric, yTime) : null;
 
   // ── Compute dot positions ──
   const colCounts = {};
@@ -1380,38 +1487,48 @@ function EDAPlot({ rows, headers }) {
     return { x: PL + xp, y: PT + yp };
   }).filter(Boolean);
 
-  // ── Summary stats for side panel ──
-  const xNums = rows.map(r => Number(r[xVar])).filter(v => !isNaN(v));
+  // ── Univariate numeric summary (for box/mean/SD overlays) ──
+  const xNums = rows.map(r => toNum(r[xVar])).filter(v => !isNaN(v));
   const xSummary = xNumeric ? numericSummary(xNums) : null;
-
-  // Categorical frequency (univariate or bivariate row-wise)
-  let catTable = null;
-  if (!xNumeric) {
-    if (!bivariate) {
-      const counts = {};
-      rows.forEach(r => { const v = r[xVar]; if (v !== "") counts[v] = (counts[v] || 0) + 1; });
-      const total = Object.values(counts).reduce((a, b) => a + b, 0);
-      catTable = { type: "uni", counts, total };
-    } else if (!yNumeric) {
-      // Bivariate categorical is rendered as the grid plot itself; no side table needed
-      catTable = null;
-    }
-  }
+  const fmtX = xTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
 
   // LS fit for bivariate numeric
   let ls = null;
   if (bivariate && xNumeric && yNumeric) {
-    const pairs = rows.map(r => ({ x: Number(r[xVar]), y: Number(r[yVar]) })).filter(p => !isNaN(p.x) && !isNaN(p.y));
+    const pairs = rows.map(r => ({ x: toNum(r[xVar]), y: toNum(r[yVar]) })).filter(p => !isNaN(p.x) && !isNaN(p.y));
     ls = lsFit(pairs);
   }
 
-  // ── Boxplot geometry (horizontal, below the dots) ──
-  const boxY = PT + iH + 24;
   const sx = v => PL + xS.scale(v);
+  // Univariate numeric overlays hug the axis: the mean triangle's tip sits on the
+  // x-axis, the ±SD bar is directly beneath it (adjacent to the mean), and the
+  // boxplot is separated below. Tick labels sit below the strip.
+  const axisY = PT + iH;
+  const meanBaseY = axisY + 12;   // triangle: tip on axisY, base here
+  const sdBarY = axisY + 18;      // ±SD bar, adjacent below the mean
+  const boxCy = axisY + 33;       // boxplot centre, separated below
+  const hasUniOverlay = !bivariate && xSummary && (showBox || showMean || showSD);
+  let overlayBottom = axisY;
+  if (hasUniOverlay) {
+    if (showMean) overlayBottom = Math.max(overlayBottom, meanBaseY);
+    if (showSD) overlayBottom = Math.max(overlayBottom, sdBarY + 4);
+    if (showBox) overlayBottom = Math.max(overlayBottom, boxCy + 9);
+  }
+  const tickLblY = hasUniOverlay ? overlayBottom + 14 : axisY + 16;
+  const H = tickLblY + 18; // tick labels + axis title
+
+  // Which toggle groups apply to the current variable selection
+  const showStatToggles = (xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric));
+  const showCatToggles = (!bivariate && !xNumeric) || (bivariate && !xNumeric && !yNumeric);
+  const toggleExpand = () => setExpandCats(e => !e);
 
   return (
-    <div style={{ display:"flex", gap:14, flexWrap:"wrap" }}>
-      <div style={{ flex:"2 1 420px", minWidth:340 }}>
+    <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
+      {/* LEFT: data viewer */}
+      <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} />
+
+      {/* RIGHT: controls + plot */}
+      <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
         {/* Controls */}
         <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
           <Sel label="X" value={xVar} onChange={setXVar} options={headers} />
@@ -1421,10 +1538,9 @@ function EDAPlot({ rows, headers }) {
           </label>
         </div>
 
-        {/* Stat toggles — only show what's reasonable for the data types */}
+        {/* Stat toggles — adapt to the variable types */}
         <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap", fontSize:12 }}>
-          {/* univariate numeric, OR categorical-by-numeric split → per-group box/mean/SD */}
-          {((xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric))) && (
+          {showStatToggles && (
             <>
               <ChkLabel checked={showBox} onChange={setShowBox} label="📦 Boxplot" />
               <ChkLabel checked={showMean} onChange={setShowMean} label="△ Mean" />
@@ -1434,8 +1550,14 @@ function EDAPlot({ rows, headers }) {
           {bivariate && xNumeric && yNumeric && (
             <ChkLabel checked={showLS} onChange={setShowLS} label="📈 LS Line" />
           )}
-          {!xNumeric && !bivariate && (
-            <ChkLabel checked={showCounts} onChange={setShowCounts} label="# Counts & %" />
+          {(showStatToggles || (bivariate && xNumeric && yNumeric)) && (
+            <ChkLabel checked={showValues} onChange={setShowValues} label="🔢 Show values" />
+          )}
+          {showCatToggles && (
+            <>
+              <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
+              <ChkLabel checked={showPct} onChange={setShowPct} label="% Percent" />
+            </>
           )}
         </div>
 
@@ -1443,16 +1565,27 @@ function EDAPlot({ rows, headers }) {
         {(() => {
           // MODE 1: both categorical → grid of cells with stacked dots + count/%
           if (bivariate && !xNumeric && !yNumeric) {
-            return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} />;
+            return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} width={W}
+              showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
           }
-          // MODE 2: one categorical + one numeric → split dot plots by category
+          // MODE 2: one categorical + one numeric → split dot plots by category.
+          // Respect the axis choice: numeric-X stays horizontal; numeric-Y draws
+          // vertical distributions side by side.
           if (bivariate && (xNumeric !== yNumeric)) {
             const catVar = xNumeric ? yVar : xVar;
             const numVar = xNumeric ? xVar : yVar;
-            return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R}
-              showBox={showBox} showMean={showMean} showSD={showSD} />;
+            const numTime = xNumeric ? xTime : yTime;
+            return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
+              orientation={xNumeric ? "h" : "v"}
+              showBox={showBox} showMean={showMean} showSD={showSD} showValues={showValues}
+              expanded={expandCats} onToggleExpand={toggleExpand} />;
           }
-          // MODE 3: scatter (both numeric) or univariate → existing SVG
+          // MODE 3: single categorical → binned stacked-dot cells
+          if (!bivariate && !xNumeric) {
+            return <UniCatPlot rows={rows} catVar={xVar} R={R} width={W}
+              showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
+          }
+          // MODE 4: scatter (both numeric) or univariate numeric → SVG
           return (
             <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
               {/* grid */}
@@ -1465,7 +1598,7 @@ function EDAPlot({ rows, headers }) {
               {xS.ticks.map((t, i) => (
                 <g key={"xt"+i}>
                   <line x1={sx(t)} y1={PT + iH} x2={sx(t)} y2={PT + iH + 4} stroke="#bbb" />
-                  <text x={sx(t)} y={PT + iH + 16} textAnchor="middle" fontSize={10} fill="#999">{xS.fmt(t)}</text>
+                  <text x={sx(t)} y={tickLblY} textAnchor="middle" fontSize={10} fill="#999">{xS.fmt(t)}</text>
                 </g>
               ))}
               {/* y ticks */}
@@ -1484,96 +1617,154 @@ function EDAPlot({ rows, headers }) {
               {showLS && ls && yS && (() => {
                 const x1 = xS.lo, x2 = xS.hi;
                 const y1 = ls.slope * x1 + ls.intercept, y2v = ls.slope * x2 + ls.intercept;
-                return <line x1={sx(x1)} y1={PT + iH - yS.scale(y1)} x2={sx(x2)} y2={PT + iH - yS.scale(y2v)} stroke="#ef4444" strokeWidth={2} />;
+                return (
+                  <g>
+                    <line x1={sx(x1)} y1={PT + iH - yS.scale(y1)} x2={sx(x2)} y2={PT + iH - yS.scale(y2v)} stroke="#ef4444" strokeWidth={2} />
+                    {showValues && (
+                      <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={10} fill="#ef4444" fontWeight={700}>
+                        ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
+                      </text>
+                    )}
+                  </g>
+                );
               })()}
-              {/* Boxplot (univariate numeric) */}
+              {/* Mean triangle — tip sits on the x-axis (the axis being averaged) */}
+              {showMean && xSummary && !bivariate && (() => {
+                const mx = sx(xSummary.mean);
+                return (
+                  <g>
+                    <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
+                    {showValues && <text x={mx + 9} y={meanBaseY - 1} textAnchor="start" fontSize={9} fill="#059669" fontWeight={700}>{fmtX(xSummary.mean)}</text>}
+                  </g>
+                );
+              })()}
+              {/* ±1 SD bar — adjacent, directly beneath the mean */}
+              {showSD && xSummary && !bivariate && (() => {
+                const loX = sx(xSummary.mean - xSummary.sd), hiX = sx(xSummary.mean + xSummary.sd);
+                return (
+                  <g>
+                    <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
+                    <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
+                    <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
+                    {showValues && <text x={hiX + 5} y={sdBarY + 3} textAnchor="start" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>}
+                  </g>
+                );
+              })()}
+              {/* Boxplot (univariate numeric) — Tukey whiskers, separated below */}
               {showBox && xSummary && !bivariate && (
                 <g>
-                  <line x1={sx(xSummary.min)} y1={boxY} x2={sx(xSummary.max)} y2={boxY} stroke="#475569" strokeWidth={1.5} />
-                  <line x1={sx(xSummary.min)} y1={boxY - 6} x2={sx(xSummary.min)} y2={boxY + 6} stroke="#475569" strokeWidth={1.5} />
-                  <line x1={sx(xSummary.max)} y1={boxY - 6} x2={sx(xSummary.max)} y2={boxY + 6} stroke="#475569" strokeWidth={1.5} />
-                  <rect x={sx(xSummary.q1)} y={boxY - 12} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={24} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
-                  <line x1={sx(xSummary.median)} y1={boxY - 12} x2={sx(xSummary.median)} y2={boxY + 12} stroke="#6366f1" strokeWidth={2.5} />
-                </g>
-              )}
-              {/* Mean triangle */}
-              {showMean && xSummary && !bivariate && (
-                <g>
-                  <polygon points={(sx(xSummary.mean)) + "," + (PT + iH + 6) + " " + (sx(xSummary.mean) - 6) + "," + (PT + iH + 18) + " " + (sx(xSummary.mean) + 6) + "," + (PT + iH + 18)} fill="#10b981" stroke="#059669" strokeWidth={1} />
-                  <text x={sx(xSummary.mean)} y={PT + iH + 30} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{parseFloat(xSummary.mean.toFixed(2))}</text>
-                </g>
-              )}
-              {/* SD range */}
-              {showSD && xSummary && !bivariate && (
-                <g>
-                  <line x1={sx(xSummary.mean - xSummary.sd)} y1={PT + iH + 44} x2={sx(xSummary.mean + xSummary.sd)} y2={PT + iH + 44} stroke="#f59e0b" strokeWidth={2} />
-                  <line x1={sx(xSummary.mean - xSummary.sd)} y1={PT + iH + 40} x2={sx(xSummary.mean - xSummary.sd)} y2={PT + iH + 48} stroke="#f59e0b" strokeWidth={2} />
-                  <line x1={sx(xSummary.mean + xSummary.sd)} y1={PT + iH + 40} x2={sx(xSummary.mean + xSummary.sd)} y2={PT + iH + 48} stroke="#f59e0b" strokeWidth={2} />
-                  <text x={sx(xSummary.mean)} y={PT + iH + 58} textAnchor="middle" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>
+                  <line x1={sx(xSummary.whiskerLo)} y1={boxCy} x2={sx(xSummary.whiskerHi)} y2={boxCy} stroke="#475569" strokeWidth={1.5} />
+                  <line x1={sx(xSummary.whiskerLo)} y1={boxCy - 6} x2={sx(xSummary.whiskerLo)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
+                  <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
+                  <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
+                  <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
+                  {showValues && <text x={sx(xSummary.median)} y={boxCy - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmtX(xSummary.median)}</text>}
                 </g>
               )}
             </svg>
           );
         })()}
       </div>
+    </div>
+  );
+}
 
-      {/* Side panel: statistic values */}
-      <div style={{ flex:"1 1 220px", minWidth:200 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Statistics</div>
-        {xNumeric && xSummary && (
-          <div style={{ background:"#f8f9fa", borderRadius:8, padding:10, border:"1px solid #eee", marginBottom:8 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:"#2c3e50", marginBottom:4, fontFamily:"monospace" }}>{xVar}</div>
-            {[["n", xSummary.n], ["min", xSummary.min], ["Q1", xSummary.q1], ["median", xSummary.median], ["Q3", xSummary.q3], ["max", xSummary.max], ["mean", xSummary.mean], ["SD", xSummary.sd]].map(([k, v]) => (
-              <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"#666", marginBottom:1 }}>
-                <span>{k}</span><strong>{typeof v === "number" ? parseFloat(v.toFixed(3)) : v}</strong>
-              </div>
+// ══════════════════════════════════════════════════════════════════════════════
+// DATA TABLE — scrollable view of the raw rows; X/Y columns highlighted
+// ══════════════════════════════════════════════════════════════════════════════
+function DataTable({ rows, headers, xVar, yVar }) {
+  const MAX_ROWS = 500; // guard against pathologically large datasets
+  const shown = rows.slice(0, MAX_ROWS);
+  const cellBg = h => h === xVar ? "#eef2ff" : (h === yVar ? "#ecfdf5" : "transparent");
+  const headBg = h => h === xVar ? "#c7d2fe" : (h === yVar ? "#a7f3d0" : "#f1f5f9");
+  return (
+    <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
+      <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
+      <div style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+        <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+          <thead>
+            <tr>
+              <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
+              {headers.map(h => (
+                <th key={h} style={{ position:"sticky", top:0, background:headBg(h), color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r, i) => (
+              <tr key={i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right" }}>{i + 1}</td>
+                {headers.map(h => (
+                  <td key={h} style={{ padding:"3px 8px", color:"#555", background:cellBg(h), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{r[h]}</td>
+                ))}
+              </tr>
             ))}
-          </div>
-        )}
-        {ls && (
-          <div style={{ background:"#fef2f2", borderRadius:8, padding:10, border:"1px solid #fecaca", marginBottom:8 }}>
-            <div style={{ fontWeight:700, fontSize:12, color:"#b91c1c", marginBottom:4 }}>Least-Squares Line</div>
-            <div style={{ fontSize:12, color:"#666", fontFamily:"monospace" }}>ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))}</div>
-            <div style={{ fontSize:11, color:"#999", marginTop:2 }}>R² = {parseFloat(ls.r2.toFixed(3))}</div>
-          </div>
-        )}
-        {catTable && catTable.type === "uni" && showCounts && (
-          <div style={{ background:"#f8f9fa", borderRadius:8, padding:10, border:"1px solid #eee" }}>
-            <div style={{ fontWeight:700, fontSize:12, color:"#2c3e50", marginBottom:4, fontFamily:"monospace" }}>{xVar}</div>
-            {Object.entries(catTable.counts).sort((a, b) => b[1] - a[1]).map(([k, c]) => (
-              <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"#666", marginBottom:1 }}>
-                <span>{k}</span><strong>{c} <span style={{ color:"#bbb", fontWeight:400 }}>({(c / catTable.total * 100).toFixed(1)}%)</span></strong>
+          </tbody>
+        </table>
+      </div>
+      {rows.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing first {MAX_ROWS} of {rows.length} rows</div>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
+// (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
+// ══════════════════════════════════════════════════════════════════════════════
+function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand }) {
+  const counts = {};
+  rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) counts[v] = (counts[v] || 0) + 1; });
+  const allCats = Object.keys(counts).sort();
+  const total = allCats.reduce((a, c) => a + counts[c], 0);
+  const { shown } = collapseCats(allCats, counts, expanded);
+  const namedSum = shown.filter(c => c !== OTHER_CAT).reduce((a, c) => a + counts[c], 0);
+  const cellCount = c => c === OTHER_CAT ? total - namedSum : counts[c];
+
+  const W = width || 520;
+  const DOT_AREA_H = 220;            // height of each category's stacked-dot area
+  const hasLabel = showCount || showPct;
+  const estColW = clamp(W / Math.max(shown.length, 1), 48, 180);
+  const maxCount = Math.max(1, ...shown.map(cellCount));
+  // Uniform dot size so the tallest category's dots all fit; tall stacks wrap
+  // into multiple columns within the cell (a 1-D version of the 2-way table).
+  const dotR = fitDotR(maxCount, estColW - 14, DOT_AREA_H, 2, Math.min(R + 2, 9));
+
+  return (
+    <div style={{ width: W }}>
+      <div style={{ display:"flex", alignItems:"stretch" }}>
+        {shown.map((c, ci) => {
+          const cnt = cellCount(c);
+          const pct = total ? Math.round(cnt / total * 100) : 0;
+          const color = COLORS[ci % COLORS.length];
+          return (
+            <div key={c} style={{ flex:"1 1 0", minWidth:48, maxWidth:180, borderLeft: ci ? "1px solid #f0f0f0" : "none",
+              display:"flex", flexDirection:"column", alignItems:"center", padding:"0 6px", boxSizing:"border-box" }}>
+              {hasLabel && (
+                <div style={{ fontSize:12, fontWeight:600, color: cnt > 0 ? "#3730a3" : "#bbb", minHeight:16 }}>
+                  {showCount && cnt}{showCount && showPct ? " " : ""}{showPct && `(${pct}%)`}
+                </div>
+              )}
+              {/* bottom-anchored dot grid: fills a row left→right, then stacks
+                  rows upward, so column height reflects the count */}
+              <div style={{ height: DOT_AREA_H, width:"100%", display:"flex", flexDirection:"row",
+                flexWrap:"wrap-reverse", alignContent:"flex-start", justifyContent:"flex-start", gap:2, overflow:"hidden" }}>
+                {Array.from({ length: cnt }, (_, i) => (
+                  <div key={i} style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%", background:color, flexShrink:0 }} />
+                ))}
               </div>
-            ))}
-          </div>
-        )}
-        {catTable && catTable.type === "bi" && showCounts && (
-          <div style={{ background:"#f8f9fa", borderRadius:8, padding:10, border:"1px solid #eee", overflowX:"auto" }}>
-            <div style={{ fontWeight:700, fontSize:11, color:"#2c3e50", marginBottom:4 }}>Row-wise % ({xVar} → {yVar})</div>
-            <table style={{ borderCollapse:"collapse", fontSize:10 }}>
-              <thead>
-                <tr><th style={{ padding:"2px 5px", textAlign:"left", color:"#888" }}></th>
-                  {catTable.yCats.map(yc => <th key={yc} style={{ padding:"2px 5px", color:"#555" }}>{yc}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {catTable.xCats.map(xc => {
-                  const rowTotal = catTable.yCats.reduce((a, yc) => a + catTable.grid[xc][yc], 0);
-                  return (
-                    <tr key={xc}>
-                      <td style={{ padding:"2px 5px", fontWeight:700, color:"#555" }}>{xc}</td>
-                      {catTable.yCats.map(yc => (
-                        <td key={yc} style={{ padding:"2px 5px", textAlign:"center", color:"#666" }}>
-                          {rowTotal ? (catTable.grid[xc][yc] / rowTotal * 100).toFixed(0) + "%" : "—"}
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <div style={{ fontSize:9, color:"#aaa", marginTop:3 }}>Each row sums to 100% (P({yVar} | {xVar}))</div>
-          </div>
+              <div style={{ borderTop:"1px solid #ccc", width:"100%", marginTop:2 }} />
+              <div style={{ fontSize:11, color:"#444", fontWeight:600, paddingTop:4, textAlign:"center",
+                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{c}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:4 }}>
+        <span style={{ fontSize:11, color:"#666", fontWeight:700 }}>{catVar}</span>
+        {allCats.length > 10 && (
+          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
+            {expanded ? "Collapse to top 10" : `Show all ${allCats.length}`}
+          </button>
         )}
       </div>
     </div>
@@ -1585,40 +1776,60 @@ function EDAPlot({ rows, headers }) {
 // Percentages are column-conditional (each column sums to 100%), matching the
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
-function CatCatGrid({ rows, xVar, yVar, R }) {
-  const xCats = [...new Set(rows.map(r => r[xVar]).filter(v => v !== "" && v !== undefined))].sort();
-  const yCats = [...new Set(rows.map(r => r[yVar]).filter(v => v !== "" && v !== undefined))].sort();
+function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand }) {
+  // Per-axis counts drive collapsing of high-cardinality axes (>10 categories)
+  const xCount = {}, yCount = {};
+  rows.forEach(r => {
+    const xc = r[xVar], yc = r[yVar];
+    if (xc !== "" && xc !== undefined) xCount[xc] = (xCount[xc] || 0) + 1;
+    if (yc !== "" && yc !== undefined) yCount[yc] = (yCount[yc] || 0) + 1;
+  });
+  const allX = Object.keys(xCount).sort(), allY = Object.keys(yCount).sort();
+  const X = collapseCats(allX, xCount, expanded), Y = collapseCats(allY, yCount, expanded);
+  const xCats = X.shown, yCats = Y.shown;
+  const xSet = new Set(xCats.filter(c => c !== OTHER_CAT));
+  const ySet = new Set(yCats.filter(c => c !== OTHER_CAT));
+  const collapsible = allX.length > 10 || allY.length > 10;
 
   // Color per Y-category (rows), like the reference image
   const yColor = {};
   yCats.forEach((yc, i) => { yColor[yc] = COLORS[i % COLORS.length]; });
 
-  // Build counts grid[yc][xc]
+  // Build counts grid[yc][xc], folding overflow categories into "Other"
   const grid = {};
   yCats.forEach(yc => { grid[yc] = {}; xCats.forEach(xc => grid[yc][xc] = 0); });
   rows.forEach(r => {
-    const xc = r[xVar], yc = r[yVar];
-    if (xc !== "" && yc !== "" && grid[yc] && grid[yc][xc] !== undefined) grid[yc][xc]++;
+    let xc = r[xVar], yc = r[yVar];
+    if (xc === "" || xc === undefined || yc === "" || yc === undefined) return;
+    xc = xSet.has(xc) ? xc : OTHER_CAT;
+    yc = ySet.has(yc) ? yc : OTHER_CAT;
+    if (grid[yc] && grid[yc][xc] !== undefined) grid[yc][xc]++;
   });
 
-  // Row totals for row-conditional % (each Y-category row sums to 100%),
-  // matching the reference: percentage = P(X-category | Y-category)
+  // Row totals for row-conditional % (each Y-category row sums to 100%): P(X | Y)
   const rowTotals = {};
   yCats.forEach(yc => { rowTotals[yc] = xCats.reduce((a, xc) => a + grid[yc][xc], 0); });
 
-  const LABEL_W = 110, CELL_MIN_W = 90, CELL_H = 62, HEADER_H = 26, AXIS_H = 24;
-  const cellW = Math.max(CELL_MIN_W, Math.min(160, Math.floor(440 / Math.max(xCats.length, 1))));
-  const dotR = Math.max(4, Math.min(R + 2, 8));
+  const LABEL_W = 96, CELL_MIN = 54, CELL_MAX = 150;
+  const CELL_H = clamp(Math.round(250 / Math.max(yCats.length, 1)), 56, 110);
+  const hasLabel = showCount || showPct;
+  // Size dots uniformly so the densest cell's dots all fit (no clipping)
+  let maxCell = 0;
+  yCats.forEach(yc => xCats.forEach(xc => { if (grid[yc][xc] > maxCell) maxCell = grid[yc][xc]; }));
+  const estCellW = clamp(((width || 520) - LABEL_W) / Math.max(xCats.length, 1), CELL_MIN, CELL_MAX);
+  const dotAreaH = CELL_H - (hasLabel ? 18 : 0) - 8;
+  const dotR = fitDotR(maxCell, estCellW - 12, dotAreaH, 2, Math.min(R + 2, 8));
 
   return (
-    <div style={{ overflowX:"auto" }}>
-      <div style={{ display:"inline-block", minWidth:"100%" }}>
+    <div style={{ width: width ? width : "100%" }}>
+      <div style={{ display:"flex", flexDirection:"column" }}>
         {/* Rows */}
         {yCats.map(yc => (
           <div key={yc} style={{ display:"flex", alignItems:"stretch", borderBottom:"1px solid #eee" }}>
             {/* Row label */}
             <div style={{ width:LABEL_W, flexShrink:0, display:"flex", alignItems:"center",
-              justifyContent:"flex-end", paddingRight:10, fontSize:12, color:"#444", fontWeight:600 }}>
+              justifyContent:"flex-end", paddingRight:10, fontSize:12, color:"#444", fontWeight:600,
+              overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
               {yc}
             </div>
             {/* Cells */}
@@ -1627,12 +1838,14 @@ function CatCatGrid({ rows, xVar, yVar, R }) {
               const rowTot = rowTotals[yc] || 0;
               const pct = rowTot ? Math.round(c / rowTot * 100) : 0;
               return (
-                <div key={xc} style={{ width:cellW, flexShrink:0, height:CELL_H,
+                <div key={xc} style={{ flex:"1 1 0", minWidth:CELL_MIN, maxWidth:CELL_MAX, height:CELL_H,
                   borderLeft:"1px solid #eee", padding:"4px 6px", boxSizing:"border-box",
                   display:"flex", flexDirection:"column" }}>
-                  <div style={{ fontSize:12, fontWeight:600, color: c > 0 ? "#3730a3" : "#bbb" }}>
-                    {c} ({pct}%)
-                  </div>
+                  {hasLabel && (
+                    <div style={{ fontSize:12, fontWeight:600, color: c > 0 ? "#3730a3" : "#bbb" }}>
+                      {showCount && c}{showCount && showPct ? " " : ""}{showPct && `(${pct}%)`}
+                    </div>
+                  )}
                   {/* Stacked dots */}
                   <div style={{ display:"flex", flexWrap:"wrap", gap:2, alignContent:"flex-start", marginTop:3, flex:1, overflow:"hidden" }}>
                     {Array.from({ length: c }, (_, i) => (
@@ -1649,16 +1862,21 @@ function CatCatGrid({ rows, xVar, yVar, R }) {
         <div style={{ display:"flex" }}>
           <div style={{ width:LABEL_W, flexShrink:0 }} />
           {xCats.map(xc => (
-            <div key={xc} style={{ width:cellW, flexShrink:0, textAlign:"center", paddingTop:5,
-              fontSize:12, color:"#444", fontWeight:600 }}>{xc}</div>
+            <div key={xc} style={{ flex:"1 1 0", minWidth:CELL_MIN, maxWidth:CELL_MAX, textAlign:"center", paddingTop:5,
+              fontSize:12, color:"#444", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{xc}</div>
           ))}
         </div>
         {/* Axis titles */}
         <div style={{ textAlign:"center", marginTop:4, fontSize:11, color:"#666", fontWeight:700,
           marginLeft:LABEL_W }}>{xVar}</div>
       </div>
-      <div style={{ fontSize:10, color:"#aaa", marginTop:4, marginLeft:LABEL_W - 10 }}>
-        Rows = {yVar} · percentages are row-conditional: P({xVar} | {yVar})
+      <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:10, color:"#aaa", marginTop:4, marginLeft:LABEL_W - 10 }}>
+        <span>Rows = {yVar} · row-conditional %: P({xVar} | {yVar})</span>
+        {collapsible && (
+          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
+            {expanded ? "Collapse to top 10" : "Show all categories"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1668,92 +1886,217 @@ function CatCatGrid({ rows, xVar, yVar, R }) {
 // SPLIT DOT PLOTS — one numeric axis, split into stacked rows by a categorical
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
-function SplitDotPlots({ rows, catVar, numVar, R, showBox, showMean, showSD }) {
-  const cats = [...new Set(rows.map(r => r[catVar]).filter(v => v !== "" && v !== undefined))].sort();
+function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand }) {
+  // Collapse high-cardinality grouping variable into top 10 + "Other"
+  const catCount = {};
+  rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
+  const allCats = Object.keys(catCount).sort();
+  const { shown: cats, isCollapsed } = collapseCats(allCats, catCount, expanded);
+  const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
+  const groupOf = v => catSet.has(v) ? v : OTHER_CAT;
 
-  // Shared numeric scale across all groups for fair comparison
-  const allNums = rows.map(r => Number(r[numVar])).filter(v => !isNaN(v));
+  // Shared numeric scale across all groups for fair comparison (time-aware)
+  const allNums = rows.map(r => toNum(r[numVar])).filter(v => !isNaN(v));
   if (!allNums.length) return <div style={{ color:"#bbb", padding:20 }}>No numeric data.</div>;
   const mn = Math.min(...allNums), mx = Math.max(...allNums);
   const range = mx - mn || 1, pad = range * 0.05, lo = mn - pad, hi = mx + pad;
+  const fmt = isTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
 
-  const W = 520, PL = 90, PR = 20, PT = 10, PB = 40;
-  const iW = W - PL - PR;
-  const GROUP_H = 78;
-  const H = PT + cats.length * GROUP_H + PB;
-  const sx = v => PL + ((v - lo) / (hi - lo)) * iW;
+  const W = width || 520;
+  const dotR = Math.max(3, Math.min(R, 6));
   const nT = 6;
   const ticks = Array.from({ length: nT }, (_, i) => mn + (i / (nT - 1)) * range);
 
-  const dotR = Math.max(3, Math.min(R, 6));
+  // ── Vertical orientation: numeric on Y, category distributions side by side ──
+  if (orientation === "v") {
+    const PL = 54, PR = 16, PT = 16, PB = 52;
+    const iW = W - PL - PR;
+    const H = 320, iH = H - PT - PB;
+    const colW = iW / Math.max(cats.length, 1);
+    const sy = v => PT + (1 - (v - lo) / (hi - lo)) * iH;
+    return (
+      <div style={{ width: width ? width : "100%" }}>
+        <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
+          {/* horizontal gridlines + y-axis ticks */}
+          {ticks.map((t, i) => <line key={"g"+i} x1={PL} y1={sy(t)} x2={W - PR} y2={sy(t)} stroke="#f5f5f5" strokeWidth={1} />)}
+          <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
+          {ticks.map((t, i) => (
+            <g key={"yt"+i}>
+              <line x1={PL - 4} y1={sy(t)} x2={PL} y2={sy(t)} stroke="#bbb" />
+              <text x={PL - 7} y={sy(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#999">{fmt(t)}</text>
+            </g>
+          ))}
+          {cats.map((cat, gi) => {
+            const x0 = PL + colW * gi, center = x0 + colW / 2;
+            const groupNums = rows.map(r => groupOf(r[catVar]) === cat ? toNum(r[numVar]) : NaN).filter(v => !isNaN(v));
+            const summary = numericSummary(groupNums);
+            const binOf = v => Math.round(sy(v) / (dotR * 2 + 1));
+            const binCounts = {};
+            groupNums.forEach(v => { const k = binOf(v); binCounts[k] = (binCounts[k] || 0) + 1; });
+            const widest = Math.max(1, ...Object.values(binCounts));
+            const xData = x0 + colW * 0.46;        // data baseline; dots to the right, overlays to the left
+            const dotAreaW = (x0 + colW) - xData - 4;
+            const hsp = Math.min(dotR * 2 + 1, (dotAreaW - dotR) / widest);
+            const stacks = {};
+            const groupDots = groupNums.map(v => {
+              const key = binOf(v); stacks[key] = (stacks[key] || 0) + 1;
+              return { x: xData + dotR + 3 + (stacks[key] - 1) * hsp, y: sy(v) };
+            });
+            const color = COLORS[gi % COLORS.length];
+            const bx = x0 + colW * 0.16;            // vertical boxplot, far left of the column
+            const sdx = xData - 15;                 // ±SD bar, adjacent left of the mean
+            return (
+              <g key={cat}>
+                {gi > 0 && <line x1={x0} y1={PT} x2={x0} y2={PT + iH} stroke="#f0f0f0" strokeWidth={1} />}
+                {/* per-category baseline the mean tip touches */}
+                <line x1={xData} y1={PT} x2={xData} y2={PT + iH} stroke="#f3f4f6" strokeWidth={1} />
+                {groupDots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={dotR} fill={color}
+                  fillOpacity={Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))} />)}
+                {/* boxplot (vertical, Tukey whiskers) — separated to the far left */}
+                {showBox && summary && (
+                  <g>
+                    <line x1={bx} y1={sy(summary.whiskerLo)} x2={bx} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
+                    <line x1={bx - 4} y1={sy(summary.whiskerLo)} x2={bx + 4} y2={sy(summary.whiskerLo)} stroke="#475569" strokeWidth={1.2} />
+                    <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
+                    <rect x={bx - 6} y={sy(summary.q3)} width={12} height={Math.max(1, sy(summary.q1) - sy(summary.q3))} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
+                    <line x1={bx - 6} y1={sy(summary.median)} x2={bx + 6} y2={sy(summary.median)} stroke={color} strokeWidth={2} />
+                    {showValues && <text x={bx} y={sy(summary.q1) + 12} textAnchor="middle" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
+                  </g>
+                )}
+                {/* ±1 SD — adjacent, just left of the mean */}
+                {showSD && summary && (
+                  <g>
+                    <line x1={sdx} y1={sy(summary.mean - summary.sd)} x2={sdx} y2={sy(summary.mean + summary.sd)} stroke="#f59e0b" strokeWidth={2} />
+                    <line x1={sdx - 3} y1={sy(summary.mean - summary.sd)} x2={sdx + 3} y2={sy(summary.mean - summary.sd)} stroke="#f59e0b" strokeWidth={2} />
+                    <line x1={sdx - 3} y1={sy(summary.mean + summary.sd)} x2={sdx + 3} y2={sy(summary.mean + summary.sd)} stroke="#f59e0b" strokeWidth={2} />
+                  </g>
+                )}
+                {/* mean triangle — points right, tip on the data baseline */}
+                {showMean && summary && (
+                  <polygon points={xData + "," + sy(summary.mean) + " " + (xData - 10) + "," + (sy(summary.mean) - 5) + " " + (xData - 10) + "," + (sy(summary.mean) + 5)}
+                    fill="#10b981" stroke="#059669" strokeWidth={0.8} />
+                )}
+                {/* category label */}
+                <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={11} fill="#444" fontWeight={600}>{cat}</text>
+                <text x={center} y={PT + iH + 28} textAnchor="middle" fontSize={9} fill="#aaa">n={groupNums.length}</text>
+              </g>
+            );
+          })}
+          <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
+          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{catVar}</text>
+          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{numVar}</text>
+        </svg>
+        {allCats.length > 10 && (
+          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
+            {expanded ? "Collapse to top 10 groups" : `Show all ${allCats.length} groups`}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  // ── Horizontal orientation (default): numeric on X, groups stacked vertically ──
+  const PL = 90, PR = 20, PT = 10, PB = 44;
+  const iW = W - PL - PR;
+  const GROUP_H = 104;
+  const H = PT + cats.length * GROUP_H + PB;
+  const sx = v => PL + ((v - lo) / (hi - lo)) * iW;
 
   return (
-    <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
-      {/* vertical gridlines */}
-      {ticks.map((t, i) => <line key={"g"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={H - PB} stroke="#f5f5f5" strokeWidth={1} />)}
+    <div style={{ width: width ? width : "100%" }}>
+      <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
+        {/* vertical gridlines */}
+        {ticks.map((t, i) => <line key={"g"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={H - PB} stroke="#f5f5f5" strokeWidth={1} />)}
 
-      {cats.map((cat, gi) => {
-        const top = PT + gi * GROUP_H;
-        const baseY = top + GROUP_H - 14; // dots stack upward from here
-        const groupNums = rows.map(r => r[catVar] === cat ? Number(r[numVar]) : NaN).filter(v => !isNaN(v));
-        const summary = numericSummary(groupNums);
-        // Stack dots by x-bin
-        const stacks = {};
-        const groupDots = groupNums.map(v => {
-          const x = sx(v);
-          const key = Math.round(x / (dotR * 2 + 1));
-          stacks[key] = (stacks[key] || 0) + 1;
-          return { x, y: baseY - (stacks[key] - 1) * (dotR * 2 + 1) };
-        });
-        const color = COLORS[gi % COLORS.length];
-        return (
-          <g key={cat}>
-            {/* group separator */}
-            {gi > 0 && <line x1={PL} y1={top} x2={W - PR} y2={top} stroke="#f0f0f0" strokeWidth={1} />}
-            {/* group label */}
-            <text x={PL - 10} y={top + GROUP_H / 2} textAnchor="end" dominantBaseline="middle"
-              fontSize={11} fill="#444" fontWeight={600}>{cat}</text>
-            <text x={PL - 10} y={top + GROUP_H / 2 + 13} textAnchor="end" dominantBaseline="middle"
-              fontSize={9} fill="#aaa">n={groupNums.length}</text>
-            {/* baseline */}
-            <line x1={PL} y1={baseY + dotR + 1} x2={W - PR} y2={baseY + dotR + 1} stroke="#e0e0e0" strokeWidth={1} />
-            {/* dots */}
-            {groupDots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={dotR} fill={color}
-              fillOpacity={Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))} />)}
-            {/* boxplot */}
-            {showBox && summary && (() => {
-              const by = baseY + dotR + 8;
-              return (
-                <g>
-                  <line x1={sx(summary.min)} y1={by} x2={sx(summary.max)} y2={by} stroke="#475569" strokeWidth={1.2} />
-                  <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
-                  <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
-                </g>
-              );
-            })()}
-            {/* mean triangle */}
-            {showMean && summary && (
-              <polygon points={sx(summary.mean) + "," + (baseY + dotR + 2) + " " + (sx(summary.mean) - 5) + "," + (baseY + dotR + 11) + " " + (sx(summary.mean) + 5) + "," + (baseY + dotR + 11)}
-                fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-            )}
-            {/* SD range */}
-            {showSD && summary && (
-              <line x1={sx(summary.mean - summary.sd)} y1={baseY + dotR + 14} x2={sx(summary.mean + summary.sd)} y2={baseY + dotR + 14} stroke="#f59e0b" strokeWidth={2} />
-            )}
+        {cats.map((cat, gi) => {
+          const top = PT + gi * GROUP_H;
+          const baseY = top + GROUP_H - 44; // dots stack upward from here; mean/SD/box below
+          const groupNums = rows.map(r => groupOf(r[catVar]) === cat ? toNum(r[numVar]) : NaN).filter(v => !isNaN(v));
+          const summary = numericSummary(groupNums);
+          // First pass: bin counts to find the tallest stack, so dots fit the band
+          const binOf = v => Math.round(sx(v) / (dotR * 2 + 1));
+          const binCounts = {};
+          groupNums.forEach(v => { const k = binOf(v); binCounts[k] = (binCounts[k] || 0) + 1; });
+          const tallest = Math.max(1, ...Object.values(binCounts));
+          const avail = baseY - top - 4;
+          const spacing = Math.min(dotR * 2 + 1, avail / tallest);
+          const stacks = {};
+          const groupDots = groupNums.map(v => {
+            const x = sx(v); const key = binOf(v);
+            stacks[key] = (stacks[key] || 0) + 1;
+            return { x, y: baseY - (stacks[key] - 1) * spacing };
+          });
+          const color = COLORS[gi % COLORS.length];
+          return (
+            <g key={cat}>
+              {/* group separator */}
+              {gi > 0 && <line x1={PL} y1={top} x2={W - PR} y2={top} stroke="#f0f0f0" strokeWidth={1} />}
+              {/* group label */}
+              <text x={PL - 10} y={top + GROUP_H / 2 - 6} textAnchor="end" dominantBaseline="middle"
+                fontSize={11} fill="#444" fontWeight={600}>{cat}</text>
+              <text x={PL - 10} y={top + GROUP_H / 2 + 8} textAnchor="end" dominantBaseline="middle"
+                fontSize={9} fill="#aaa">n={groupNums.length}</text>
+              {/* baseline */}
+              <line x1={PL} y1={baseY + dotR + 1} x2={W - PR} y2={baseY + dotR + 1} stroke="#e0e0e0" strokeWidth={1} />
+              {/* dots */}
+              {groupDots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={dotR} fill={color}
+                fillOpacity={Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))} />)}
+              {/* mean triangle — tip on the group baseline (axis being averaged) */}
+              {showMean && summary && (() => {
+                const gb = baseY + dotR + 1, mx = sx(summary.mean);
+                return (
+                  <g>
+                    <polygon points={mx + "," + gb + " " + (mx - 5) + "," + (gb + 9) + " " + (mx + 5) + "," + (gb + 9)} fill="#10b981" stroke="#059669" strokeWidth={0.8} />
+                    {showValues && <text x={mx + 8} y={gb + 8} textAnchor="start" fontSize={9} fill="#059669" fontWeight={700}>{fmt(summary.mean)}</text>}
+                  </g>
+                );
+              })()}
+              {/* ±1 SD — adjacent, directly beneath the mean */}
+              {showSD && summary && (() => {
+                const y = baseY + dotR + 15, loX = sx(summary.mean - summary.sd), hiX = sx(summary.mean + summary.sd);
+                return (
+                  <g>
+                    <line x1={loX} y1={y} x2={hiX} y2={y} stroke="#f59e0b" strokeWidth={2} />
+                    <line x1={loX} y1={y - 3} x2={loX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
+                    <line x1={hiX} y1={y - 3} x2={hiX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
+                    {showValues && <text x={hiX + 4} y={y + 3} textAnchor="start" fontSize={8} fill="#d97706" fontWeight={700}>±SD {parseFloat(summary.sd.toFixed(2))}</text>}
+                  </g>
+                );
+              })()}
+              {/* boxplot — separated below */}
+              {showBox && summary && (() => {
+                const by = baseY + dotR + 28;
+                return (
+                  <g>
+                    <line x1={sx(summary.whiskerLo)} y1={by} x2={sx(summary.whiskerHi)} y2={by} stroke="#475569" strokeWidth={1.2} />
+                    <line x1={sx(summary.whiskerLo)} y1={by - 4} x2={sx(summary.whiskerLo)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
+                    <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
+                    <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
+                    <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
+                    {showValues && <text x={sx(summary.median)} y={by - 7} textAnchor="middle" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
+                  </g>
+                );
+              })()}
+            </g>
+          );
+        })}
+
+        {/* x axis */}
+        <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="#ccc" strokeWidth={1.5} />
+        {ticks.map((t, i) => (
+          <g key={"t"+i}>
+            <line x1={sx(t)} y1={H - PB} x2={sx(t)} y2={H - PB + 4} stroke="#bbb" />
+            <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={10} fill="#999">{fmt(t)}</text>
           </g>
-        );
-      })}
-
-      {/* x axis */}
-      <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="#ccc" strokeWidth={1.5} />
-      {ticks.map((t, i) => (
-        <g key={"t"+i}>
-          <line x1={sx(t)} y1={H - PB} x2={sx(t)} y2={H - PB + 4} stroke="#bbb" />
-          <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={10} fill="#999">{parseFloat(t.toFixed(2))}</text>
-        </g>
-      ))}
-      <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{numVar} (by {catVar})</text>
-    </svg>
+        ))}
+        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{numVar} (by {catVar})</text>
+      </svg>
+      {allCats.length > 10 && (
+        <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
+          {expanded ? "Collapse to top 10 groups" : `Show all ${allCats.length} groups`}
+        </button>
+      )}
+    </div>
   );
 }
 
