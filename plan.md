@@ -248,11 +248,27 @@ Do the `components/` + `lib/` split now, as part of this phase.
       same; device-remove accept clears rows + drops the dependent column; no console
       errors (incl. the now-empty pipeline); production build passes.
 
-### Phase 4 — Sampling-distribution plot
-- [ ] Column selector → render the shared plot over that stat column.
-- [ ] Reuse overlay toggles (mean/SD/etc.) on the distribution.
-- [ ] Retire `StatDistPlot` once parity is reached.
-- [ ] **Done when:** Each tracked column can be plotted with EDA-grade styling.
+### Phase 4 — Sampling-distribution plot ✅
+- [x] Column selector → render the shared plot over that stat column. New
+      `DistributionPlot` ({ columns:[{ label, values }], width? }) transforms the
+      collected per-column values into the shared `Plot`'s `{ rows, headers }` shape;
+      the Plot's **X selector doubles as the column selector** (and Y enables a scatter
+      of two collected stats for free). Non-finite values (e.g. an empty group in a
+      small/without-replacement sample) become blank so the plot skips them; repeated
+      labels are disambiguated into distinct headers. → `components/plots.jsx`.
+- [x] Reuse overlay toggles (mean/SD/etc.) on the distribution — they come from the
+      shared `Plot` unchanged (box/mean/±SD/values for the univariate numeric column).
+- [x] Retire `StatDistPlot`: removed the small-multiples component and re-pointed **both**
+      consumers at `DistributionPlot` — the tracked-stat section (table left, plot right)
+      and the legacy "define statistics manually" section. Dropped the now-unused
+      `StatDistPlot` import + `STAT_COLORS`.
+- [x] **Done:** verified in `npm run dev` (instant speed, default Stacks): tracking
+      `count(stk1="a")` seeds row 1 and the distribution plot appears with the stat as the
+      selectable X column; further draws append rows and the plot's dot count tracks them;
+      toggling **△ Mean** draws the mean triangle on the distribution with the column as the
+      axis title; the legacy manual path collects 500 reps and renders the same
+      `DistributionPlot` (`prop(stk1="a")`, 500 dots); production build passes, no console
+      errors.
 
 ### Phase 5 — Derived-statistic calculator (build statistics from collected columns)
 Goal: let students **assemble new statistics from the columns they have already
@@ -308,8 +324,17 @@ tool (now Phase 6) then applies to derived columns for free, in either build ord
       (including per-group on side-by-side distributions).
 
 ### Phase 7 — Cleanup & retirement
-- [ ] Remove `StatDefiner`, `FN_OPTS`-driven dropdown UI, and `DotPlot`/
-      `StatDistPlot` if fully superseded (keep `computeStat`/`statLabel`).
+- [x] **Consolidated to one workflow (done early, post-Phase 4).** Removed the separate
+      "define statistics manually" pipeline (`doCollect`, `distributions`, `repetitions`,
+      and its own Collect button / distribution render). `StatDefiner` is kept but
+      repurposed: it lives behind a **"Define a statistic manually" toggle** (hidden by
+      default, off the typical click-a-number path) and its **＋ Add to table** button
+      calls the shared `addTrackedStat` so a manually-built spec becomes a tracked column
+      in the same Collect Statistics table (per-run + batch accumulation, shared
+      `DistributionPlot`). Extracted `addTrackedStat` (add + seed current sample) out of
+      `trackStat` so both entry points share it. `StatDistPlot` already retired in Phase 4.
+- [ ] Optionally retire `StatDefiner` + `FN_OPTS` dropdowns entirely if the
+      click-to-track path fully covers authoring (keep `computeStat`/`statLabel`).
 - [ ] Update CLAUDE.md architecture notes + "next steps".
 - [ ] Final pass: verify every device (Stacks w/ & w/o replacement, Mixer, Spinner)
       feeds both accumulation paths correctly.

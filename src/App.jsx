@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { iSm, btnNav, btnPlus, ctrlLbl } from "./lib/styles";
+import { iSm, btnNav, ctrlLbl } from "./lib/styles";
 import { uid, parseCSV } from "./lib/util";
 import { computeStat, statLabel } from "./lib/stats";
 import { drawSample, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
 import { CopyColumnButton } from "./components/ui";
-import { EDAPlot, SampleResults, StatDefiner, StatDistPlot, CollectTable } from "./components/plots";
+import { EDAPlot, SampleResults, StatDefiner, DistributionPlot, CollectTable } from "./components/plots";
 
 export default function App() {
   // CSV / EDA dataset
@@ -43,12 +43,11 @@ export default function App() {
   // Toggle tracking of a stat (clicking its number on the plot adds it, or removes
   // it if that exact statistic — same statLabel — is already tracked). Adding seeds
   // the current sample's value into the table at once (its number is visible now).
-  const trackStat = spec => {
-    const lbl = statLabel(spec);
-    if (trackedStats.some(s => statLabel(s) === lbl)) {
-      setTrackedStats(ts => ts.filter(s => statLabel(s) !== lbl));
-      return;
-    }
+  // Add a stat spec as a tracked column (no toggle) and seed the current sample's
+  // value for it immediately (its number is on the plot now). Dedupes by statLabel.
+  // Shared by click-to-track and the manual stat builder.
+  const addTrackedStat = spec => {
+    if (trackedStats.some(s => statLabel(s) === statLabel(spec))) return;
     const newStat = { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...spec };
     setTrackedStats(ts => [...ts, newStat]);
     if (!currentSample) return;
@@ -65,6 +64,13 @@ export default function App() {
       [...trackedStats, newStat].forEach(s => { row[s.id] = computeStat(s, currentSample.rows); });
       return [...rows, row];
     });
+  };
+  // Click-to-track: clicking a number on the plot adds it, or removes it if that exact
+  // statistic (same statLabel) is already tracked.
+  const trackStat = spec => {
+    const lbl = statLabel(spec);
+    if (trackedStats.some(s => statLabel(s) === lbl)) setTrackedStats(ts => ts.filter(s => statLabel(s) !== lbl));
+    else addTrackedStat(spec);
   };
   const untrackStat = id => setTrackedStats(ts => ts.filter(s => s.id !== id));
 
@@ -127,13 +133,11 @@ export default function App() {
   };
   const clearCollected = () => { setCollectRows([]); setBatchProgress(0); setCurrentSample(null); };
 
-  const [stats, setStats] = useState([{ id:uid(), fn:"proportion", variable:"", target:"", condVar:"", condVal:"", variable2:"" }]);
-  const [repetitions, setRepetitions] = useState(500);
-  const [collecting, setCollecting] = useState(false);
-  const [collectProgress, setCollectProgress] = useState(0);
-  const [distributions, setDistributions] = useState({});
-  const collectCancelRef = useRef(false);
-  const STAT_COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#ec4899"];
+  // Manual statistic builder (advanced, hidden by default): authors one stat spec
+  // and adds it as a column to the same tracked-stat table — not a separate workflow.
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualStat, setManualStat] = useState({ fn:"mean", variable:"", target:"", condVar:"", condVal:"", variable2:"" });
+  const addManualStat = () => { if (manualStat.variable) addTrackedStat(manualStat); };
 
   const varNames = pipeline.map(d => d.varName);
 
@@ -224,36 +228,9 @@ export default function App() {
     });
   }, [pipeline, sampleSize, animSpeed, sampling, trackedStats]);
 
-  const addStat = () => setStats(s => [...s, { id:uid(), fn:"mean", variable:varNames[0] || "", target:"", condVar:"", condVal:"", variable2:"" }]);
-  const updStat = (i, s) => setStats(ss => { const a = [...ss]; a[i] = s; return a; });
-  const remStat = i => setStats(ss => ss.filter((_, j) => j !== i));
-
-  const doCollect = async () => {
-    if (collecting) { collectCancelRef.current = true; return; }
-    collectCancelRef.current = false;
-    setCollecting(true); setCollectProgress(0);
-    const validStats = stats.filter(s => s.variable);
-    const accum = {};
-    validStats.forEach(s => { accum[s.id] = []; });
-    let rep = 0;
-    const CHUNK = 200;
-    const step = () => {
-      let n = 0;
-      while (n < CHUNK && rep < repetitions && !collectCancelRef.current) {
-        const rows = drawSample(pipeline, sampleSize);
-        validStats.forEach(s => { accum[s.id].push(computeStat(s, rows)); });
-        rep++; n++;
-      }
-      setCollectProgress(Math.round(rep / repetitions * 100));
-      if (rep < repetitions && !collectCancelRef.current) requestAnimationFrame(step);
-      else { setDistributions({ ...accum }); setCollecting(false); }
-    };
-    requestAnimationFrame(step);
-  };
-
   // Batch accumulation for the tracked-stat table: draw `batchSize` samples and
   // append one row per sample (each tracked stat computed on that sample). Same
-  // shared draw path as doSample/doCollect, so counting can't diverge.
+  // shared draw path as doSample, so counting can't diverge.
   const doCollectTracked = () => {
     if (batchCollecting) { batchCancelRef.current = true; return; }
     if (!trackedStats.length) return;
@@ -419,55 +396,44 @@ export default function App() {
             )}
           </div>
         </div>
-        {/* Tracked-statistic columns (authored from the Sample Results plot) */}
-        <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start", marginBottom:14 }}>
+        {/* Stacked top-to-bottom: the tracked-statistic table, then the manual
+            builder (a table-authoring tool), then the sampling-distribution plot. */}
+        <div style={{ marginBottom:14 }}>
           <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} />
         </div>
 
-        <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:8 }}>
-          <span style={{ fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase" }}>
-            Or define statistics manually
-          </span>
-          <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-            <label style={ctrlLbl}>Repetitions:
-              <input type="number" value={repetitions} min={1} max={10000}
-                onChange={e => setRepetitions(Math.max(1, parseInt(e.target.value) || 1))}
-                style={{ ...iSm, width:70, marginLeft:4 }} />
-            </label>
-            <button onClick={doCollect} disabled={!stats.some(s => s.variable)}
-              style={{ padding:"7px 16px", background:collecting ? "#ef4444" : "#10b981", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:"pointer", minWidth:100 }}>
-              {collecting ? "⏹ " + collectProgress + "%" : "▶ Collect"}
-            </button>
-            {Object.keys(distributions).length > 0 && !collecting && (
-              <button onClick={() => {
-                const vs = stats.filter(s => s.variable && distributions[s.id]);
-                const rows = Array.from({ length:repetitions }, (_, i) => { const r = { _rep:i + 1 }; vs.forEach(s => { r[statLabel(s)] = distributions[s.id] && distributions[s.id][i] !== undefined ? distributions[s.id][i] : ""; }); return r; });
-                exportCSV(rows, "distributions.csv");
-              }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
-            )}
-          </div>
-        </div>
-        <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:12 }}>
-          {stats.map((s, i) => (
-            <StatDefiner key={s.id} stat={s} varNames={varNames} sampleData={sampleData}
-              onChange={ns => updStat(i, ns)} onRemove={() => remStat(i)} />
-          ))}
-          <button onClick={addStat} style={{ ...btnPlus, alignSelf:"flex-start", marginTop:2 }}>+ add statistic</button>
-        </div>
-        {Object.keys(distributions).length > 0 && (
-          <div>
-            <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>
-              Sampling Distributions — {repetitions} reps × n={sampleSize}
+        {/* Manual statistic builder — advanced, hidden behind a toggle. Adds a column
+            to the same tracked-stat table above instead of a separate workflow. */}
+        <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:14 }}>
+          <button onClick={() => setManualOpen(o => !o)}
+            style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
+            <span style={{ transform: manualOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
+            Define a statistic manually
+          </button>
+          {manualOpen && (
+            <div style={{ marginTop:8 }}>
+              <div style={{ fontSize:11, color:"#aaa", marginBottom:6 }}>
+                Build a statistic from the sampler's variables and add it as a column. Most statistics are easier to add by clicking their value on the Sample Results plot above — this is for cases that aren't shown there.
+              </div>
+              <div style={{ display:"flex", gap:8, alignItems:"flex-start", flexWrap:"wrap" }}>
+                <div style={{ flex:"1 1 360px", minWidth:300 }}>
+                  <StatDefiner stat={manualStat} varNames={varNames} sampleData={sampleData}
+                    onChange={setManualStat} onRemove={() => setManualOpen(false)} />
+                </div>
+                <button onClick={addManualStat} disabled={!manualStat.variable}
+                  style={{ padding:"7px 16px", background:"#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:manualStat.variable ? "pointer" : "not-allowed", opacity:manualStat.variable ? 1 : 0.5 }}>
+                  ＋ Add to table
+                </button>
+              </div>
             </div>
-            <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
-              {stats.filter(s => s.variable && distributions[s.id]).map((s, i) => (
-                <StatDistPlot key={s.id} label={statLabel(s)} values={distributions[s.id]} color={STAT_COLORS[i % STAT_COLORS.length]} />
-              ))}
-            </div>
+          )}
+        </div>
+
+        {/* Sampling-distribution plot for a chosen tracked column. */}
+        {trackedStats.length > 0 && collectRows.length > 0 && (
+          <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12 }}>
+            <DistributionPlot columns={trackedStats.map(s => ({ label: statLabel(s), values: collectRows.map(r => r[s.id]) }))} />
           </div>
-        )}
-        {!Object.keys(distributions).length && sampleData.length > 0 && (
-          <div style={{ color:"#bbb", textAlign:"center", padding:16, fontSize:13 }}>Define a statistic above, then click Collect.</div>
         )}
       </div>
     </div>

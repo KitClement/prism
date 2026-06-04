@@ -359,44 +359,47 @@ function StatDefiner({ stat, varNames, sampleData, onChange, onRemove }) {
   );
 }
 
-function StatDistPlot({ label, values, color }) {
-  const valid = values.filter(v => !isNaN(v) && isFinite(v));
-  if (!valid.length) return <div style={{ color:"#bbb", fontSize:12, padding:8 }}>No valid values.</div>;
-  const mn = Math.min(...valid), mx = Math.max(...valid);
-  const mean = valid.reduce((a, b) => a + b, 0) / valid.length;
-  const W = 300, H = 180, PL = 44, PR = 10, PT = 16, PB = 32, iW = W - PL - PR, iH = H - PT - PB;
-  const R = Math.max(2, Math.min(6, Math.floor(iW / (valid.length * 0.8 + 1))));
-  const xSc = makeScale(valid, iW, { numeric: true, toNumber: Number, pad: 0.06, tickCount: 5, precision: 3 });
-  const xS = xSc.scale, ticks = xSc.ticks;
-  const yOffsets = stackDots(valid.map(v => xS(v)), R, iH, 0.5);
-  const dots = valid.map((v, i) => ({ x: PL + xS(v), y: PT + yOffsets[i] }));
-  const opacity = Math.min(0.9, Math.max(0.2, 80 / Math.sqrt(valid.length + 1)));
-  const meanX = PL + xS(mean);
-  return (
-    <div style={{ background:"#fff", borderRadius:10, border:"1px solid #e8e8e8", padding:10, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", minWidth:220 }}>
-      <div style={{ fontFamily:"monospace", fontSize:11, color:"#4338ca", marginBottom:3, fontWeight:700 }}>{label}</div>
-      <svg width={W} height={H} style={{ display:"block", maxWidth:"100%", overflow:"visible" }}>
-        {ticks.map((t, i) => <line key={i} x1={PL + xS(t)} y1={PT} x2={PL + xS(t)} y2={PT + iH} stroke="#f0f0f0" strokeWidth={1} />)}
-        <line x1={PL} y1={PT + iH} x2={PL + iW} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-        <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-        {ticks.map((t, i) => (
-          <g key={i}>
-            <line x1={PL + xS(t)} y1={PT + iH} x2={PL + xS(t)} y2={PT + iH + 4} stroke="#bbb" />
-            <text x={PL + xS(t)} y={PT + iH + 13} textAnchor="middle" fontSize={9} fill="#aaa">{parseFloat(t.toFixed(3))}</text>
-          </g>
-        ))}
-        {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={R} fill={color} fillOpacity={opacity} stroke="none" />)}
-        <line x1={meanX} y1={PT} x2={meanX} y2={PT + iH} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="3,3" />
-        <text x={meanX} y={PT - 4} textAnchor="middle" fontSize={9} fill="#ef4444">{"x\u0304=" + parseFloat(mean.toFixed(3))}</text>
-      </svg>
-      <div style={{ fontSize:10, color:"#aaa", display:"flex", gap:8, flexWrap:"wrap" }}>
-        <span>n={valid.length}</span>
-        <span>min={parseFloat(mn.toFixed(3))}</span>
-        <span>max={parseFloat(mx.toFixed(3))}</span>
-        <span style={{ color:"#ef4444" }}>mean={parseFloat(mean.toFixed(3))}</span>
-      </div>
-    </div>
-  );
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// DISTRIBUTION PLOT \u2014 sampling-distribution view over collected-statistic columns.
+// Each column is one tracked (or manually-defined) statistic's accumulated values;
+// the shared Plot's X selector doubles as the column selector and its overlay
+// toggles (mean/SD/box) apply to the chosen distribution. Replaces the old
+// StatDistPlot small-multiples with one EDA-grade, selectable plot.
+//   columns: [{ label, values:number[] }]  (one value per repetition/sample)
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+function DistributionPlot({ columns, width }) {
+  // Disambiguate any repeated labels so each column is a distinct header/key
+  // (tracked stats are already unique; manually-defined ones may collide).
+  const headers = useMemo(() => {
+    const out = [], seen = {};
+    columns.forEach(c => {
+      if (seen[c.label]) out.push(c.label + " (" + (++seen[c.label]) + ")");
+      else { seen[c.label] = 1; out.push(c.label); }
+    });
+    return out;
+  }, [columns.map(c => c.label).join("")]);
+
+  const [xVar, setXVar] = useState(headers[0] || "");
+  const [yVar, setYVar] = useState("none");
+
+  // One row per repetition; non-finite stat values (e.g. an empty group in a
+  // small/without-replacement sample) become blank so the plot skips them.
+  const rows = useMemo(() => {
+    const len = Math.max(0, ...columns.map(c => c.values.length));
+    const out = [];
+    for (let i = 0; i < len; i++) {
+      const o = {};
+      columns.forEach((c, k) => {
+        const v = c.values[i];
+        o[headers[k]] = (typeof v === "number" && isFinite(v)) ? v : "";
+      });
+      out.push(o);
+    }
+    return out;
+  }, [columns, headers]);
+
+  if (!columns.length) return null;
+  return <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} width={width} />;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1007,4 +1010,4 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
 }
 
 
-export { Plot, SampleResults, StatDefiner, StatDistPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };
+export { Plot, SampleResults, StatDefiner, DistributionPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };
