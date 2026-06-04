@@ -121,21 +121,25 @@ Each phase is independently shippable; verify with `npm run dev` after each.
 
 ### Phase 0 — Module split + extract the shared plot primitive (enabler)
 Do the `components/` + `lib/` split now, as part of this phase.
-- [ ] Stand up `src/lib/` and `src/components/`. Keep named-hook React imports and
+- [x] Stand up `src/lib/` and `src/components/`. Keep named-hook React imports and
       shared style consts; export the style consts (`iSm`, `btnX`, `Sel`, …) from a
       shared module so import order can't reintroduce the "const not hoisted" bug.
-- [ ] Move pure helpers to `src/lib/`: `parseCSV`, `isNumericColumn`/`colKind`,
+      → `src/lib/styles.js`.
+- [x] Move pure helpers to `src/lib/`: `parseCSV`, `isNumericColumn`/`colKind`,
       `quantile`, `numericSummary`, `lsFit`, `computeStat`/`statLabel`, and the shared
       draw helpers `makeDrawState`/`drawStacks`/`drawMixer`/`sampleSpinner`.
-- [ ] Move components to `src/components/` (`EDAPlot`, `CatCatGrid`, `SplitDotPlots`,
+      → `lib/util.js`, `lib/stats.js`, `lib/sampling.js`, `lib/hooks.js`.
+- [x] Move components to `src/components/` (`EDAPlot`, `CatCatGrid`, `SplitDotPlots`,
       `DotPlot`, `StatDistPlot`, `DeviceCard` + device cards, `DataTable`, …).
+      → `components/ui.jsx`, `components/devices.jsx`, `components/plots.jsx`.
 - [ ] Extract the EDA plot's scale builder (`makeScale`) and dot-stacking
       (tallest-column → `dotSpacing`) into `src/lib/` so all plots share them.
 - [ ] Factor a `Plot` component that takes `{ rows, headers, xVar, yVar, overlays,
       width, onTrackStat? }` so EDA, Sample Results, and the distribution plot can all
       mount it; re-point `EDAPlot` at it.
-- [ ] **Done when:** the app builds from the split modules and the EDA window
-      looks/behaves identically through the shared component.
+- [x] **Module split done:** production build passes; app mounts with no console
+      errors; Draw Sample, the EDA numeric plot, and stat overlays all render. The
+      `makeScale`/dot-stacking extraction + unified `Plot` component remain (above).
 
 ### Phase 1 — Sample Results layout flip
 - [ ] Swap the flex order: table left, plot right.
