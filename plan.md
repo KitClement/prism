@@ -432,6 +432,48 @@ The ruler's residual case also fills the num × num gap the divider deliberately
 - [ ] Final pass: verify every device (Stacks w/ & w/o replacement, Mixer, Spinner)
       feeds both accumulation paths correctly.
 
+## Known issues / next focus
+
+### Numeric-vs-categorical detection for sampler variables (BUG + design change)
+**Status:** open, to be tackled in a fresh chat. Surfaced while verifying the Phase 6
+divider; **not** caused by it.
+
+**Symptom.** A column that is *mostly* numeric but has some non-numeric values renders
+dots at NaN positions in the shared `Plot` — React warns `Received NaN for the `cx`
+attribute` and the offending dots are invisible. Repro: a Mixer whose `📋 paste` **appends**
+numeric balls to its default `a` ball (see `MixerCard`'s `onApply` in
+`src/components/devices.jsx` ~line 610), then plot that variable; or an EDA CSV with a
+stray text cell in a numeric column.
+
+**Root cause.** `colKind` in `src/lib/util.js` classifies a column **numeric when ≥80% of
+values parse as numbers** (`numCount / vals.length >= 0.8`). When numeric, `Plot`
+(`src/components/plots.jsx`, MODE 4 / scatter) maps every dot via `xS.scale(r[xVar])`,
+but the `valid` filter only drops **empty** xVar cells, not non-numeric ones — so the up
+to 20% non-numeric values become `toNum(...) → NaN → scale → NaN → <circle cx={NaN}>`.
+
+**Two layers to fix:**
+1. *Immediate (tracked separately, low-risk):* when building dot positions for a numeric
+   axis, also skip rows whose value isn't a finite number via `toNum` (so a stray
+   non-numeric cell is omitted, not drawn at NaN). Applies to `Plot` MODE 4 and the
+   `SplitDotPlots` numeric filtering.
+2. *Design change (the real ask):* a sampler variable should be **classified num/cat from
+   the sampler's possible outcomes up front**, before any sample is plotted — not
+   re-inferred per sample. Otherwise a first all-numeric sample sets up numeric plots +
+   tracked stats, and a later draw of a rare non-numeric outcome silently breaks them.
+   - Preferred direction: derive each device's variable kind from its **declared
+     outcomes** (Stacks `items[].label`, Mixer `balls[].label`, Spinner `slices[].label`)
+     — e.g. a device's var is categorical if *any* declared outcome is non-numeric — and
+     thread that kind through Sample Results / Collect plots instead of calling `colKind`
+     on the drawn rows. The relevant constructors live in `src/lib/sampling.js`
+     (`mkStacks`/`mkMixer`/`mkSpinner`); plots currently call `colKind(rows, col)`.
+   - **EDA is exempt:** its data is a static user upload with no "future draws," so
+     inferring kind from the rows there is fine — keep `colKind` for EDA, switch only the
+     sampler-fed plots to outcome-based kinds.
+   - Open questions for the new chat: where the kind is computed/stored (per-device on the
+     pipeline? a `varKinds` map in `App`?); how a `Plot` consumer receives an authoritative
+     kind vs. inferring it; whether a divider/stat already tracked on a now-categorical var
+     should be dropped (reuse the Phase 3 invalidation guards).
+
 ## Resolved decisions
 
 1. **Conditional filters & bivariate stats — keep, authored by plotting two
