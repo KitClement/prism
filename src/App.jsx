@@ -231,6 +231,17 @@ export default function App() {
     () => Object.fromEntries(pipeline.map(d => [d.id, deviceVarKind(d)])),
     [pipeline]
   );
+  // A2 guard: a device name is invalid if it is blank/whitespace-only or exactly matches
+  // another device's name. Invalid names flag red and block "Draw Sample". (Id-keying
+  // already keeps same-named columns distinct; this is the user-facing warning so a
+  // malformed, ambiguous sample isn't drawn in the first place.)
+  const invalidNameIds = useMemo(() => {
+    const trimmed = pipeline.map(d => (d.varName || "").trim());
+    const counts = {};
+    trimmed.forEach(n => { if (n) counts[n] = (counts[n] || 0) + 1; });
+    return new Set(pipeline.filter((d, i) => trimmed[i] === "" || counts[trimmed[i]] > 1).map(d => d.id));
+  }, [pipeline]);
+  const hasNameError = invalidNameIds.size > 0;
   // Label any tracked column (plain stat → statLabel; derived → its expression
   // rendered with operands resolved). Built fresh each render so renames flow through.
   const statsById = Object.fromEntries(trackedStats.map(s => [s.id, s]));
@@ -331,6 +342,7 @@ export default function App() {
 
   const doSample = useCallback(async () => {
     if (sampling) { cancelRef.current = true; return; }
+    if (hasNameError) return; // duplicate/blank device names — refuse to draw an ambiguous sample
     cancelRef.current = false;
     setSampling(true);
     setSampleData([]);
@@ -355,7 +367,7 @@ export default function App() {
       },
       cancelRef,
     });
-  }, [pipeline, sampleSize, animSpeed, sampling, trackedStats]);
+  }, [pipeline, sampleSize, animSpeed, sampling, trackedStats, hasNameError]);
 
   // Batch accumulation for the tracked-stat table: draw `batchSize` samples and
   // append one row per sample (each tracked stat computed on that sample). Same
@@ -415,11 +427,23 @@ export default function App() {
               onChange={e => changeSampleSize(e.target.value)}
               style={{ ...iSm, width:60, marginLeft:4 }} />
           </label>
-          <button onClick={doSample} style={{ padding:"8px 18px", background:sampling ? "#ef4444" : "#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:"pointer", minWidth:120 }}>
+          <button onClick={doSample} disabled={hasNameError && !sampling}
+            title={hasNameError && !sampling ? "Rename — device names must be unique and non-blank" : undefined}
+            style={{ padding:"8px 18px", background:sampling ? "#ef4444" : (hasNameError ? "#c7c9d1" : "#6366f1"), color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:(hasNameError && !sampling) ? "not-allowed" : "pointer", minWidth:120 }}>
             {sampling ? "⏹ Stop" : "▶ Draw Sample"}
           </button>
+          {hasNameError && !sampling && (
+            <span style={{ fontSize:11, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
+              Rename — device names must be unique and non-blank
+            </span>
+          )}
           {sampleData.length > 0 && !sampling && (
-            <button onClick={() => exportCSV(sampleData, "sample.csv")} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
+            <button onClick={() => {
+              // Draw rows are keyed by device id; resolve each to its display name so the
+              // exported CSV header stays human-readable.
+              const rows = sampleData.map(r => { const o = { _sample: r._sample }; varIds.forEach(id => { o[nameOf(id)] = r[id]; }); return o; });
+              exportCSV(rows, "sample.csv");
+            }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
           )}
         </div>
       </div>
@@ -482,7 +506,7 @@ export default function App() {
             <div key={dev.id} style={{ display:"contents" }}>
               <DeviceCard device={dev} index={i} total={pipeline.length}
                 onChange={d => updDevice(i, d)} onRemove={() => remDevice(i)} onMove={movDevice}
-                animState={animStates[dev.id] || null} locked={sampling} />
+                animState={animStates[dev.id] || null} locked={sampling} nameError={invalidNameIds.has(dev.id)} />
               {i < pipeline.length - 1 && <div style={{ alignSelf:"center", color:"#ccc", fontSize:20, flexShrink:0 }}>→</div>}
             </div>
           ))}

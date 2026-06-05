@@ -620,7 +620,7 @@ function MixerDevice({ device, onChange, animState }) {
 // ══════════════════════════════════════════════════════════════════════════════
 const DTYPE = { spinner:{ icon:"🎰", label:"Spinner" }, stacks:{ icon:"📊", label:"Stacks" }, mixer:{ icon:"🎱", label:"Mixer" } };
 
-function DeviceCard({ device, index, total, onChange, onRemove, onMove, animState, locked }) {
+function DeviceCard({ device, index, total, onChange, onRemove, onMove, animState, locked, nameError }) {
   const { icon, label } = DTYPE[device.type] || { icon:"?", label:"?" };
 
   // For spinners, the badge only shows after the arrow finishes spinning.
@@ -663,8 +663,11 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
         <span style={{ fontSize:10, color:"#bbb" }}>var:</span>
         <input value={device.varName} disabled={locked}
+          title={nameError ? "Device names must be unique and non-blank" : undefined}
           onChange={e => onChange({ ...device, varName:e.target.value.replace(/\s/g, "_") })}
-          style={{ ...iSm, flex:1, fontFamily:"monospace", fontSize:11 }} />
+          style={{ ...iSm, flex:1, fontFamily:"monospace", fontSize:11,
+            borderColor: nameError ? "#ef4444" : undefined,
+            boxShadow: nameError ? "0 0 0 1px #ef4444" : undefined }} />
       </div>
       {/* Result badge */}
       <div style={{ minHeight:26, display:"flex", alignItems:"center", justifyContent:"center" }}>
