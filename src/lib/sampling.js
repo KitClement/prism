@@ -1,4 +1,28 @@
-import { uid, sleep } from "./util";
+import { uid, sleep, parseTimeToMinutes } from "./util";
+
+// Classify a sampler variable num/cat from its device's DECLARED outcomes (not from
+// drawn rows). A device's var is **numeric only if every declared outcome parses as a
+// number or time** — any non-numeric label makes it categorical, because a rare outcome
+// is still a possible draw (a stricter rule than colKind's 80%, which would let a rare
+// non-numeric outcome silently break a plot set up as numeric). Mirrors colKind's shape
+// and time flag so plots can consume either interchangeably.
+function deviceVarKind(dev) {
+  const labels =
+    dev.type === "stacks"  ? dev.items.map(it => it.label)
+    : dev.type === "mixer"   ? dev.balls.map(b => b.label)
+    : dev.type === "spinner" ? dev.slices.map(s => s.label)
+    : [];
+  const vals = labels.filter(v => v !== undefined && v !== null && String(v).trim() !== "");
+  if (!vals.length) return { numeric: false, time: false };
+  let plainNum = 0, timeCount = 0, nonNum = 0;
+  vals.forEach(v => {
+    if (!isNaN(Number(v))) plainNum++;
+    else if (parseTimeToMinutes(v) !== null) timeCount++;
+    else nonNum++;
+  });
+  const numeric = nonNum === 0;
+  return { numeric, time: numeric && timeCount > plainNum };
+}
 
 // ─── Sampling helpers ─────────────────────────────────────────────────────────
 function sampleSpinner(slices) {
@@ -217,4 +241,4 @@ async function runAnimatedSample({ pipeline, sampleSize, speed, setAnimStates, o
   onDone();
 }
 
-export { sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, mkSpinner, mkStacks, mkMixer, runAnimatedSample };
+export { sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, deviceVarKind, mkSpinner, mkStacks, mkMixer, runAnimatedSample };

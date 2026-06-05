@@ -435,8 +435,17 @@ The ruler's residual case also fills the num × num gap the divider deliberately
 ## Known issues / next focus
 
 ### Numeric-vs-categorical detection for sampler variables (BUG + design change)
-**Status:** open, to be tackled in a fresh chat. Surfaced while verifying the Phase 6
+**Status:** ✅ RESOLVED (both layers shipped). Surfaced while verifying the Phase 6
 divider; **not** caused by it.
+- **Layer 1** — `Plot` MODE 4 drops non-finite cells on a numeric axis (no more `cx={NaN}`).
+- **Layer 2** — sampler vars are classified from declared outcomes via `deviceVarKind`
+  (`src/lib/sampling.js`), threaded `App → SampleResults → Plot` as `varKinds` (EDA still
+  uses `colKind`). A device edit that flips a var numeric→categorical drops orphaned
+  numeric-only tracked stats (`NUMERIC_FNS` in `src/lib/stats.js`, `statKindInvalid` +
+  `updDevice` guard in `App.jsx`) with a confirm. Verified end-to-end in the dev preview:
+  `deviceVarKind` unit cases, numeric outcomes → numeric plot, adding one non-numeric
+  outcome flips the plot to categorical even on an all-numeric sample, and a tracked
+  `mean` is warned-and-dropped on the flip.
 
 **Symptom.** A column that is *mostly* numeric but has some non-numeric values renders
 dots at NaN positions in the shared `Plot` — React warns `Received NaN for the `cx`
@@ -452,11 +461,12 @@ but the `valid` filter only drops **empty** xVar cells, not non-numeric ones —
 to 20% non-numeric values become `toNum(...) → NaN → scale → NaN → <circle cx={NaN}>`.
 
 **Two layers to fix:**
-1. *Immediate (tracked separately, low-risk):* when building dot positions for a numeric
-   axis, also skip rows whose value isn't a finite number via `toNum` (so a stray
-   non-numeric cell is omitted, not drawn at NaN). Applies to `Plot` MODE 4 and the
-   `SplitDotPlots` numeric filtering.
-2. *Design change (the real ask):* a sampler variable should be **classified num/cat from
+1. ✅ *Immediate (low-risk) — DONE.* `Plot` MODE 4's `valid` filter now drops cells that
+   aren't finite numbers on a numeric axis (`axisOk` helper using `Number.isFinite(toNum(v))`),
+   so a stray non-numeric value is omitted instead of drawn at `cx={NaN}`. Verified: a
+   90%-numeric EDA column renders only its finite dots with no `NaN` warnings.
+   `SplitDotPlots` already filtered `NaN` (`.filter(v => !isNaN(v))`), so it needed no change.
+2. ✅ *Design change (the real ask) — DONE (built per the proposal below):* a sampler variable should be **classified num/cat from
    the sampler's possible outcomes up front**, before any sample is plotted — not
    re-inferred per sample. Otherwise a first all-numeric sample sets up numeric plots +
    tracked stats, and a later draw of a rare non-numeric outcome silently breaks them.
@@ -469,10 +479,38 @@ to 20% non-numeric values become `toNum(...) → NaN → scale → NaN → <circ
    - **EDA is exempt:** its data is a static user upload with no "future draws," so
      inferring kind from the rows there is fine — keep `colKind` for EDA, switch only the
      sampler-fed plots to outcome-based kinds.
-   - Open questions for the new chat: where the kind is computed/stored (per-device on the
-     pipeline? a `varKinds` map in `App`?); how a `Plot` consumer receives an authoritative
-     kind vs. inferring it; whether a divider/stat already tracked on a now-categorical var
-     should be dropped (reuse the Phase 3 invalidation guards).
+
+   **Proposed design (resolved, ready to build):**
+   - **Where kind lives.** Don't add stored state — `pipeline` already *is* the source of
+     truth for declared outcomes. Derive it: a new pure helper `deviceVarKind(dev)` in
+     `src/lib/sampling.js` returns `{ numeric, time }` from the device's declared labels
+     (`items[].label` / `balls[].label` / `slices[].label`). Rule per the plan: **numeric
+     iff *every* non-empty declared outcome parses via `toNum`** (any non-numeric label ⇒
+     categorical — a stricter threshold than `colKind`'s 80%, because a rare outcome is
+     still a possible draw). `time` iff numeric AND the parsed values come mostly from
+     `parseTimeToMinutes` (mirror `colKind`'s time flag).
+   - **How `App` exposes it.** Add a memo `varKinds = useMemo(() => Object.fromEntries(
+     pipeline.map(d => [d.varName, deviceVarKind(d)])), [pipeline])` and pass it to
+     `SampleResults` → `Plot` as an optional `varKinds` prop (header → `{numeric,time}`).
+   - **How `Plot` consumes it.** In the `colInfo` memo (`plots.jsx` ~208), use the override
+     when present, else fall back to `colKind(rows, h)`:
+     `map[h] = (varKinds && varKinds[h]) || colKind(rows, h)`. EDA passes **no** `varKinds`,
+     so its behavior is byte-identical. This is the *only* classification site for the
+     sampler plots, so threading one prop flips all four modes + the divider gate at once.
+   - **Collect Statistics (`DistributionPlot`) stays on `colKind`.** Its "variables" are
+     tracked-statistic columns holding genuine numbers (a mean, a proportion), not device
+     vars, so outcome-based kind doesn't apply — univariate-numeric by construction, as now.
+   - **Invalidation.** Editing a device's outcomes is already a *device change*, which per
+     Resolved decision #2 warns and deletes the table's tracked statistics — so a stat
+     tracked on a var that just turned categorical is dropped by the existing Phase 3 guard.
+     **To confirm when building:** that an outcome-*label* edit (not just add/remove device)
+     routes through that same invalidation path; if not, extend the guard to fire on it.
+   - **Test cases:** (a) Mixer `📋 paste` that appends numeric balls to the default `a`
+     ball ⇒ var stays categorical (the repro from the symptom); (b) all-numeric Stacks ⇒
+     numeric plots + divider available; (c) a Spinner with one text slice ⇒ categorical even
+     if the *first sample* happens to omit that slice (the silent-break case Layer 1 only
+     masks). Layer 1 keeps any residual NaN from rendering; Layer 2 makes the plot type
+     itself correct from the start.
 
 ## Resolved decisions
 

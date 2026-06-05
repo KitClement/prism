@@ -177,7 +177,7 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, trackedLabels }) {
+function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, trackedLabels, varKinds }) {
   const [dotSize, setDotSize] = useState(5);
 
   // Stat overlay toggles
@@ -204,12 +204,15 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const measuredW = useContainerWidth(plotRef, 280, 760);
   const plotW = width || measuredW;
 
-  // Detect each column's type once per (rows, headers). colInfo[col] = {numeric,time}.
+  // Each column's type as colInfo[col] = {numeric,time}. Sampler plots pass an
+  // authoritative `varKinds` (derived from device outcomes) so a column's kind is fixed
+  // up front and can't flip when a rare non-numeric draw appears; EDA passes none and
+  // falls back to inferring from the rows via colKind (its data is a static upload).
   const colInfo = useMemo(() => {
     const map = {};
-    headers.forEach(h => { map[h] = colKind(rows, h); });
+    headers.forEach(h => { map[h] = (varKinds && varKinds[h]) || colKind(rows, h); });
     return map;
-  }, [rows, headers]);
+  }, [rows, headers, varKinds]);
 
   // Keep X/Y valid as the available columns change (callbacks into the parent's state)
   useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
@@ -236,10 +239,16 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const yS = bivariate ? buildScale(yVar, iH, yNumeric, yTime) : null;
 
   // ── Compute dot positions ──
+  // On a numeric axis, also drop cells that don't parse to a finite number — a
+  // column classified numeric by colKind may still hold up to ~20% non-numeric
+  // values, and feeding those to a numeric scale yields NaN pixel positions
+  // (invisible dots + "Received NaN for the `cx` attribute" warnings). Categorical
+  // axes only need the empty check.
+  const axisOk = (v, numeric) =>
+    v !== undefined && v !== "" && (!numeric || Number.isFinite(toNum(v)));
   const valid = rows.filter(r => {
-    const xv = r[xVar];
-    if (xv === undefined || xv === "") return false;
-    if (bivariate && (r[yVar] === undefined || r[yVar] === "")) return false;
+    if (!axisOk(r[xVar], xNumeric)) return false;
+    if (bivariate && !axisOk(r[yVar], yNumeric)) return false;
     return true;
   });
   const xps = valid.map(r => xS.scale(r[xVar]));
@@ -742,7 +751,7 @@ function EDAPlot({ rows, headers }) {
 // raw draws of a sampler run. The table is chronological: newest rows append at
 // the BOTTOM and the scroll view auto-follows as draws stream in.
 // ══════════════════════════════════════════════════════════════════════════════
-function SampleResults({ sampleData, varNames, onTrackStat, trackedStats }) {
+function SampleResults({ sampleData, varNames, varKinds, onTrackStat, trackedStats }) {
   const [xVar, setXVar] = useState(varNames[0] || "");
   const [yVar, setYVar] = useState("none");
   const scrollRef = useRef(null);
@@ -795,7 +804,7 @@ function SampleResults({ sampleData, varNames, onTrackStat, trackedStats }) {
       </div>
       {/* RIGHT: shared interactive plot */}
       <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        onTrackStat={onTrackStat} trackedLabels={trackedLabels} />
+        varKinds={varKinds} onTrackStat={onTrackStat} trackedLabels={trackedLabels} />
     </div>
   );
 }

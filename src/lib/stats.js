@@ -107,4 +107,9 @@ function statLabel(s) {
 
 const FN_OPTS = [{ v:"mean", l:"Mean" }, { v:"sd", l:"SD" }, { v:"median", l:"Median" }, { v:"proportion", l:"Proportion" }, { v:"countVal", l:"Count of value" }, { v:"count", l:"Count (n)" }, { v:"min", l:"Min" }, { v:"max", l:"Max" }, { v:"q1", l:"Q1" }, { v:"q3", l:"Q3" }, { v:"slope", l:"LS Slope" }, { v:"intercept", l:"LS Intercept" }];
 
-export { quantile, numericSummary, lsFit, computeStat, statLabel, FN_OPTS };
+// Stat functions that are only meaningful on a numeric variable (so they must be
+// dropped if their variable becomes categorical). count / countVal / proportion tally a
+// value and work on any kind, so they are excluded.
+const NUMERIC_FNS = new Set(["mean", "sd", "median", "min", "max", "q1", "q3", "slope", "intercept", "countBetween", "propBetween"]);
+
+export { quantile, numericSummary, lsFit, computeStat, statLabel, FN_OPTS, NUMERIC_FNS };

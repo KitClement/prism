@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { iSm, btnNav, ctrlLbl } from "./lib/styles";
 import { uid, parseCSV } from "./lib/util";
-import { computeStat, statLabel } from "./lib/stats";
+import { computeStat, statLabel, NUMERIC_FNS } from "./lib/stats";
 import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
-import { drawSample, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
+import { drawSample, deviceVarKind, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
 import { CopyColumnButton } from "./components/ui";
 import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
@@ -106,6 +106,14 @@ export default function App() {
     ((!s.variable || names.includes(s.variable)) &&
      (!s.variable2 || names.includes(s.variable2)) &&
      (!s.condVar || names.includes(s.condVar)));
+  // A numeric-only stat (mean/SD/…) is invalidated when a variable it averages over is
+  // no longer numeric — e.g. relabeling or adding an outcome turns the device's variable
+  // categorical. `kinds` is varName → {numeric,time} for the post-edit pipeline. Derived
+  // columns and value-tallying stats (count/countVal/proportion) are kind-agnostic.
+  const statKindInvalid = (s, kinds) => {
+    if (s.kind === "derived" || !NUMERIC_FNS.has(s.fn)) return false;
+    return [s.variable, s.variable2].some(v => v && kinds[v] && !kinds[v].numeric);
+  };
   // Remove the given stat ids and cascade to any derived column whose operands
   // (`inputs`) reference a removed id — settling chains of derived-on-derived.
   const dropDependents = (stats, removeIds) => {
@@ -176,6 +184,13 @@ export default function App() {
   const addManualStat = () => { if (manualStat.variable) addTrackedStat(manualStat); };
 
   const varNames = pipeline.map(d => d.varName);
+  // Authoritative num/cat kind for each sampler variable, derived from the device's
+  // DECLARED outcomes (not the drawn rows), so a plot's type can't silently flip when a
+  // rare non-numeric outcome first appears. Sampler plots use this; EDA keeps colKind.
+  const varKinds = useMemo(
+    () => Object.fromEntries(pipeline.map(d => [d.varName, deviceVarKind(d)])),
+    [pipeline]
+  );
   // Label any tracked column (plain stat → statLabel; derived → its expression
   // rendered with operands resolved). Built fresh each render so renames flow through.
   const statsById = Object.fromEntries(trackedStats.map(s => [s.id, s]));
@@ -208,17 +223,34 @@ export default function App() {
     const old = pipeline[i];
     const structural = samplingShape(old) !== samplingShape(d);
     const dependent = trackedStats.some(s => statDependsOn(s, old.varName));
+    const newNames = pipeline.map((dev, j) => j === i ? d.varName : dev.varName);
+    // Outcome edits can flip a variable's kind (numeric ↔ categorical) — even a pure
+    // relabel ("5" → "x") that samplingShape ignores. Apply rename propagation first,
+    // then find numeric-only stats (mean/SD/…) orphaned because their variable is no
+    // longer numeric, so they're dropped rather than silently computing over text.
+    const renamed = propagateRenames(trackedStats, old, d);
+    const newKinds = Object.fromEntries(pipeline.map((dev, j) => { const nd = j === i ? d : dev; return [nd.varName, deviceVarKind(nd)]; }));
+    const orphanIds = renamed.filter(s => statKindInvalid(s, newKinds)).map(s => s.id);
     // Distribution-structure guard: only a change to *what gets drawn* (counts,
-    // probabilities, with/without replacement, adding/removing outcomes) invalidates
-    // collected results. Pure renames skip this entirely (structural === false).
-    if (structural && dependent && collectRows.length) {
-      if (!window.confirm("Editing this sampler deletes the statistics already collected in the table. (The tracked columns are kept.) Continue?")) { rejectEdit(); return; }
-      const newNames = pipeline.map((dev, j) => j === i ? d.varName : dev.varName);
-      setTrackedStats(ts => dropInvalid(propagateRenames(ts, old, d), newNames));
-      clearCollected();
+    // probabilities, with/without replacement, adding/removing outcomes) clears collected
+    // results. A kind flip additionally removes the now-meaningless numeric column(s).
+    const clearsCollected = structural && dependent && collectRows.length > 0;
+    const dropsColumns = orphanIds.length > 0;
+    if (clearsCollected || dropsColumns) {
+      const n = orphanIds.length;
+      const msg = dropsColumns
+        ? "This edit makes the variable categorical, so " + n + " tracked statistic column" +
+          (n > 1 ? "s that need" : " that needs") + " a numeric variable (e.g. mean/SD) will be removed" +
+          (clearsCollected ? ", and the statistics already collected will be cleared." : ".") + " Continue?"
+        : "Editing this sampler deletes the statistics already collected in the table. (The tracked columns are kept.) Continue?";
+      if (!window.confirm(msg)) { rejectEdit(); return; }
+      let next = dropInvalid(renamed, newNames);
+      if (dropsColumns) next = dropDependents(next, orphanIds);
+      setTrackedStats(next);
+      if (clearsCollected) clearCollected();
     } else {
       // Seamless: propagate any device/outcome renames into tracked specs, keep results.
-      setTrackedStats(ts => propagateRenames(ts, old, d));
+      setTrackedStats(renamed);
     }
     setPipeline(p => { const a = [...p]; a[i] = d; return a; });
   };
@@ -413,7 +445,7 @@ export default function App() {
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
         </div>
-        <SampleResults sampleData={sampleData} varNames={varNames} onTrackStat={trackStat} trackedStats={trackedStats} />
+        <SampleResults sampleData={sampleData} varNames={varNames} varKinds={varKinds} onTrackStat={trackStat} trackedStats={trackedStats} />
       </div>
 
       {/* Collect Statistics */}
