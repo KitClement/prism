@@ -77,12 +77,30 @@ function computeStat(stat, rows) {
       if (!fit) return NaN;
       return stat.fn === "slope" ? fit.slope : fit.intercept;
     }
+    case "countBetween": case "propBetween": {
+      // Values within a numeric region [lo, hi] with per-side open/closed bounds
+      // (a null bound is unbounded). Authored by the divider tool from a cut value.
+      const inR = x => (stat.lo == null || (stat.loOpen ? x > stat.lo : x >= stat.lo)) &&
+                       (stat.hi == null || (stat.hiOpen ? x < stat.hi : x <= stat.hi));
+      const cnt = nums.filter(inR).length;
+      return stat.fn === "countBetween" ? cnt : (nums.length ? cnt / nums.length : NaN);
+    }
     default: return NaN;
   }
 }
 
+// Human-readable description of a numeric region, e.g. "score < 5", "5 ≤ score ≤ 10".
+function regionDesc(s, v) {
+  const r = n => parseFloat(Number(n).toFixed(4));
+  if (s.lo == null) return v + " " + (s.hiOpen ? "<" : "≤") + " " + r(s.hi);
+  if (s.hi == null) return v + " " + (s.loOpen ? ">" : "≥") + " " + r(s.lo);
+  return r(s.lo) + " " + (s.loOpen ? "<" : "≤") + " " + v + " " + (s.hiOpen ? "<" : "≤") + " " + r(s.hi);
+}
+
 function statLabel(s) {
   const c = s.condVar ? " | " + s.condVar + "=\"" + s.condVal + "\"" : "", v = s.variable || "?";
+  if (s.fn === "countBetween" || s.fn === "propBetween")
+    return (s.fn === "countBetween" ? "count(" : "prop(") + regionDesc(s, v) + c + ")";
   const mp = { count:"count(" + v + c + ")", countVal:"count(" + v + "=\"" + s.target + "\"" + c + ")", proportion:"prop(" + v + "=\"" + s.target + "\"" + c + ")", mean:"mean(" + v + c + ")", sd:"SD(" + v + c + ")", median:"median(" + v + c + ")", min:"min(" + v + c + ")", max:"max(" + v + c + ")", q1:"Q1(" + v + c + ")", q3:"Q3(" + v + c + ")", slope:"slope(" + v + "~" + (s.variable2 || "?") + c + ")", intercept:"intercept(" + v + "~" + (s.variable2 || "?") + c + ")" };
   return mp[s.fn] || s.fn;
 }

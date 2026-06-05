@@ -339,25 +339,61 @@ foundation** in the shared `Plot`. Stays **after Phase 5**: a trackable ruler
 "＋ track" affordance reuses the Phase 5 model + evaluator rather than a second mechanism.
 The ruler's residual case also fills the num × num gap the divider deliberately defers.
 
-**6a — Shared measurement-overlay foundation (build once).**
-- [ ] Draggable handle primitive (pointer events, clamp to axis domain) on the shared
-      `Plot`. Reuse the value→pixel scale (`sx` / `xS.scale`) and `makeScale`'s
-      `scale`/`fmt` for handle↔value mapping.
-- [ ] Snap helper: snap a handle to the nearest of — constants (free), data dots
-      (`dots[]`), and visible measures (`xSummary.mean/median/q1/q3/sd`, per-group means
-      in `SplitDotPlots`, the `lsFit` line for residuals). No stats-engine changes.
-- [ ] Numeric input bound to each handle (typed value ⇄ handle position stay in sync).
-- [ ] Read-out box component.
-- [ ] Availability gate: numeric axis present ⇒ tool offered (univariate numeric,
-      num × cat side-by-side); hidden on cat × cat grid and uni-cat. num × num is allowed
-      for the **ruler** (residual) even though the divider stays off there.
+**6a — Shared measurement-overlay foundation (build once).** ✅ (divider scope)
+- [x] Draggable handle primitive (pointer events + capture, clamp to axis domain) on the
+      shared `Plot`. → `DividerLines` in `components/plots.jsx`, mounted inside each host's
+      `<svg>`; the host supplies the value↔pixel pair (`sx` from `xS.scale` / a linear
+      `inv`). clientX→svg-attribute px corrected by `W / rect.width` for the
+      `maxWidth:100%` down-scaling. → `lib/measure.js#clampVal`.
+- [x] Snap helper: snaps to data dots + currently-visible measures (mean when △ on;
+      median/Q1/Q3 when 📦 on; per-group means in `SplitDotPlots`), free otherwise,
+      within an ~8 px radius. → `lib/measure.js#snapValue`. No stats-engine changes.
+      (lsFit-line snapping is deferred with the ruler's residual case.)
+- [x] Numeric input bound to each handle (typed value ⇄ handle stay in sync via shared
+      `divCuts`). → `Plot`'s divider control row.
+- [x] Read-out box component. → `MeasureReadout` (region rows + optional per-group table).
+- [x] Availability gate: continuous numeric **X** axis ⇒ tool offered (univariate numeric;
+      num × cat with numeric on X). Hidden on cat × cat, uni-cat, num × num **scatter**
+      (deferred), and num × cat with numeric on **Y** (vertical, one-geometry deferral).
+      → `Plot#dividerAvailable`. num × num for the ruler is part of 6c (next PR).
 
-**6b — Divider tool** (opt-in, gated to numeric axes).
-- [ ] Single-divider overlay: draggable vertical line + numeric input; shade two
-      regions; display P(< v) / P(≥ v).
-- [ ] Range mode toggle: second handle; display P(< lo) / P(lo–hi) / P(> hi).
-- [ ] num × cat case: one shared divider across groups → per-group + overall proportion
-      read-outs. Read-off only (not tracked in this phase).
+**6b — Divider tool** (opt-in, gated to numeric axes). ✅
+- [x] Single-divider overlay: draggable vertical line + numeric input; shades the two
+      regions; displays P(< v) / P(≥ v). → `lib/measure.js#regions`.
+- [x] Range mode toggle: second handle; shades the middle band; displays
+      P(< lo) / P(lo–hi) / P(> hi) (boundaries inclusive in the middle band).
+- [x] num × cat case: one shared divider across all group bands → per-group proportion
+      read-outs, rendered **on each group's band** (not a side box).
+- [x] **On-plot read-outs (UX revision).** The read-out box was dropped: instead the cut
+      **value** sits directly above the handle, and each region's **count / proportion**
+      renders at the top of the plot, centered in that region's span — toggled by divider
+      **# Count / % Proportion** checkboxes (off by default, like the categorical # / %).
+- [x] **Collectable region read-outs (Sample Results).** Each on-plot count / proportion
+      is a click-to-track target there (plain text in EDA / the distribution plot). Added
+      `countBetween` / `propBetween` to `computeStat` + `statLabel` (a numeric region with
+      per-side open/closed bounds, optional `condVar` for num × cat groups), authored by
+      `regionSpec` from a `measure.js` region. They flow through the existing
+      per-run/batch/derived/CSV machinery unchanged; **not** added to `FN_OPTS` (only the
+      divider authors them).
+- [x] **Done:** verified in `npm run dev` against EDA data (no sampling needed): univariate
+      readout P(<8.01)=0.500·60/120 matches an independent recompute; typing 5 → 21/120;
+      range mode three regions (29+63+28=120); num × cat per-group P(<5) = a 0.500 / b 0.025
+      / c 0.000 all match; drag grabs (line thickens), tracks the pointer, snaps to dots,
+      correct direction; gates hide the toggle on cat × cat / uni-cat / scatter and show it
+      on univariate numeric; the **distribution plot** (headline) offers the divider on its
+      stat column; `measure.js` unit-tested 18/18; production build passes; no console
+      errors. Batch "Collect N" couldn't be exercised (background-tab rAF throttling, a
+      harness artifact — path unchanged from Phase 3/4).
+- [x] **On-plot/collectable revision verified** in `npm run dev`: value label sits above
+      the handle (8.01); count/proportion render centered in each region (x = exact region
+      midpoints 156/356) and are off until toggled; range mode shows three centered labels;
+      num × cat shows per-group region labels on each band; `countBetween`/`propBetween`
+      unit-tested 11/11. Sample Results E2E: clicking `prop(stk1 < 5)` adds the column,
+      seeds the current sample (0.4 = the on-plot 40%), marks the number tracked, and a
+      further draw appends a row (0.4, 0.5); production build passes. (The transient
+      `cx=NaN` dot warnings seen during testing were a pre-existing dot-plot issue with a
+      mixed-type column — a Mixer whose paste appended numbers to its default `a` ball —
+      not from the divider, which renders only lines/rects/text.)
 
 **6c — Ruler tool** (opt-in, three mechanics).
 - [ ] **Axis distance** — univariate numeric & num × cat groups: two endpoints, each

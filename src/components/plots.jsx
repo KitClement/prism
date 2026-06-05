@@ -5,6 +5,7 @@ import { numericSummary, lsFit, statLabel, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
+import { clampVal, snapValue, regions } from "../lib/measure";
 import { Sel, ChkLabel } from "./ui";
 
 // ── Click-to-track helpers ─────────────────────────────────────────────────────
@@ -50,6 +51,124 @@ function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat }) {
   );
 }
 
+// ── Measurement overlay (Phase 6) ──────────────────────────────────────────────
+// Shared draggable divider lines, mounted INSIDE a host plot's <svg>. The host owns
+// the value↔pixel mapping (`sx`/`inv`, both linear) and the data domain; this only
+// renders the vertical line(s) + handle(s) + region shading and reports drags back via
+// `onChange`. Pointer events with capture; clientX is mapped to svg-attribute pixels
+// via `W / rect.width` so it stays correct under the plot's `maxWidth:100%` scaling.
+//   cuts: [v] (single) | [lo, hi] (range) — values in data units, in array order.
+function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCandidates, shade, fmt }) {
+  const [dragI, setDragI] = useState(-1);
+  const pxPerUnit = Math.abs(sx(xhi) - sx(xlo)) / (Math.abs(xhi - xlo) || 1);
+  const xL = sx(xlo), xR = sx(xhi);
+
+  // Suppress text selection across the page for the duration of a drag (the cut spans
+  // other text elements — axis labels, read-outs — so a local user-select isn't enough).
+  const setSelecting = on => {
+    const s = document.body.style;
+    s.userSelect = s.webkitUserSelect = on ? "none" : "";
+  };
+  useEffect(() => () => setSelecting(false), []); // restore if unmounted mid-drag
+
+  const onDown = i => e => {
+    e.stopPropagation();
+    e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    setSelecting(true);
+    setDragI(i);
+  };
+  const onMove = e => {
+    if (dragI < 0) return;
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const ratio = W / (rect.width || W);
+    let v = clampVal(inv((e.clientX - rect.left) * ratio), xlo, xhi);
+    v = snapValue(v, snapCandidates, pxPerUnit);
+    const next = cuts.slice(); next[dragI] = v; onChange(next);
+  };
+  const onUp = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {} setSelecting(false); setDragI(-1); };
+
+  // Region shading (behind, translucent so dots show through). Single → split the two
+  // sides; range → highlight the middle band between the two lines.
+  const shades = [];
+  if (shade && cuts.length === 1) {
+    const xv = sx(cuts[0]);
+    shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.07} />);
+    shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.07} />);
+  } else if (shade && cuts.length === 2) {
+    const a = sx(Math.min(cuts[0], cuts[1])), b = sx(Math.max(cuts[0], cuts[1]));
+    shades.push(<rect key="mid" x={a} y={topY} width={Math.max(0, b - a)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+  }
+
+  return (
+    <g>
+      {shades}
+      {cuts.map((v, i) => {
+        const x = sx(v);
+        return (
+          <g key={i} style={{ cursor:"ew-resize", touchAction:"none" }}
+            onPointerDown={onDown(i)} onPointerMove={onMove} onPointerUp={onUp}>
+            {/* wide transparent hit area for easy grabbing */}
+            <line x1={x} y1={topY} x2={x} y2={botY} stroke="transparent" strokeWidth={14} />
+            <line x1={x} y1={topY} x2={x} y2={botY} stroke="#6366f1" strokeWidth={dragI === i ? 2.5 : 1.5} strokeDasharray="4 3" />
+            {/* the cut value, directly above the grab handle */}
+            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmt(v)}</text>}
+            {/* grab handle at the top of the line */}
+            <rect x={x - 5} y={topY - 9} width={10} height={9} rx={2} fill="#6366f1" stroke="#fff" strokeWidth={1} />
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+// Build a countBetween / propBetween stat spec from a measure.js region (so a divider
+// region's on-plot count / proportion can be tracked, like a categorical cell number).
+// Open/closed bounds match `regions`: only "> hi" is strict-lower, only "< v"/"< lo"
+// strict-upper; ±Infinity edges become unbounded (null).
+function regionSpec(r, fn, base) {
+  return {
+    fn,
+    variable: base.variable,
+    condVar: base.condVar || "",
+    condVal: base.condVal || "",
+    lo: r.lo === -Infinity ? null : r.lo,
+    hi: r.hi === Infinity ? null : r.hi,
+    loOpen: r.key === "gt",
+    hiOpen: r.key === "lt",
+  };
+}
+
+// On-plot region read-outs for the divider: a count and/or proportion centered in each
+// region's on-screen span at height `y`. Each number is a click-to-track target in
+// Sample Results (plain text elsewhere), mirroring the categorical plots' # / % numbers.
+function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total, base, trackProps }) {
+  if (!regs || (!showCount && !showPct)) return null;
+  return (
+    <g>
+      {regs.map(r => {
+        const a = Math.max(xL, r.lo === -Infinity ? xL : sx(r.lo));
+        const b = Math.min(xR, r.hi === Infinity ? xR : sx(r.hi));
+        const cx = (a + b) / 2;
+        const pct = total ? Math.round(r.p * 100) : 0;
+        const both = showCount && showPct;
+        // Match the categorical plots' convention: count on the left, percent on the
+        // right in parentheses (each still individually click-to-track).
+        return (
+          <g key={r.key}>
+            {showCount && <TrackText x={both ? cx - 3 : cx} y={y} anchor={both ? "end" : "middle"} color="#475569" fontSize={9}
+              label={String(r.n)} spec={regionSpec(r, "countBetween", base)} {...trackProps} />}
+            {showPct && <TrackText x={both ? cx + 3 : cx} y={y} anchor={both ? "start" : "middle"} color="#475569" fontSize={9}
+              label={"(" + pct + "%)"} spec={regionSpec(r, "propBetween", base)} {...trackProps} />}
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PLOT — the shared, interactive plot primitive (controls + plot body, no table).
 // Used by both EDA and Sample Results. X/Y selection is *controlled* by the parent
@@ -72,6 +191,14 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const [showPct, setShowPct] = useState(false);
   // Collapse high-cardinality categorical axes (>10 categories)
   const [expandCats, setExpandCats] = useState(false);
+  // Divider measurement tool (Phase 6): off by default; opt-in per plot. The on-plot
+  // count / proportion read-outs are themselves off until toggled (like the categorical
+  // # Count / % Percent labels).
+  const [divOn, setDivOn] = useState(false);
+  const [divRange, setDivRange] = useState(false);
+  const [divCuts, setDivCuts] = useState([]);
+  const [divShowCount, setDivShowCount] = useState(false);
+  const [divShowPct, setDivShowPct] = useState(false);
 
   const plotRef = useRef(null);
   const measuredW = useContainerWidth(plotRef, 280, 760);
@@ -168,6 +295,58 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const showVals = showValues || trackable;
   const trackProps = { trackable, trackedLabels, onTrackStat };
 
+  // ── Divider tool (Phase 6) ──
+  // Gated to plots with a continuous numeric X axis: univariate numeric, or num × cat
+  // with the numeric variable on X (horizontal split plot). Off for scatter (deferred),
+  // cat × cat, uni-cat, and numeric-on-Y. The cut values live in data units and are
+  // shared with the child SplitDotPlots so a single line spans all groups.
+  const dividerAvailable = (!bivariate && xNumeric) || (bivariate && xNumeric && !yNumeric);
+  let divDomain = null;
+  if (dividerAvailable && !bivariate) {
+    divDomain = { lo: xS.lo, hi: xS.hi, values: xNums, fmt: fmtX,
+      snap: [...xNums, ...(showMean && xSummary ? [xSummary.mean] : []), ...(showBox && xSummary ? [xSummary.median, xSummary.q1, xSummary.q3] : [])] };
+  } else if (dividerAvailable) {
+    // num × cat horizontal: numeric var is X, category var is Y (mirror SplitDotPlots'
+    // domain + top-10 collapse so the line and per-group read-outs line up exactly).
+    const numVar = xVar, catVar = yVar;
+    const nums = rows.map(r => toNum(r[numVar])).filter(v => !isNaN(v));
+    const mn = Math.min(...nums), mx = Math.max(...nums), range = (mx - mn) || 1, pad = range * 0.05;
+    const catCount = {};
+    rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
+    const allCats = Object.keys(catCount).sort();
+    const cats = collapseCats(allCats, catCount, expandCats).shown;
+    const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
+    const groupOf = v => catSet.has(v) ? v : OTHER_CAT;
+    const groups = cats.map(cat => ({ label: cat,
+      values: rows.map(r => groupOf(r[catVar]) === cat ? toNum(r[numVar]) : NaN).filter(v => !isNaN(v)) }));
+    const gMeans = showMean ? groups.map(g => g.values.reduce((a, b) => a + b, 0) / (g.values.length || 1)) : [];
+    divDomain = { lo: mn - pad, hi: mx + pad, values: nums, fmt: xTime ? minutesToTime : (v => parseFloat(v.toFixed(2))),
+      groups, snap: [...nums, ...gMeans] };
+  }
+  // Effective cut values: user-set `divCuts` when they match the current mode + domain,
+  // else sensible defaults derived from the domain (so the line follows the data until
+  // the student grabs it). Drag/typing then makes `divCuts` authoritative.
+  const showDivider = divOn && !!divDomain;
+  let effCuts = [];
+  if (showDivider) {
+    const { lo, hi } = divDomain, want = divRange ? 2 : 1;
+    const inRange = v => v >= lo && v <= hi;
+    effCuts = (divCuts.length === want && divCuts.every(inRange))
+      ? divCuts
+      : (divRange ? [lo + (hi - lo) / 3, lo + 2 * (hi - lo) / 3] : [(lo + hi) / 2]);
+  }
+  const setCut = (i, raw) => {
+    const v = clampVal(parseFloat(raw), divDomain.lo, divDomain.hi);
+    if (isNaN(v)) return;
+    const next = effCuts.slice(); next[i] = v; setDivCuts(next);
+  };
+  // Overall regions for the univariate on-plot read-out (num × cat read-outs are
+  // computed per-group inside SplitDotPlots).
+  const divRegions = showDivider ? regions(divDomain.values, effCuts) : null;
+  const divProps = { divOn: showDivider, divCuts: effCuts, onDivChange: setDivCuts,
+    divSnap: showDivider ? divDomain.snap : null, divShowCount, divShowPct,
+    divFmt: showDivider ? divDomain.fmt : null };
+
   return (
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
@@ -200,7 +379,23 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
             <ChkLabel checked={showPct} onChange={setShowPct} label="% Percent" />
           </>
         )}
+        {dividerAvailable && <ChkLabel checked={divOn} onChange={setDivOn} label="📏 Divider" />}
       </div>
+
+      {/* Divider controls (Phase 6) — the read-outs themselves live on the plot */}
+      {showDivider && (
+        <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
+          <ChkLabel checked={divRange} onChange={setDivRange} label="↔ Range (band)" />
+          {effCuts.map((v, i) => (
+            <label key={i} style={ctrlLbl}>{divRange ? (i === 0 ? "low" : "high") : "at"}
+              <input type="number" step="any" value={parseFloat(Number(v).toFixed(4))}
+                onChange={e => setCut(i, e.target.value)} style={{ ...iSm, width:72, marginLeft:4 }} />
+            </label>
+          ))}
+          <ChkLabel checked={divShowCount} onChange={setDivShowCount} label="# Count" />
+          <ChkLabel checked={divShowPct} onChange={setDivShowPct} label="% Proportion" />
+        </div>
+      )}
 
       {/* Click-to-track hint */}
       {trackable && (
@@ -227,7 +422,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
           return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
             showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals}
-            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} />;
+            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...divProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
@@ -323,6 +518,18 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
                 {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="#4338ca" fontSize={9}
                   label={fmtX(xSummary.median)} spec={{ fn:"median", variable:xVar }} {...trackProps} />}
               </g>
+            )}
+            {/* Divider tool (univariate numeric) */}
+            {showDivider && (
+              <>
+                <DividerLines W={W} topY={PT} botY={PT + iH} sx={sx}
+                  inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
+                  xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} onChange={setDivCuts}
+                  snapCandidates={divDomain.snap} shade fmt={divDomain.fmt} />
+                <RegionLabels regions={divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}
+                  y={PT + 9} showCount={divShowCount} showPct={divShowPct} total={divDomain.values.length}
+                  base={{ variable: xVar }} trackProps={trackProps} />
+              </>
             )}
           </svg>
         );
@@ -885,7 +1092,7 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat }) {
+function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt }) {
   // Per-group tracking spec: a numeric stat conditioned on this group (null for the
   // "Other" bucket or when the plot isn't trackable).
   const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
@@ -1094,6 +1301,15 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                   </g>
                 );
               })()}
+              {/* Divider region read-outs for this group, at the top of its band. The
+                  count / proportion are conditioned on this group (collectable in Sample
+                  Results); the "Other" bucket has no clean target, so it stays plain. */}
+              {divOn && divCuts && divCuts.length > 0 && (divShowCount || divShowPct) && (
+                <RegionLabels regions={regions(groupNums, divCuts)} sx={sx} xL={PL} xR={W - PR}
+                  y={top + 10} showCount={divShowCount} showPct={divShowPct} total={groupNums.length}
+                  base={{ variable: numVar, condVar: catVar, condVal: String(cat) }}
+                  trackProps={cat === OTHER_CAT ? { ...tp, trackable: false } : tp} />
+              )}
             </g>
           );
         })}
@@ -1107,6 +1323,12 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
           </g>
         ))}
         <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{numVar} (by {catVar})</text>
+        {/* Divider tool (Phase 6) — one shared cut line across every group band */}
+        {divOn && divCuts && divCuts.length > 0 && (
+          <DividerLines W={W} topY={PT} botY={H - PB} sx={sx}
+            inv={px => lo + ((px - PL) / iW) * (hi - lo)}
+            xlo={lo} xhi={hi} cuts={divCuts} onChange={onDivChange} snapCandidates={divSnap} fmt={divFmt} />
+        )}
       </svg>
       {allCats.length > 10 && (
         <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
