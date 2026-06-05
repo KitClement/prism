@@ -602,7 +602,7 @@ function MixerDevice({ device, onChange, animState }) {
           style={{ ...btnPlus, color:"#7c3aed", borderColor:"#c4b5fd", background:"#f5f3ff" }}>… range</button>
         <PasteButton onApply={vals => {
           const cm = {}; [...new Set(vals)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; });
-          onChange({ ...device, balls:[...device.balls, ...vals.map(label => ({ id:uid(), label, color:cm[label] }))] });
+          onChange({ ...device, balls:vals.map(label => ({ id:uid(), label, color:cm[label] })) });
         }} />
       </div>
       {rangeOpen && (

@@ -21,10 +21,6 @@ export default function App() {
   const [animStates, setAnimStates] = useState({});
   const cancelRef = useRef(false);
 
-  // Per-type counter for default device names (spin1, mix2, …). Kept in a ref
-  // so it persists across renders but resets cleanly if the app remounts.
-  const devCounts = useRef({});
-
   // Tracked-statistic data model (Phase 2): columns authored by selecting overlays
   // in Sample Results; `collectRows` is the accumulator (one row per collected
   // sample, keyed by stat id) that later phases will fill.
@@ -247,9 +243,18 @@ export default function App() {
     .map(s => ({ id:s.id, label:statLabel(s), value: currentSample ? computeStat(s, currentSample.rows) : NaN }));
 
   const addDevice = type => {
-    devCounts.current[type] = (devCounts.current[type] || 0) + 1;
     const m = { spinner:mkSpinner, stacks:mkStacks, mixer:mkMixer };
-    setPipeline(p => [...p, m[type](devCounts.current[type])]);
+    const prefix = { spinner:"spin", stacks:"stk", mixer:"mix" }[type];
+    setPipeline(p => {
+      // Derive the next number by scanning the current pipeline for this type's
+      // prefix and taking max+1. Robust to the seed device and to remove/re-add.
+      const re = new RegExp(`^${prefix}(\\d+)$`);
+      const max = p.reduce((mx, d) => {
+        const mt = re.exec(d.varName);
+        return mt ? Math.max(mx, +mt[1]) : mx;
+      }, 0);
+      return [...p, m[type](max + 1)];
+    });
   };
 
   const handleCSVFile = file => {
