@@ -396,24 +396,77 @@ The ruler's residual case also fills the num × num gap the divider deliberately
       not from the divider, which renders only lines/rects/text.)
 
 **6c — Ruler tool** (opt-in, three mechanics).
-- [ ] **Axis distance** — univariate numeric & num × cat groups: two endpoints, each
+- [x] **Axis distance** — univariate numeric & num × cat groups: two endpoints, each
       snappable to a constant / dot / measure; read-out shows the signed distance.
       Difference-in-group-means is the headline num × cat case (endpoints snap to each
-      group mean).
-- [ ] **Residual to LS line** — num × num scatter: one endpoint snaps to a data point,
-      the other to its vertical foot on the `ls` line; read-out shows `y − ŷ`.
-- [ ] **Difference of two measures** — cat × cat percentages (and any two clicked scalar
+      group mean). → shared `RulerOverlay` in `components/plots.jsx` (mounted in both the
+      univariate `<svg>` and `SplitDotPlots`, horizontal), reusing the divider's gating +
+      geometry (`divDomain`). Endpoints carry `{ value, spec, label }`; `lib/measure.js#
+      snapMeasure` snaps to data dots (constants) or visible measures (mean/median/Q1/Q3,
+      per-group means), returning the operand spec so a two-measure read-out is trackable.
+      Typed A/B inputs stay in sync with the drag.
+      - **Live anchoring (refinement).** A measure-anchored endpoint recomputes its value
+        from the *current* data every render (`computeStat(spec, rows)`), so a new single
+        sample moves it (it no longer freezes at the old mean). Measures are always
+        snappable when the ruler is on (not gated on the overlay toggles); an **anchor
+        ring** is drawn over the exact target (mean triangle / box quartile / data dot —
+        each candidate carries a marker `y`) and the control row shows a `◎ measure` chip,
+        so it's always clear what each endpoint is tied to. **Cursor-y disambiguation:**
+        when several candidates share an x (e.g. a data value, the mean, and the median all
+        at 3), `snapMeasure` picks the one nearest the pointer in 2-D, so moving the cursor
+        up/down chooses among them (`RulerOverlay.onMove` passes the svg-space cursor y).
+        Verified in `npm run dev`: num × cat both endpoints → `mean(a)`/`mean(b)`,
+        `A − B = −7`, two rings, Mean overlay off; Sample Results anchored mean followed a
+        redraw (4.6 → 4.0, ring moved); on a `v = 1,3,3,3,5` plot a single x = 3 endpoint
+        selected the dot / mean / median purely by cursor height; `snapMeasure`
+        node-tested 6/6 (incl. 2-D selection); build passes, no console errors.
+- [x] **Residual to LS line** — num × num scatter: one endpoint snaps to a data point,
+      the other to its vertical foot on the `ls` line; read-out shows `y − ŷ`. →
+      `ResidualOverlay` in `components/plots.jsx`, mounted in the scatter `<svg>` with a
+      transparent capture rect; click/drag selects the nearest point (defaulting to the
+      largest |residual| so it shows on enable), draws the LS line + vertical residual
+      segment + foot marker, and labels `y − ŷ` on-plot and in a control row. Visual-only
+      (deferred trackability) per the plan. Verified: on `x,y = (1,2)(2,4)(3,5)(4,7)(5,20)`
+      the default point read `y − ŷ = 4.6` (matches `lsFit` slope 3.9 / intercept −4.1 by
+      hand) and clicking the x = 4 point switched it to −4.5.
+- [x] **Difference of two measures** — cat × cat percentages (and any two clicked scalar
       measures): not an axis measurement; select two computed numbers (reuse the `CatNum`
-      cell-number targets) and show their difference.
-- [ ] **Trackable read-out (ruler only).** A "＋ track" affordance reuses
+      cell-number targets) and show their difference. → ruler "cat-difference" mode: when
+      the ruler is on over a categorical plot (`CatCatGrid` / `UniCatPlot`), each `CatNum`
+      becomes an A/B selector (`measureSelect` / `measureRole`) instead of a track target;
+      reusing `App.jsx#trackDifference`. **On-line read-out (UX revision):** rather than a
+      chip row above the plot, a `MeasureConnector` SVG overlay (absolutely positioned over
+      the HTML grid; it measures the two selected `data-mkey` cells) draws a line between
+      the two numbers with `A − B` and the `＋ track` pill ON the line — matching the
+      numeric ruler. The overlay is `pointer-events:none` (cells stay clickable) except the
+      track pill. Verified: EDA cat × cat connector drew between P(M|fail)↔P(M|pass) (same
+      column, two rows) labelled `A − B = −0.3333`, no pill (untrackable); Sample Results
+      connector showed `A − B = 0.0833` + `＋ track`, and clicking the on-line pill created
+      both `prop(…)` operand columns + the derived `prop(a|a) − prop(b|b)` column
+      (0.25 / 0.1667 / 0.0833).
+- [x] **Trackable read-out (ruler only).** A "＋ track" affordance reuses
       `onTrackStat`/`addTrackedStat`: it auto-creates the two operand stat specs (if not
       already tracked) plus a Phase 5 derived column `expr = A − B` (or `A − constant`),
       which backfills existing rows and plots via `DistributionPlot`. The residual case
       is visual-only at first (the measured point has no stable cross-repetition
-      identity) — defer its trackability.
-- [ ] **Done when:** both tools appear only on gated plots and operate independently; the
+      identity) — defer its trackability. → `App.jsx#trackDifference` (resolves/creates
+      operand columns deduped by `statLabel`, seeds the current sample, adds the derived
+      `A − B`, backfills every collected row; dedupes identical differences). Pill shows
+      only when ≥1 endpoint is a measure.
+- [x] **Done when:** both tools appear only on gated plots and operate independently; the
       ruler measures all three cases live (drag + typed value stay in sync); a tracked
       difference-in-means backfills as a derived column and plots on the distribution plot.
+      **Status:** ✅ all three mechanics shipped & verified in `npm run dev`. Each is gated
+      to its plot type (axis → numeric X; residual → num × num scatter; cat-difference →
+      categorical) so only one shows at a time and the divider/ruler operate independently.
+      (1) axis distance + tracking: num × cat endpoints snap to group means → A − B = −7;
+      univariate Sample Results snap A→mean, ＋ track creates `mean(stk1)` + derived column;
+      anchored endpoints follow a redraw (4.6 → 4.0); cursor-y disambiguates a coincident
+      dot/mean/median. (2) residual: y − ŷ = 4.6 default / −4.5 on click, matches `lsFit`.
+      (3) cat-difference: P(a|a) − P(b|b) = −0.1667 → ＋ track backfilled the derived column
+      on the distribution plot. `measure.js` node-tested 6/6; production build passes; the
+      only console warnings were a duplicate device-name (`stk1`) artifact from the test
+      setup (two same-named devices), unrelated to the ruler.
 
 ### Phase 7 — Cleanup & retirement
 - [x] **Consolidated to one workflow (done early, post-Phase 4).** Removed the separate

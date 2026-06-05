@@ -87,6 +87,48 @@ export default function App() {
     setCollectRows(rows => rows.map(r => ({ ...r, [newStat.id]: evalExpr(tokens, sid => r[sid]) })));
   };
 
+  // Track the ruler's A − B as a derived column (Phase 6c). Each operand is either a
+  // measure (a stat spec) or a plain constant ({ value }); at least one is a measure.
+  // Ensures both measure operands exist as tracked columns (deduped by statLabel, seeding
+  // the current sample like addTrackedStat), then adds a derived `A − B` column that
+  // backfills every collected row from the stored operand values (like addDerivedStat).
+  const trackDifference = (opA, opB) => {
+    const stats = trackedStats.slice();
+    const newPlain = []; // operand columns created by this call
+    const tokenFor = op => {
+      if (!op.spec) return { k:"num", v: parseFloat(Number(op.value).toFixed(4)) };
+      const lbl = statLabel(op.spec);
+      let col = stats.find(s => s.kind !== "derived" && statLabel(s) === lbl);
+      if (!col) {
+        col = { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...op.spec };
+        stats.push(col); newPlain.push(col);
+      }
+      return { k:"col", id: col.id };
+    };
+    const tokens = [tokenFor(opA), { k:"op", v:"-" }, tokenFor(opB)];
+    // Skip if an identical difference is already a column.
+    const sig = JSON.stringify(tokens);
+    if (stats.some(s => s.kind === "derived" && JSON.stringify(s.tokens) === sig)) return;
+    const inputs = [...new Set(tokens.filter(t => t.k === "col").map(t => t.id))];
+    const derived = { id:uid(), kind:"derived", tokens, inputs };
+    const nextStats = [...stats, derived];
+    setTrackedStats(nextStats);
+    setCollectRows(rows => {
+      let out = rows.slice();
+      if (currentSample && newPlain.length) {
+        const idx = out.findIndex(r => r._id === currentSample.id);
+        if (idx >= 0) {
+          const patch = {};
+          newPlain.forEach(s => { patch[s.id] = computeStat(s, currentSample.rows); });
+          out[idx] = { ...out[idx], ...patch };
+        } else {
+          out = [...out, { _id: currentSample.id, ...computeStatRow(nextStats.filter(s => s.kind !== "derived"), currentSample.rows, computeStat) }];
+        }
+      }
+      return out.map(r => ({ ...r, [derived.id]: evalExpr(tokens, sid => r[sid]) }));
+    });
+  };
+
   // Batch accumulation ("Collect N") for the tracked-stat table
   const [batchSize, setBatchSize] = useState(500);
   const [batchCollecting, setBatchCollecting] = useState(false);
@@ -445,7 +487,7 @@ export default function App() {
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
         </div>
-        <SampleResults sampleData={sampleData} varNames={varNames} varKinds={varKinds} onTrackStat={trackStat} trackedStats={trackedStats} />
+        <SampleResults sampleData={sampleData} varNames={varNames} varKinds={varKinds} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
       </div>
 
       {/* Collect Statistics */}

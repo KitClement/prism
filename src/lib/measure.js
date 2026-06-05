@@ -25,6 +25,32 @@ export function snapValue(v, candidates, pxPerUnit, threshold = 8) {
   return best;
 }
 
+// Ruler variant of `snapValue`: snaps to the nearest *labeled* candidate and returns
+// the whole candidate, so the caller learns whether the endpoint landed on a trackable
+// measure (carrying a stat `spec`) or a plain constant (`spec: null` — a data dot or a
+// free position). Candidates are `{ value, spec, label }`; a miss returns the free value
+// with `spec: null`. Same constant-on-screen snap radius as `snapValue`.
+// `cursorY` (in the same svg pixel space as each candidate's marker `y`) lets the caller
+// disambiguate candidates that share an x: among those within the horizontal snap radius,
+// the one nearest the cursor in 2-D wins, so moving the pointer up/down chooses between a
+// coincident dot / mean / median. When `cursorY` is null only horizontal distance is used.
+export function snapMeasure(v, candidates, pxPerUnit, cursorY = null, threshold = 8) {
+  let best = { value: v, spec: null, label: null }, bestDist = Infinity;
+  if (!candidates || !pxPerUnit) return best;
+  const xRadius = threshold / pxPerUnit; // horizontal snap radius, in data units
+  for (const c of candidates) {
+    if (!c || c.value === undefined || c.value === null || isNaN(c.value)) continue;
+    const dxu = Math.abs(c.value - v);
+    if (dxu > xRadius) continue; // outside the horizontal grab range
+    const dxpx = dxu * pxPerUnit;
+    const dypx = (cursorY !== null && c.y != null) ? Math.abs(c.y - cursorY) : 0;
+    const d = Math.hypot(dxpx, dypx);
+    // Strict `<` so the first candidate wins an exact tie (callers list measures first).
+    if (d < bestDist) { best = c; bestDist = d; }
+  }
+  return best;
+}
+
 // Split `values` (finite plotted numbers) into proportion regions about `cuts`.
 //   cuts = [v]      → [{<v}, {≥v}]                using x < v / x ≥ v
 //   cuts = [lo, hi] → [{<lo}, {lo–hi}, {>hi}]     using x < lo / lo ≤ x ≤ hi / x > hi

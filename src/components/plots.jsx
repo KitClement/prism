@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR } from "../lib/util";
-import { numericSummary, lsFit, statLabel, FN_OPTS } from "../lib/stats";
+import { numericSummary, lsFit, statLabel, computeStat, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, regions } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions } from "../lib/measure";
 import { Sel, ChkLabel } from "./ui";
 
 // ── Click-to-track helpers ─────────────────────────────────────────────────────
@@ -34,8 +34,23 @@ function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, 
   );
 }
 
-// HTML count/percent number (cat plots) that toggles tracking of `spec` on click.
-function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat }) {
+// HTML count/percent number (cat plots) that toggles tracking of `spec` on click — or,
+// when the ruler's cat-difference mode is active (`measureSelect` supplied), picks the
+// number as operand A or B for a difference instead of tracking it.
+function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat, measureSelect, measureRole }) {
+  if (measureSelect && spec) {
+    const sel = !!measureRole;
+    return (
+      <span data-mkey={statLabel(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
+        title={sel ? "Selected as " + measureRole + " — click to deselect" : "Click to pick as A or B for the ruler difference"}
+        style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
+          background: sel ? "#ccfbf1" : "transparent",
+          color: sel ? "#0f766e" : (dim ? "#bbb" : "#0d9488"),
+          boxShadow: sel ? "none" : "inset 0 -1px 0 #5eead4" }}>
+        {text}{sel ? " " + measureRole : ""}
+      </span>
+    );
+  }
   if (!trackable || !spec) return <span style={{ color: dim ? "#bbb" : "#3730a3" }}>{text}</span>;
   const lbl = statLabel(spec);
   const tracked = trackedLabels && trackedLabels.has(lbl);
@@ -169,6 +184,214 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
   );
 }
 
+// ── Ruler overlay (Phase 6c) ────────────────────────────────────────────────────
+// Two draggable endpoints on a numeric axis, connected by a measurement bar; the
+// read-out is the signed distance A − B. Mounted INSIDE a host plot's <svg>, sharing
+// the host's value↔pixel mapping like DividerLines. Each endpoint snaps to a data dot
+// (a plain constant) or a visible measure (carrying a stat `spec`), so when both land on
+// measures the bar reads a difference of two statistics — the headline being a
+// difference of group means. When trackable, a "＋ track" affordance authors that
+// difference as a Phase 5 derived column via `onTrackDiff`.
+//   pts: [{ value, spec, label }, { value, spec, label }] — A then B, in data units.
+function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, snapCandidates, fmt, trackable, onTrackDiff }) {
+  const [dragI, setDragI] = useState(-1);
+  const pxPerUnit = Math.abs(sx(xhi) - sx(xlo)) / (Math.abs(xhi - xlo) || 1);
+
+  const setSelecting = on => {
+    const s = document.body.style;
+    s.userSelect = s.webkitUserSelect = on ? "none" : "";
+  };
+  useEffect(() => () => setSelecting(false), []);
+
+  const onDown = i => e => {
+    e.stopPropagation(); e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    setSelecting(true); setDragI(i);
+  };
+  const onMove = e => {
+    if (dragI < 0) return;
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const ratio = W / (rect.width || W); // uniform (the svg keeps its aspect under maxWidth)
+    const v = clampVal(inv((e.clientX - rect.left) * ratio), xlo, xhi);
+    const cursorY = (e.clientY - rect.top) * ratio; // svg-attribute y, to pick among stacked targets
+    const snapped = snapMeasure(v, snapCandidates, pxPerUnit, cursorY);
+    const next = pts.slice(); next[dragI] = snapped; onChange(next);
+  };
+  const onUp = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {} setSelecting(false); setDragI(-1); };
+
+  const fmtNum = v => parseFloat(Number(v).toFixed(4));
+  const a = pts[0], b = pts[1];
+  const xa = sx(a.value), xb = sx(b.value);
+  const diff = a.value - b.value;
+  const midX = (xa + xb) / 2;
+  // The difference is trackable only if at least one endpoint is a real measure (a
+  // difference of two constants is just a number, with no cross-repetition identity).
+  const canTrack = trackable && (a.spec || b.spec);
+  const opLabel = p => p.spec ? p.label : fmtNum(p.value);
+
+  // The candidate an endpoint is currently anchored to (a measure matched by spec, or a
+  // data dot matched by value), so we can draw a ring over that exact target. Returns the
+  // marker's pixel position, or null when the endpoint is a free constant.
+  const anchorOf = p => {
+    if (!snapCandidates) return null;
+    let c;
+    if (p.spec) { const lbl = statLabel(p.spec); c = snapCandidates.find(k => k.spec && statLabel(k.spec) === lbl); }
+    else c = snapCandidates.find(k => !k.spec && k.y != null && Math.abs(k.value - p.value) < 1e-9);
+    return (c && c.y != null) ? { x: sx(c.value), y: c.y } : null;
+  };
+
+  return (
+    <g>
+      {/* connector bar between the endpoints */}
+      <line x1={xa} y1={lineY} x2={xb} y2={lineY} stroke="#0d9488" strokeWidth={1.5} />
+      {pts.map((p, i) => {
+        const x = sx(p.value);
+        const ring = anchorOf(p);
+        const big = dragI === i;
+        return (
+          <g key={i} style={{ cursor:"ew-resize", touchAction:"none" }}
+            onPointerDown={onDown(i)} onPointerMove={onMove} onPointerUp={onUp}>
+            {/* wide transparent hit area + visible guide line */}
+            <line x1={x} y1={topY} x2={x} y2={botY} stroke="transparent" strokeWidth={14} />
+            <line x1={x} y1={topY} x2={x} y2={botY} stroke="#0d9488" strokeWidth={big ? 2.5 : 1.5} strokeDasharray="2 3" />
+            {/* anchor ring over the exact target this endpoint is tied to */}
+            {ring && (
+              <g>
+                <circle cx={ring.x} cy={ring.y} r={big ? 8 : 6.5} fill="none" stroke="#0d9488" strokeWidth={big ? 2.5 : 1.8} />
+                <circle cx={ring.x} cy={ring.y} r={1.6} fill="#0d9488" />
+              </g>
+            )}
+            {/* end cap on the connector bar */}
+            <line x1={x} y1={lineY - 5} x2={x} y2={lineY + 5} stroke="#0d9488" strokeWidth={2} />
+            {/* handle + letter */}
+            <rect x={x - 6} y={lineY - 9} width={12} height={9} rx={2} fill="#0d9488" stroke="#fff" strokeWidth={1} />
+            <text x={x} y={lineY - 1.5} textAnchor="middle" fontSize={7} fontWeight={800} fill="#fff">{i === 0 ? "A" : "B"}</text>
+            {/* what this endpoint landed on (measure name or constant value) */}
+            <text x={x} y={lineY + 16} textAnchor="middle" fontSize={8} fontWeight={600} fill="#0f766e">{opLabel(p)}</text>
+          </g>
+        );
+      })}
+      {/* signed-distance read-out at the bar midpoint */}
+      <text x={midX} y={lineY - 7} textAnchor="middle" fontSize={9} fontWeight={800} fill="#0f766e">
+        A − B = {fmtNum(diff)}
+      </text>
+      {/* ＋ track affordance (Sample Results only) */}
+      {canTrack && (() => {
+        const ty = lineY - 20, label = "＋ track";
+        const w = label.length * 5.4 + 10;
+        return (
+          <g style={{ cursor:"pointer" }} onClick={e => { e.stopPropagation(); onTrackDiff(a, b); }}>
+            <title>Track A − B as a derived column in Collect Statistics</title>
+            <rect x={midX - w / 2} y={ty - 9} width={w} height={13} rx={3} fill="#ccfbf1" stroke="#5eead4" strokeWidth={1} />
+            <text x={midX} y={ty} textAnchor="middle" fontSize={8} fontWeight={800} fill="#0f766e">{label}</text>
+          </g>
+        );
+      })()}
+    </g>
+  );
+}
+
+// ── Residual overlay (Phase 6c, mechanic 2) ────────────────────────────────────
+// Scatter-plot ruler: pick a data point and read its vertical residual to the LS line
+// (y − ŷ). One endpoint is the point, the other its foot on the line at the same x.
+// Visual-only — the measured point has no stable cross-repetition identity, so its
+// trackability is deferred. Drawn inside the scatter <svg>; a transparent capture rect
+// lets a click/drag select the nearest point.
+function ResidualOverlay({ scatterPts, ls, sx, toPy, xlo, xhi, W, area, sel, onSel, fmtY }) {
+  const [drag, setDrag] = useState(false);
+  const pick = (e) => {
+    const svg = e.currentTarget.ownerSVGElement || e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const ratio = W / (rect.width || W);
+    const cx = (e.clientX - rect.left) * ratio, cy = (e.clientY - rect.top) * ratio;
+    let best = -1, bd = Infinity;
+    scatterPts.forEach((p, i) => { const d = Math.hypot(p.px - cx, p.py - cy); if (d < bd) { bd = d; best = i; } });
+    if (best >= 0) onSel(best);
+  };
+  const down = e => { e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {} setDrag(true); pick(e); };
+  const move = e => { if (drag) pick(e); };
+  const up = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (x) {} setDrag(false); };
+
+  const lineY1 = toPy(ls.slope * xlo + ls.intercept), lineY2 = toPy(ls.slope * xhi + ls.intercept);
+  const p = (sel != null && sel >= 0 && sel < scatterPts.length) ? scatterPts[sel] : null;
+  let footY = null, resid = NaN, midY = null;
+  if (p) { const yhat = ls.slope * p.x + ls.intercept; footY = toPy(yhat); resid = p.y - yhat; midY = (p.py + footY) / 2; }
+  const lbl = p ? "y − ŷ = " + fmtY(resid) : "";
+
+  return (
+    <g>
+      {/* transparent capture area for click/drag selection */}
+      <rect x={area.x} y={area.y} width={area.w} height={area.h} fill="transparent"
+        style={{ cursor:"crosshair", touchAction:"none" }}
+        onPointerDown={down} onPointerMove={move} onPointerUp={up} />
+      {/* the LS line the residual is measured to */}
+      <line x1={sx(xlo)} y1={lineY1} x2={sx(xhi)} y2={lineY2} stroke="#0d9488" strokeWidth={1.6} />
+      {p && (
+        <g>
+          <line x1={p.px} y1={p.py} x2={p.px} y2={footY} stroke="#0d9488" strokeWidth={2} strokeDasharray="3 2" />
+          <circle cx={p.px} cy={footY} r={3} fill="#fff" stroke="#0d9488" strokeWidth={1.6} />
+          <circle cx={p.px} cy={p.py} r={6} fill="none" stroke="#0d9488" strokeWidth={2} />
+          <rect x={p.px + 7} y={midY - 8} width={lbl.length * 5 + 8} height={14} rx={3} fill="#ccfbf1" stroke="#5eead4" strokeWidth={1} />
+          <text x={p.px + 11} y={midY + 2} fontSize={9} fontWeight={800} fill="#0f766e">{lbl}</text>
+        </g>
+      )}
+    </g>
+  );
+}
+
+// ── Cat-difference connector (Phase 6c, mechanic 3) ─────────────────────────────
+// The categorical plots are HTML, so the ruler's "line between the two things" is an
+// absolutely-positioned SVG overlay that measures the two selected numbers (tagged with
+// data-mkey) inside `containerRef` and draws a connector with the A − B read-out and the
+// ＋ track affordance ON the line — matching the numeric ruler instead of a chip row.
+function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTrack }) {
+  const [g, setG] = useState(null);
+  useLayoutEffect(() => {
+    const cont = containerRef.current;
+    if (!cont || !aKey || !bKey) { setG(null); return; }
+    const measure = () => {
+      let an = null, bn = null;
+      cont.querySelectorAll("[data-mkey]").forEach(el => {
+        if (el.dataset.mkey === aKey) an = el;
+        else if (el.dataset.mkey === bKey) bn = el;
+      });
+      if (!an || !bn) { setG(null); return; }
+      const cr = cont.getBoundingClientRect(), a = an.getBoundingClientRect(), b = bn.getBoundingClientRect();
+      setG({ w: cr.width, h: cr.height,
+        ax: a.left + a.width / 2 - cr.left, ay: a.top + a.height / 2 - cr.top,
+        bx: b.left + b.width / 2 - cr.left, by: b.top + b.height / 2 - cr.top });
+    };
+    measure();
+    const ro = new ResizeObserver(measure); ro.observe(cont);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, [containerRef, aKey, bKey, diff]);
+  if (!g) return null;
+  const mx = (g.ax + g.bx) / 2, my = (g.ay + g.by) / 2;
+  const diffLabel = "A − B = " + fmt(diff);
+  const lw = diffLabel.length * 6 + 14;
+  const pill = "＋ track", pw = pill.length * 5.4 + 12;
+  return (
+    <svg width={g.w} height={g.h} style={{ position:"absolute", top:0, left:0, pointerEvents:"none", overflow:"visible" }}>
+      <line x1={g.ax} y1={g.ay} x2={g.bx} y2={g.by} stroke="#0d9488" strokeWidth={2} />
+      <circle cx={g.ax} cy={g.ay} r={4} fill="#0d9488" />
+      <circle cx={g.bx} cy={g.by} r={4} fill="#0d9488" />
+      <g transform={"translate(" + mx + "," + my + ")"}>
+        <rect x={-lw / 2} y={trackable ? -23 : -10} width={lw} height={trackable ? 35 : 18} rx={5} fill="#ffffff" stroke="#5eead4" strokeWidth={1.5} />
+        <text x={0} y={trackable ? -10 : 3} textAnchor="middle" fontSize={11} fontWeight={800} fill="#0f766e">{diffLabel}</text>
+        {trackable && (
+          <g style={{ cursor:"pointer", pointerEvents:"auto" }} onClick={e => { e.stopPropagation(); onTrack(); }}>
+            <rect x={-pw / 2} y={2} width={pw} height={14} rx={3} fill="#ccfbf1" stroke="#5eead4" strokeWidth={1} />
+            <text x={0} y={12} textAnchor="middle" fontSize={9} fontWeight={800} fill="#0f766e">{pill}</text>
+          </g>
+        )}
+      </g>
+    </svg>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PLOT — the shared, interactive plot primitive (controls + plot body, no table).
 // Used by both EDA and Sample Results. X/Y selection is *controlled* by the parent
@@ -177,7 +400,7 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, trackedLabels, varKinds }) {
+function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedLabels, varKinds }) {
   const [dotSize, setDotSize] = useState(5);
 
   // Stat overlay toggles
@@ -199,6 +422,15 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const [divCuts, setDivCuts] = useState([]);
   const [divShowCount, setDivShowCount] = useState(false);
   const [divShowPct, setDivShowPct] = useState(false);
+  // Ruler measurement tool (Phase 6c): off by default; opt-in per plot. Endpoints carry
+  // their snapped operand ({ value, spec, label }) so a difference of two measures can be
+  // tracked as a derived column.
+  const [rulerOn, setRulerOn] = useState(false);
+  const [rulerPts, setRulerPts] = useState([]);
+  // Mechanic 2 (residual): which scatter point is measured. Mechanic 3 (cat difference):
+  // up to two clicked stat specs whose difference the ruler reports.
+  const [residSel, setResidSel] = useState(null);
+  const [catSel, setCatSel] = useState([]);
 
   const plotRef = useRef(null);
   const measuredW = useContainerWidth(plotRef, 280, 760);
@@ -356,6 +588,121 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
     divSnap: showDivider ? divDomain.snap : null, divShowCount, divShowPct,
     divFmt: showDivider ? divDomain.fmt : null };
 
+  // ── Ruler tool (Phase 6c) ──
+  // Mechanic 1 (axis distance / difference of measures) shares the divider's gating and
+  // geometry — a continuous numeric X (univariate or num × cat horizontal) — reusing
+  // `divDomain` for lo/hi/fmt. Each endpoint is either a free constant or *anchored* to a
+  // measure (carries a stat spec); an anchored endpoint recomputes its value from the
+  // CURRENT data every render (so it follows a new sample), and snaps to data dots or
+  // measures while dragging. The univariate snap candidates carry a marker `y` so the
+  // overlay can draw a ring over the exact target; num × cat builds its own candidates in
+  // `SplitDotPlots` (where the per-group geometry lives).
+  // Three independent mechanics share the 📐 Ruler toggle, gated to the plot they apply
+  // to: axis-distance/difference-of-measures (mechanic 1, numeric X), residual-to-LS-line
+  // (mechanic 2, num × num scatter), and difference-of-two-clicked-measures (mechanic 3,
+  // categorical plots).
+  const rulerAxisAvail = dividerAvailable;
+  const rulerResidAvail = bivariate && xNumeric && yNumeric && !!ls;
+  const rulerCatDiffAvail = (bivariate && !xNumeric && !yNumeric) || (!bivariate && !xNumeric);
+  const rulerAvailable = rulerAxisAvail || rulerResidAvail || rulerCatDiffAvail;
+  const showRuler = rulerOn && rulerAxisAvail && !!divDomain; // mechanic 1 (axis)
+  const showResidRuler = rulerOn && rulerResidAvail;          // mechanic 2 (residual)
+  const showCatRuler = rulerOn && rulerCatDiffAvail;          // mechanic 3 (cat difference)
+
+  // Resolve a stored endpoint to its live value: a measure recomputes from `rows` (so a
+  // new single sample moves it), a constant keeps its number; clamp into the domain.
+  const resolveVal = pt => {
+    if (!pt || !pt.spec) return pt ? pt.value : NaN;
+    const v = computeStat(pt.spec, rows);
+    return Number.isFinite(v) ? v : pt.value;
+  };
+  // Univariate snap candidates (with a marker y for the anchor ring). Measures are always
+  // offered when the ruler is on — not gated on the overlay toggles — so anchoring to the
+  // mean / median / quartiles is discoverable, with the ring marking the target. Box
+  // quartiles only when the box is shown (so the ring sits on a visible box).
+  let rulerSnap = null;
+  if (showRuler && !bivariate) {
+    // Measures first (so they win a tie against a coincident data dot), then the dots.
+    rulerSnap = [];
+    if (xSummary) {
+      rulerSnap.push({ value: xSummary.mean, spec: { fn: "mean", variable: xVar }, label: "mean", y: axisY + 7 });
+      if (showBox) rulerSnap.push(
+        { value: xSummary.median, spec: { fn: "median", variable: xVar }, label: "median", y: boxCy },
+        { value: xSummary.q1, spec: { fn: "q1", variable: xVar }, label: "Q1", y: boxCy },
+        { value: xSummary.q3, spec: { fn: "q3", variable: xVar }, label: "Q3", y: boxCy });
+    }
+    const bottomY = {}; // value → lowest dot y (nearest the axis), for the dot ring
+    valid.forEach((r, i) => {
+      const v = toNum(r[xVar]);
+      if (!Number.isFinite(v)) return;
+      if (bottomY[v] === undefined || dots[i].y > bottomY[v]) bottomY[v] = dots[i].y;
+    });
+    Object.keys(bottomY).forEach(k => rulerSnap.push({ value: +k, spec: null, label: null, y: bottomY[k] }));
+  }
+  // A stored endpoint set is reusable only if its anchors still reference this plot's
+  // variables (else a variable switch left them stale → fall back to fresh defaults).
+  const specOk = p => !p.spec || (p.spec.variable === xVar && (!p.spec.condVar || p.spec.condVar === yVar));
+  let effPts = [];
+  if (showRuler) {
+    const { lo, hi } = divDomain;
+    const base = (rulerPts.length === 2 && rulerPts.every(specOk))
+      ? rulerPts
+      : [{ value: lo + (hi - lo) / 3, spec: null, label: null }, { value: lo + 2 * (hi - lo) / 3, spec: null, label: null }];
+    effPts = base.map(p => ({ ...p, value: clampVal(resolveVal(p), lo, hi) }));
+  }
+  const setRulerPt = (i, raw) => {
+    const v = clampVal(parseFloat(raw), divDomain.lo, divDomain.hi);
+    if (isNaN(v)) return;
+    const next = effPts.slice(); next[i] = { value: v, spec: null, label: null }; setRulerPts(next);
+  };
+  const rulerProps = { rulerOn: showRuler, rulerPts: effPts, onRulerChange: setRulerPts,
+    rulerFmt: showRuler ? divDomain.fmt : null, rulerShowBox: showBox, onTrackDiff };
+
+  // Mechanic 2 (residual): scatter points in pixel + data space, with the measured point
+  // defaulting to the largest |residual| so the tool shows something on enable.
+  const toPy = v => PT + iH - (yS ? yS.scale(v) : 0);
+  let scatterPts = null, residIdx = -1, residual = NaN;
+  if (showResidRuler) {
+    scatterPts = valid.map((r, i) => ({ px: dots[i].x, py: dots[i].y, x: toNum(r[xVar]), y: toNum(r[yVar]) }));
+    if (scatterPts.length) {
+      const resOf = p => p.y - (ls.slope * p.x + ls.intercept);
+      residIdx = (residSel != null && residSel >= 0 && residSel < scatterPts.length)
+        ? residSel
+        : scatterPts.reduce((best, _, i) => Math.abs(resOf(scatterPts[i])) > Math.abs(resOf(scatterPts[best])) ? i : best, 0);
+      residual = resOf(scatterPts[residIdx]);
+    }
+  }
+
+  // Mechanic 3 (cat difference): up to two clicked stat specs; their live difference.
+  const measureSelect = spec => setCatSel(prev => {
+    const lbl = statLabel(spec);
+    const idx = prev.findIndex(s => statLabel(s) === lbl);
+    if (idx >= 0) return prev.filter((_, i) => i !== idx); // deselect
+    const next = [...prev, spec];
+    return next.length > 2 ? next.slice(next.length - 2) : next; // keep the last two
+  });
+  const measureRoleOf = spec => {
+    if (!showCatRuler) return null;
+    const i = catSel.findIndex(s => statLabel(s) === statLabel(spec));
+    return i === 0 ? "A" : i === 1 ? "B" : null;
+  };
+  const catVals = catSel.map(s => computeStat(s, rows));
+  const catDiff = catSel.length === 2 ? catVals[0] - catVals[1] : NaN;
+  const fmtNum = v => (Number.isFinite(v) ? parseFloat(v.toFixed(4)) : "—");
+  // Bundle handed to the categorical plots: the click-to-select handler + role lookup for
+  // each number, plus the connector data (the two selected keys, their difference, and the
+  // track affordance) so the read-out renders ON a line between the two cells.
+  const measure = showCatRuler ? {
+    select: measureSelect,
+    roleOf: measureRoleOf,
+    aKey: catSel[0] ? statLabel(catSel[0]) : null,
+    bKey: catSel[1] ? statLabel(catSel[1]) : null,
+    diff: catDiff,
+    fmt: fmtNum,
+    trackable: !!(trackable && onTrackDiff),
+    onTrack: () => { if (catSel.length === 2) onTrackDiff({ spec: catSel[0] }, { spec: catSel[1] }); },
+  } : null;
+
   return (
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
@@ -389,6 +736,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
           </>
         )}
         {dividerAvailable && <ChkLabel checked={divOn} onChange={setDivOn} label="📏 Divider" />}
+        {rulerAvailable && <ChkLabel checked={rulerOn} onChange={setRulerOn} label="📐 Ruler" />}
       </div>
 
       {/* Divider controls (Phase 6) — the read-outs themselves live on the plot */}
@@ -406,8 +754,46 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
         </div>
       )}
 
-      {/* Click-to-track hint */}
-      {trackable && (
+      {/* Ruler controls (Phase 6c) — typed endpoint values stay in sync with the drag;
+          each endpoint shows whether it is anchored to a measure or a free value. */}
+      {showRuler && (
+        <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
+          {effPts.map((p, i) => (
+            <label key={i} style={ctrlLbl}>{i === 0 ? "A" : "B"}
+              <input type="number" step="any" value={parseFloat(Number(p.value).toFixed(4))}
+                onChange={e => setRulerPt(i, e.target.value)} style={{ ...iSm, width:72, marginLeft:4 }} />
+              {p.spec && <span title="anchored — follows this measure as the data changes"
+                style={{ marginLeft:4, padding:"1px 5px", borderRadius:4, background:"#ccfbf1", color:"#0f766e", fontWeight:700, fontSize:11 }}>◎ {p.label}</span>}
+            </label>
+          ))}
+          <span style={{ color:"#0f766e", fontWeight:700 }}>A − B = {parseFloat((effPts[0].value - effPts[1].value).toFixed(4))}</span>
+          <span style={{ color:"#94a3b8" }}>drag onto a dot, mean, median or quartile to anchor it; move up/down to pick between values at the same spot (a ring marks the target)</span>
+        </div>
+      )}
+
+      {/* Ruler — residual read-out (mechanic 2, scatter; visual only) */}
+      {showResidRuler && (
+        <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
+          <span style={{ color:"#0f766e", fontWeight:700 }}>residual y − ŷ = {scatterPts && scatterPts.length ? parseFloat(residual.toFixed(3)) : "—"}</span>
+          <span style={{ color:"#94a3b8" }}>click or drag to a point — the bar shows its vertical distance to the LS line</span>
+        </div>
+      )}
+
+      {/* Ruler — difference of two clicked numbers (mechanic 3, categorical). The read-out
+          + ＋ track live ON the connector line over the plot; only a slim hint/clear here. */}
+      {showCatRuler && (
+        <div style={{ display:"flex", gap:10, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
+          <span style={{ color:"#94a3b8" }}>
+            {catSel.length < 2
+              ? "click two numbers on the table to compare them — a connector line shows A − B"
+              : "A − B (and ＋ track) are shown on the connector line"}
+          </span>
+          {catSel.length > 0 && <button onClick={() => setCatSel([])} style={{ ...btnX, fontSize:12 }}>clear</button>}
+        </div>
+      )}
+
+      {/* Click-to-track hint (suppressed while the cat-difference ruler claims clicks) */}
+      {trackable && !showCatRuler && (
         <div style={{ fontSize:11, color:"#bbb", marginBottom:8 }}>
           💡 Click a number on the plot to collect that statistic (click again to stop).
         </div>
@@ -419,7 +805,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
         if (bivariate && !xNumeric && !yNumeric) {
           return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} width={W}
             showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand}
-            {...trackProps} />;
+            {...trackProps} measure={measure} />;
         }
         // MODE 2: one categorical + one numeric → split dot plots by category.
         // Respect the axis choice: numeric-X stays horizontal; numeric-Y draws
@@ -431,12 +817,13 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
           return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
             showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals}
-            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...divProps} />;
+            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...divProps} {...rulerProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
           return <UniCatPlot rows={rows} catVar={xVar} R={R} width={W}
-            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} />;
+            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps}
+            measure={measure} />;
         }
         // MODE 4: scatter (both numeric) or univariate numeric → SVG
         return (
@@ -539,6 +926,19 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
                   y={PT + 9} showCount={divShowCount} showPct={divShowPct} total={divDomain.values.length}
                   base={{ variable: xVar }} trackProps={trackProps} />
               </>
+            )}
+            {/* Ruler tool (univariate numeric) */}
+            {showRuler && (
+              <RulerOverlay W={W} topY={PT} botY={PT + iH} lineY={PT + 22} sx={sx}
+                inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
+                xlo={divDomain.lo} xhi={divDomain.hi} pts={effPts} onChange={setRulerPts}
+                snapCandidates={rulerSnap} fmt={divDomain.fmt} trackable={trackable} onTrackDiff={onTrackDiff} />
+            )}
+            {/* Ruler — residual to LS line (scatter) */}
+            {showResidRuler && scatterPts && scatterPts.length > 0 && (
+              <ResidualOverlay scatterPts={scatterPts} ls={ls} sx={sx} toPy={toPy}
+                xlo={xS.lo} xhi={xS.hi} W={W} area={{ x: PL, y: PT, w: iW, h: iH }}
+                sel={residIdx} onSel={setResidSel} fmtY={v => parseFloat(Number(v).toFixed(3))} />
             )}
           </svg>
         );
@@ -751,7 +1151,7 @@ function EDAPlot({ rows, headers }) {
 // raw draws of a sampler run. The table is chronological: newest rows append at
 // the BOTTOM and the scroll view auto-follows as draws stream in.
 // ══════════════════════════════════════════════════════════════════════════════
-function SampleResults({ sampleData, varNames, varKinds, onTrackStat, trackedStats }) {
+function SampleResults({ sampleData, varNames, varKinds, onTrackStat, onTrackDiff, trackedStats }) {
   const [xVar, setXVar] = useState(varNames[0] || "");
   const [yVar, setYVar] = useState("none");
   const scrollRef = useRef(null);
@@ -804,7 +1204,7 @@ function SampleResults({ sampleData, varNames, varKinds, onTrackStat, trackedSta
       </div>
       {/* RIGHT: shared interactive plot */}
       <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        varKinds={varKinds} onTrackStat={onTrackStat} trackedLabels={trackedLabels} />
+        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedLabels={trackedLabels} />
     </div>
   );
 }
@@ -913,7 +1313,9 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
 // UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
 // (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
 // ══════════════════════════════════════════════════════════════════════════════
-function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat }) {
+function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, measure }) {
+  const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
+  const wrapRef = useRef(null);
   const counts = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) counts[v] = (counts[v] || 0) + 1; });
   const allCats = Object.keys(counts).sort();
@@ -932,7 +1334,11 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
   const dotR = fitDotR(maxCount, estColW - 14, DOT_AREA_H, 2, Math.min(R + 2, 9));
 
   return (
-    <div style={{ width: W }}>
+    <div ref={wrapRef} style={{ width: W, position:"relative" }}>
+      {measure && measure.aKey && measure.bKey && (
+        <MeasureConnector containerRef={wrapRef} aKey={measure.aKey} bKey={measure.bKey}
+          diff={measure.diff} fmt={measure.fmt} trackable={measure.trackable} onTrack={measure.onTrack} />
+      )}
       <div style={{ display:"flex", alignItems:"stretch" }}>
         {shown.map((c, ci) => {
           const cnt = cellCount(c);
@@ -940,15 +1346,17 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
           const color = COLORS[ci % COLORS.length];
           // Each visible number is a click target: count → count of catVar=c;
           // percent → proportion catVar=c. "Other" has no clean target.
-          const colTrackable = trackable && c !== OTHER_CAT;
+          const colOk = c !== OTHER_CAT;
           const base = { variable:catVar, target:String(c) };
+          const countSpec = colOk ? { ...base, fn:"countVal" } : null;
+          const propSpec = colOk ? { ...base, fn:"proportion" } : null;
           return (
             <div key={c} style={{ flex:"1 1 0", minWidth:48, maxWidth:180, borderLeft: ci ? "1px solid #f0f0f0" : "none",
               display:"flex", flexDirection:"column", alignItems:"center", padding:"0 6px", boxSizing:"border-box" }}>
               {hasLabel && (
                 <div style={{ fontSize:12, fontWeight:600, minHeight:16, display:"flex", gap:4 }}>
-                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={colTrackable ? { ...base, fn:"countVal" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
-                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={colTrackable ? { ...base, fn:"proportion" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
+                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={countSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
+                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                 </div>
               )}
               {/* bottom-anchored dot grid: fills a row left→right, then stacks
@@ -984,7 +1392,9 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
 
-function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat }) {
+function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, measure }) {
+  const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
+  const wrapRef = useRef(null);
   // Per-axis counts drive collapsing of high-cardinality axes (>10 categories)
   const xCount = {}, yCount = {};
   rows.forEach(r => {
@@ -1029,7 +1439,11 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
   const dotR = fitDotR(maxCell, estCellW - 12, dotAreaH, 2, Math.min(R + 2, 8));
 
   return (
-    <div style={{ width: width ? width : "100%" }}>
+    <div ref={wrapRef} style={{ width: width ? width : "100%", position:"relative" }}>
+      {measure && measure.aKey && measure.bKey && (
+        <MeasureConnector containerRef={wrapRef} aKey={measure.aKey} bKey={measure.bKey}
+          diff={measure.diff} fmt={measure.fmt} trackable={measure.trackable} onTrack={measure.onTrack} />
+      )}
       <div style={{ display:"flex", flexDirection:"column" }}>
         {/* Rows */}
         {yCats.map(yc => (
@@ -1048,16 +1462,18 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
               // Each visible number is a click target: count → count of X=xc given
               // Y=yc; percent → that row-conditional proportion P(X=xc | Y=yc).
               // OTHER buckets can't form a clean target, so they stay non-clickable.
-              const cellTrackable = trackable && xc !== OTHER_CAT && yc !== OTHER_CAT;
+              const cellOk = xc !== OTHER_CAT && yc !== OTHER_CAT;
               const base = { variable:xVar, target:String(xc), condVar:yVar, condVal:String(yc) };
+              const countSpec = cellOk ? { ...base, fn:"countVal" } : null;
+              const propSpec = cellOk ? { ...base, fn:"proportion" } : null;
               return (
                 <div key={xc} style={{ flex:"1 1 0", minWidth:CELL_MIN, maxWidth:CELL_MAX, height:CELL_H,
                   borderLeft:"1px solid #eee", padding:"4px 6px", boxSizing:"border-box",
                   display:"flex", flexDirection:"column" }}>
                   {hasLabel && (
                     <div style={{ fontSize:12, fontWeight:600, display:"flex", gap:4, flexWrap:"wrap" }}>
-                      {showCount && <CatNum text={c} dim={c === 0} spec={cellTrackable ? { ...base, fn:"countVal" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
-                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={cellTrackable ? { ...base, fn:"proportion" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
+                      {showCount && <CatNum text={c} dim={c === 0} spec={countSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
+                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={propSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                     </div>
                   )}
                   {/* Stacked dots */}
@@ -1101,7 +1517,7 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt }) {
+function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff }) {
   // Per-group tracking spec: a numeric stat conditioned on this group (null for the
   // "Other" bucket or when the plot isn't trackable).
   const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
@@ -1233,6 +1649,12 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
   const H = PT + cats.length * GROUP_H + PB;
   const sx = v => PL + ((v - lo) / (hi - lo)) * iW;
 
+  // Ruler snap candidates across every group band, each with a marker `y` so the overlay
+  // can ring the exact target. Group means are always offered (the headline difference of
+  // means); box quartiles only when the box is shown; individual dots are plain constants.
+  // (Populated during the group map below; read by the shared RulerOverlay after it.)
+  const rulerCands = [];
+
   return (
     <div style={{ width: width ? width : "100%" }}>
       <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
@@ -1258,6 +1680,20 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
             return { x, y: baseY - (stacks[key] - 1) * spacing };
           });
           const color = COLORS[gi % COLORS.length];
+          // Ruler snap candidates for this band (mean ring sits on the triangle; box
+          // quartiles on the box; each dot is a plain constant). Skip the "Other" bucket
+          // for measures (no clean spec), but its dots are still snappable constants.
+          if (rulerOn) {
+            const gb = baseY + dotR + 1, by = baseY + dotR + 32;
+            if (summary && cat !== OTHER_CAT) {
+              rulerCands.push({ value: summary.mean, spec: { fn: "mean", variable: numVar, condVar: catVar, condVal: String(cat) }, label: "mean(" + cat + ")", y: gb + 5 });
+              if (rulerShowBox) rulerCands.push(
+                { value: summary.median, spec: { fn: "median", variable: numVar, condVar: catVar, condVal: String(cat) }, label: "median(" + cat + ")", y: by },
+                { value: summary.q1, spec: { fn: "q1", variable: numVar, condVar: catVar, condVal: String(cat) }, label: "Q1(" + cat + ")", y: by },
+                { value: summary.q3, spec: { fn: "q3", variable: numVar, condVar: catVar, condVal: String(cat) }, label: "Q3(" + cat + ")", y: by });
+            }
+            groupDots.forEach((d, k) => rulerCands.push({ value: groupNums[k], spec: null, label: null, y: d.y }));
+          }
           return (
             <g key={cat}>
               {/* group separator */}
@@ -1337,6 +1773,13 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
           <DividerLines W={W} topY={PT} botY={H - PB} sx={sx}
             inv={px => lo + ((px - PL) / iW) * (hi - lo)}
             xlo={lo} xhi={hi} cuts={divCuts} onChange={onDivChange} snapCandidates={divSnap} fmt={divFmt} />
+        )}
+        {/* Ruler tool (Phase 6c) — one shared measurement bar across every group band */}
+        {rulerOn && rulerPts && rulerPts.length === 2 && (
+          <RulerOverlay W={W} topY={PT} botY={H - PB} lineY={PT + 22} sx={sx}
+            inv={px => lo + ((px - PL) / iW) * (hi - lo)}
+            xlo={lo} xhi={hi} pts={rulerPts} onChange={onRulerChange} snapCandidates={rulerCands}
+            fmt={rulerFmt} trackable={trackable} onTrackDiff={onTrackDiff} />
         )}
       </svg>
       {allCats.length > 10 && (
