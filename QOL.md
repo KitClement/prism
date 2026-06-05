@@ -31,7 +31,7 @@ mutable `varName` rather than a stable id.
   pipeline-scan version is preferred because it also dodges collisions after a
   device is removed and re-added.
 
-### A2. No protection against duplicate device names  ·  P1
+### A2. No protection against duplicate device names  ·  P1  ·  ✅ DONE
 - **Symptom.** Two devices can share a `varName`. Because sample rows are keyed by
   name (see A3), two same-named devices collapse into one column and silently
   overwrite each other's draw — producing wrong variables with no warning.
@@ -55,7 +55,7 @@ mutable `varName` rather than a stable id.
   *user-facing* half (visibly flag the collision and block the draw). Do both in
   one branch.
 
-### A3. Renaming a sampled device blanks its column in Sample Results  ·  P1
+### A3. Renaming a sampled device blanks its column in Sample Results  ·  P1  ·  ✅ DONE
 - **Symptom.** Rename `mix1` → `mix10` after sampling: the Sample Results table
   header updates to `mix10`, but the cells go empty. The *tracked-stat* columns
   (Collect Statistics) follow the rename correctly; the **raw draw data** does not.
@@ -255,9 +255,10 @@ identity key. Walking the pipeline end to end:
 
 ## Suggested ordering
 
-1. **A1** (one-line fix) and **B1** (small, isolated) — quick wins.
-2. **A3 + A2 together** — the id-keyed rows refactor (A3) plus its user-facing
-   duplicate-name guard (A2), in one branch with a short dedicated plan.
+1. ~~**A1** (one-line fix) and **B1** (small, isolated) — quick wins.~~ ✅ DONE
+2. ~~**A3 + A2 together** — the id-keyed rows refactor (A3) plus its user-facing
+   duplicate-name guard (A2), in one branch with a short dedicated plan.~~ ✅ DONE
+   (devices now identified by stable `id`; `varName` is display-only via `nameOf`.)
 3. **B2**, **B3** — sampler interaction polish.
 4. **C1** — wording sweep (mechanical, low risk if labels-only).
 5. **D1**, **D2** — feature work; size each with its own short plan before starting.
