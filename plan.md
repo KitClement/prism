@@ -478,12 +478,20 @@ The ruler's residual case also fills the num × num gap the divider deliberately
       in the same Collect Statistics table (per-run + batch accumulation, shared
       `DistributionPlot`). Extracted `addTrackedStat` (add + seed current sample) out of
       `trackStat` so both entry points share it. `StatDistPlot` already retired in Phase 4.
-- [ ] Optionally retire `StatDefiner` + `FN_OPTS` dropdowns entirely if the
-      click-to-track path fully covers authoring (keep `computeStat`/`statLabel`).
-- [ ] Update CLAUDE.md architecture notes + "next steps" (incl. documenting the divider
-      and ruler as the two plot measurement tools in the plot section).
-- [ ] Final pass: verify every device (Stacks w/ & w/o replacement, Mixer, Spinner)
-      feeds both accumulation paths correctly.
+- [x] **Decided: keep `StatDefiner` + `FN_OPTS`.** Click-to-track does *not* cover
+      Q1/Q3/min/max (not shown as standalone plot numbers), so the manual builder behind
+      the "Define a statistic manually" toggle is the only authoring path for those and
+      stays. (`computeStat`/`statLabel` kept regardless.)
+- [x] Updated CLAUDE.md: module map (`lib/` + `components/`), the unified `Plot` primitive,
+      the Sample Results / Collect Statistics overhaul, and the divider + ruler measurement
+      tools; refreshed constraint #1 (`doCollect`→`drawSample`/`doCollectTracked`) and the
+      "next steps" section.
+- [x] **Final pass:** every device feeds both accumulation paths through the shared draw
+      helpers. Verified by code trace (per-run `runAnimatedSample` shares `makeDrawState`;
+      batch `drawSample`→`drawStacks`/`drawMixer`/`sampleSpinner`) + a headless run of
+      `drawSample`: Stacks w/o-repl draws exactly 5a/5b, Mixer w/o-repl exactly 2a/3b,
+      with-replacement + Spinner sum correctly, `deviceVarKind` classifies the mixed-outcome
+      Mixer repro as categorical. Production build passes.
 
 ## Known issues / next focus
 
