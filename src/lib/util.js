@@ -108,4 +108,47 @@ function collapseCats(cats, countByCat, expanded, limit = 10) {
   return { shown: [...top, OTHER_CAT], isCollapsed: true, hidden: cats.length - limit };
 }
 
-export { uid, clamp, sleep, COLORS, parseCSV, fitDotR, parseTimeToMinutes, minutesToTime, toNum, colKind, OTHER_CAT, collapseCats };
+// Suggest the label for a newly-added device item, continuing whatever pattern the
+// existing labels (in order) already follow. Detects an arithmetic numeric run from the
+// last two labels (4,5,6→7; 10,20,30→40) and a consecutive single-letter run, case-aware
+// (a,b→c; A,B,C→D). A lone trailing single letter also continues (a→b). When no pattern is
+// found — or the only continuation would collide / overflow past z/Z — it falls back to
+// "New<n>". Always skips labels that already exist so re-adding after a middle delete makes
+// a fresh item instead of merging into an existing one.
+function nextItemLabel(labels) {
+  const set = new Set(labels);
+  const n = labels.length;
+  const last = n >= 1 ? labels[n - 1] : null;
+  const prev = n >= 2 ? labels[n - 2] : null;
+  const isNum = s => typeof s === "string" && /^-?\d+$/.test(s);
+  const isLetter = s => typeof s === "string" && /^[a-zA-Z]$/.test(s);
+  const nextChar = s => {                          // next letter, or null past z/Z
+    const c = String.fromCharCode(s.charCodeAt(0) + 1);
+    return /^[a-zA-Z]$/.test(c) ? c : null;
+  };
+
+  let advance = null;                              // s -> next label in the run (may be null)
+  if (isNum(prev) && isNum(last)) {
+    const step = parseInt(last, 10) - parseInt(prev, 10);
+    if (step !== 0) advance = s => String(parseInt(s, 10) + step);
+  } else if (isLetter(prev) && isLetter(last) &&
+             (prev <= "z") === (last <= "z") &&    // same case (both lower or both upper)
+             last.charCodeAt(0) - prev.charCodeAt(0) === 1) {
+    advance = nextChar;
+  } else if (isLetter(last)) {
+    advance = nextChar;
+  }
+
+  if (advance) {
+    let cand = advance(last);
+    let guard = 0;
+    while (cand != null && set.has(cand) && guard++ < 1000) cand = advance(cand);
+    if (cand != null && !set.has(cand)) return cand;
+  }
+
+  let k = n + 1;
+  while (set.has(`New${k}`)) k++;
+  return `New${k}`;
+}
+
+export { uid, clamp, sleep, COLORS, parseCSV, fitDotR, parseTimeToMinutes, minutesToTime, toNum, colKind, OTHER_CAT, collapseCats, nextItemLabel };

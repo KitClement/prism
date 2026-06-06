@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnPlus, btnArr } from "../lib/styles";
-import { COLORS, clamp, uid } from "../lib/util";
+import { COLORS, clamp, uid, nextItemLabel } from "../lib/util";
 import { InlineEdit, PasteButton, ReplacementToggle, RangeInput } from "./ui";
 
 // ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
@@ -41,7 +41,7 @@ function addSlice(slices) {
   const sum = slices.reduce((s, sl) => s + sl.pct, 0) || 1;
   const factor = (100 - fresh) / sum;
   const out = slices.map(s => ({ ...s, pct: s.pct * factor }));
-  out.push({ id: uid(), label: `S${n + 1}`, pct: fresh, color: COLORS[n % COLORS.length] });
+  out.push({ id: uid(), label: nextItemLabel(slices.map(s => s.label)), pct: fresh, color: COLORS[n % COLORS.length] });
   return out;
 }
 
@@ -554,7 +554,7 @@ function StacksDevice({ device, onChange, animState }) {
         ))}
       </div>
       <div style={{ display:"flex", gap:5, marginTop:6, flexWrap:"wrap" }}>
-        <button onClick={() => onChange({ ...device, items:[...device.items, { id:uid(), label:`C${device.items.length + 1}`, count:3, color:COLORS[device.items.length % COLORS.length] }] })}
+        <button onClick={() => onChange({ ...device, items:[...device.items, { id:uid(), label:nextItemLabel(device.items.map(it => it.label)), count:3, color:COLORS[device.items.length % COLORS.length] }] })}
           style={btnPlus}>+ category</button>
         <PasteButton onApply={vals => {
           const counts = {}, order = [], cm = {};
@@ -750,13 +750,12 @@ function MixerDevice({ device, onChange, animState }) {
       </div>
       <div style={{ display:"flex", gap:5, marginTop:6, flexWrap:"wrap" }}>
         <button onClick={() => {
-            // Pick a label that doesn't already exist, so removing a middle type
-            // then adding one creates a NEW type instead of merging into an existing one.
-            const existing = new Set(device.balls.map(b => b.label));
-            let n = grouped.length + 1;
-            while (existing.has(`New${n}`)) n++;
+            // Continue the existing label pattern; nextItemLabel skips labels that already
+            // exist, so removing a middle type then adding one makes a NEW type instead of
+            // merging into an existing one.
+            const label = nextItemLabel(grouped.map(g => g.label));
             const color = COLORS[grouped.length % COLORS.length];
-            onChange({ ...device, balls:[...device.balls, { id:uid(), label:`New${n}`, color }] });
+            onChange({ ...device, balls:[...device.balls, { id:uid(), label, color }] });
           }}
           style={btnPlus}>+ ball type</button>
         <button onClick={() => setRangeOpen(r => !r)}
