@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
-import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR } from "../lib/util";
+import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
 import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
 import { clampVal, snapValue, snapMeasure, regions } from "../lib/measure";
-import { Sel, ChkLabel } from "./ui";
+import { Sel, ChkLabel, InlineEdit } from "./ui";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
 // match the proportion-valued collected statistics (e.g. 0.851, not 85%).
@@ -1138,18 +1138,21 @@ function DistributionPlot({ columns, width }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // EDA PLOT — exploratory plot with toggleable statistics overlays
 // ══════════════════════════════════════════════════════════════════════════════
-function EDAPlot({ rows, headers }) {
+function EDAPlot({ rows, headers, onChange }) {
   // X/Y selection lives here so the sibling DataTable can highlight the chosen
   // columns; the Plot owns dot size + overlay toggles. (Plot keeps X/Y valid.)
   const [xVar, setXVar] = useState(headers[0] || "");
   const [yVar, setYVar] = useState("none");
 
-  if (!rows.length) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data loaded.</div>;
+  // The table is editable whenever the host supplies an onChange (EDA's single
+  // dataset slot — both uploaded CSVs and manually-entered data flow back up).
+  const editable = !!onChange;
+  if (!rows.length && !editable) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data loaded.</div>;
 
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
-      {/* LEFT: data viewer */}
-      <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} />
+      {/* LEFT: data viewer / editor */}
+      <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} editable={editable} onChange={onChange} />
       {/* RIGHT: shared interactive plot */}
       <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} />
     </div>
@@ -1226,11 +1229,28 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
 // DATA TABLE — scrollable view of the raw rows; X/Y columns highlighted
 // ══════════════════════════════════════════════════════════════════════════════
 
-function DataTable({ rows, headers, xVar, yVar }) {
+function DataTable({ rows, headers, xVar, yVar, editable = false, onChange }) {
   const MAX_ROWS = 500; // guard against pathologically large datasets
   const shown = rows.slice(0, MAX_ROWS);
   const cellBg = h => h === xVar ? "#eef2ff" : (h === yVar ? "#ecfdf5" : "transparent");
   const headBg = h => h === xVar ? "#c7d2fe" : (h === yVar ? "#a7f3d0" : "#f1f5f9");
+
+  // ── Edit helpers (editable mode): each rebuilds {headers, rows} and calls onChange ──
+  const editCell = (id, h, v) => onChange(headers, rows.map(r => r._id === id ? { ...r, [h]: v } : r));
+  const uniqueHeader = base => { let n = base, i = 1; while (headers.includes(n)) n = `${base}${++i}`; return n; };
+  const renameHeader = (oldH, raw) => {
+    const newH = raw.trim();
+    if (!newH || newH === oldH || headers.includes(newH)) return; // ignore empty/duplicate
+    onChange(
+      headers.map(h => h === oldH ? newH : h),
+      rows.map(r => { const { [oldH]: val, ...rest } = r; return { ...rest, [newH]: val }; }),
+    );
+  };
+  const addCol = () => { const h = uniqueHeader("col"); onChange([...headers, h], rows.map(r => ({ ...r, [h]: "" }))); };
+  const delCol = h => onChange(headers.filter(x => x !== h), rows.map(r => { const { [h]: _drop, ...rest } = r; return rest; }));
+  const addRow = () => onChange(headers, [...rows, { _id: uid(), ...Object.fromEntries(headers.map(h => [h, ""])) }]);
+  const delRow = id => onChange(headers, rows.filter(r => r._id !== id));
+
   return (
     <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
       <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
@@ -1240,22 +1260,45 @@ function DataTable({ rows, headers, xVar, yVar }) {
             <tr>
               <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
               {headers.map(h => (
-                <th key={h} style={{ position:"sticky", top:0, background:headBg(h), color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>{h}</th>
+                <th key={h} style={{ position:"sticky", top:0, background:headBg(h), color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
+                  {editable ? (
+                    <span style={{ display:"inline-flex", alignItems:"center", gap:2 }}>
+                      <InlineEdit value={h} onChange={v => renameHeader(h, v)} style={{ fontWeight:700 }} />
+                      <button title="Delete column" onClick={() => delCol(h)} style={{ ...btnX, fontSize:13 }}>×</button>
+                    </span>
+                  ) : h}
+                </th>
               ))}
+              {editable && (
+                <th style={{ position:"sticky", top:0, background:"#f8f9fa", borderBottom:"1px solid #e5e7eb", padding:"2px 6px" }}>
+                  <button title="Add column" onClick={addCol} style={{ ...btnX, color:"#6366f1", fontSize:15 }}>＋</button>
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
             {shown.map((r, i) => (
-              <tr key={i} style={{ borderBottom:"1px solid #f5f5f5" }}>
-                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right" }}>{i + 1}</td>
+              <tr key={r._id || i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right", whiteSpace:"nowrap" }}>
+                  {editable && <button title="Delete row" onClick={() => delRow(r._id)} style={{ ...btnX, fontSize:12, marginRight:2 }}>×</button>}
+                  {i + 1}
+                </td>
                 {headers.map(h => (
-                  <td key={h} style={{ padding:"3px 8px", color:"#555", background:cellBg(h), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{r[h]}</td>
+                  <td key={h} style={{ padding:"3px 8px", color:"#555", background:cellBg(h), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
+                    {editable ? <InlineEdit value={r[h] ?? ""} onChange={v => editCell(r._id, h, v)} /> : r[h]}
+                  </td>
                 ))}
+                {editable && <td />}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {editable && (
+        <div style={{ marginTop:6 }}>
+          <button onClick={addRow} style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff" }}>＋ row</button>
+        </div>
+      )}
       {rows.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing first {MAX_ROWS} of {rows.length} rows</div>}
     </div>
   );
