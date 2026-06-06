@@ -403,7 +403,7 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds }) {
+function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect }) {
   // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
   // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
   // there and every label renders unchanged.
@@ -493,6 +493,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const xps = valid.map(r => xS.scale(r[xVar]));
   const yOffsets = yS ? null : stackDots(xps, R, iH, 1);
   const dots = valid.map((r, i) => ({
+    id: r._id,
     x: PL + xps[i],
     y: PT + (yS ? iH - yS.scale(r[yVar]) : yOffsets[i]),
   }));
@@ -542,6 +543,14 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const trackable = !!onTrackStat;
   const showVals = showValues || trackable;
   const trackProps = { trackable, trackedKeys, onTrackStat, nameOf };
+
+  // ── Linked highlighting (Phase D1) ──
+  // When the host owns a row-selection set (EDA), each dot becomes a one-to-one click
+  // target for its source row: clicking toggles `r._id` in the shared set, and selected
+  // dots/rows highlight together. Bundled and threaded into every plot mode.
+  const selectable = !!onToggleSelect;
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
+  const selProps = { selectedIds, onToggleSelect };
 
   // ── Divider tool (Phase 6) ──
   // Gated to plots with a continuous numeric X axis: univariate numeric, or num × cat
@@ -812,7 +821,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         if (bivariate && !xNumeric && !yNumeric) {
           return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} nameOf={nameOf} R={R} width={W}
             showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand}
-            {...trackProps} measure={measure} />;
+            {...trackProps} {...selProps} measure={measure} />;
         }
         // MODE 2: one categorical + one numeric → split dot plots by category.
         // Respect the axis choice: numeric-X stays horizontal; numeric-Y draws
@@ -824,12 +833,12 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
           return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} nameOf={nameOf} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
             showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals}
-            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...divProps} {...rulerProps} />;
+            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps} {...divProps} {...rulerProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
           return <UniCatPlot rows={rows} catVar={xVar} nameOf={nameOf} R={R} width={W}
-            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps}
+            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps}
             measure={measure} />;
         }
         // MODE 4: scatter (both numeric) or univariate numeric → SVG
@@ -858,8 +867,16 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             {/* axis labels */}
             <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(xVar)}</text>
             {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
-            {/* dots */}
-            {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={R} fill="#3b82f6" fillOpacity={Math.min(0.85, Math.max(0.2, 70 / Math.sqrt(dots.length + 1)))} />)}
+            {/* dots — one per row; click toggles linked highlighting (D1) */}
+            {dots.map((d, i) => {
+              const sel = isSel(d.id);
+              return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? R + 1 : R}
+                fill={sel ? "#f97316" : "#3b82f6"}
+                fillOpacity={sel ? 1 : Math.min(0.85, Math.max(0.2, 70 / Math.sqrt(dots.length + 1)))}
+                stroke={sel ? "#7c2d12" : "none"} strokeWidth={sel ? 1.5 : 0}
+                style={selectable ? { cursor:"pointer" } : undefined}
+                onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
+            })}
             {/* LS line */}
             {showLS && ls && yS && (() => {
               const x1 = xS.lo, x2 = xS.hi;
@@ -1144,6 +1161,15 @@ function EDAPlot({ rows, headers, onChange }) {
   const [xVar, setXVar] = useState(headers[0] || "");
   const [yVar, setYVar] = useState("none");
 
+  // Linked highlighting (D1): a shared set of selected row `_id`s, toggled by
+  // clicking a plot dot or a table row, highlighting both together.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const toggleId = id => setSelectedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
   // The table is editable whenever the host supplies an onChange (EDA's single
   // dataset slot — both uploaded CSVs and manually-entered data flow back up).
   const editable = !!onChange;
@@ -1152,9 +1178,11 @@ function EDAPlot({ rows, headers, onChange }) {
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
       {/* LEFT: data viewer / editor */}
-      <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} editable={editable} onChange={onChange} />
+      <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} editable={editable} onChange={onChange}
+        selectedIds={selectedIds} onToggleSelect={toggleId} />
       {/* RIGHT: shared interactive plot */}
-      <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} />
+      <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
+        selectedIds={selectedIds} onToggleSelect={toggleId} />
     </div>
   );
 }
@@ -1229,10 +1257,14 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
 // DATA TABLE — scrollable view of the raw rows; X/Y columns highlighted
 // ══════════════════════════════════════════════════════════════════════════════
 
-function DataTable({ rows, headers, xVar, yVar, editable = false, onChange }) {
-  const MAX_ROWS = 500; // guard against pathologically large datasets
-  const shown = rows.slice(0, MAX_ROWS);
-  const cellBg = h => h === xVar ? "#eef2ff" : (h === yVar ? "#ecfdf5" : "transparent");
+function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, selectedIds, onToggleSelect }) {
+  // Render every row so each plot dot has a reachable table row for linked
+  // highlighting (D1). Datasets here are EDA-sized; if a pathologically large CSV
+  // ever lags, add windowed rendering (no virtualization library).
+  const selectable = !!onToggleSelect;
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
+  const HL = "#fde68a"; // selected-row highlight (amber); overrides column tint
+  const cellBg = (h, sel) => sel ? HL : (h === xVar ? "#eef2ff" : (h === yVar ? "#ecfdf5" : "transparent"));
   const headBg = h => h === xVar ? "#c7d2fe" : (h === yVar ? "#a7f3d0" : "#f1f5f9");
 
   // ── Edit helpers (editable mode): each rebuilds {headers, rows} and calls onChange ──
@@ -1277,20 +1309,27 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange }) {
             </tr>
           </thead>
           <tbody>
-            {shown.map((r, i) => (
+            {rows.map((r, i) => {
+              const sel = isSel(r._id);
+              return (
               <tr key={r._id || i} style={{ borderBottom:"1px solid #f5f5f5" }}>
-                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right", whiteSpace:"nowrap" }}>
-                  {editable && <button title="Delete row" onClick={() => delRow(r._id)} style={{ ...btnX, fontSize:12, marginRight:2 }}>×</button>}
+                {/* row-number cell doubles as the select handle (clicking a data cell
+                    edits it, so selection lives here to avoid clobbering inline edit) */}
+                <td onClick={selectable ? () => onToggleSelect(r._id) : undefined}
+                  title={selectable ? "Select row" : undefined}
+                  style={{ color:"#ccc", padding:"3px 6px", textAlign:"right", whiteSpace:"nowrap", background: sel ? HL : undefined, cursor: selectable ? "pointer" : "default" }}>
+                  {editable && <button title="Delete row" onClick={e => { e.stopPropagation(); delRow(r._id); }} style={{ ...btnX, fontSize:12, marginRight:2 }}>×</button>}
                   {i + 1}
                 </td>
                 {headers.map(h => (
-                  <td key={h} style={{ padding:"3px 8px", color:"#555", background:cellBg(h), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
+                  <td key={h} style={{ padding:"3px 8px", color:"#555", background:cellBg(h, sel), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
                     {editable ? <InlineEdit value={r[h] ?? ""} onChange={v => editCell(r._id, h, v)} /> : r[h]}
                   </td>
                 ))}
-                {editable && <td />}
+                {editable && <td style={{ background: sel ? HL : undefined }} />}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1299,7 +1338,6 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange }) {
           <button onClick={addRow} style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff" }}>＋ row</button>
         </div>
       )}
-      {rows.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing first {MAX_ROWS} of {rows.length} rows</div>}
     </div>
   );
 }
@@ -1369,17 +1407,28 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
 // UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
 // (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
 // ══════════════════════════════════════════════════════════════════════════════
-function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure }) {
+function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
+  const selectable = !!onToggleSelect;
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
   const wrapRef = useRef(null);
+  // Keep the actual rows per category (not just counts) so each dot is one case and
+  // can link back to its table row (D1).
+  const rowsByCat = {};
+  rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) { (rowsByCat[v] = rowsByCat[v] || []).push(r); } });
   const counts = {};
-  rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) counts[v] = (counts[v] || 0) + 1; });
+  Object.keys(rowsByCat).forEach(c => { counts[c] = rowsByCat[c].length; });
   const allCats = Object.keys(counts).sort();
   const total = allCats.reduce((a, c) => a + counts[c], 0);
   const { shown } = collapseCats(allCats, counts, expanded);
-  const namedSum = shown.filter(c => c !== OTHER_CAT).reduce((a, c) => a + counts[c], 0);
-  const cellCount = c => c === OTHER_CAT ? total - namedSum : counts[c];
+  const namedSet = new Set(shown.filter(c => c !== OTHER_CAT));
+  // Rows for a shown cell: named category → its bucket; the "Other" cell collects
+  // every row whose category fell outside the shown named set.
+  const cellRowsOf = c => c === OTHER_CAT
+    ? rows.filter(r => { const v = r[catVar]; return v !== "" && v !== undefined && !namedSet.has(v); })
+    : (rowsByCat[c] || []);
+  const cellCount = c => cellRowsOf(c).length;
 
   const W = width || 520;
   const DOT_AREA_H = 220;            // height of each category's stacked-dot area
@@ -1398,7 +1447,8 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
       )}
       <div style={{ display:"flex", alignItems:"stretch" }}>
         {shown.map((c, ci) => {
-          const cnt = cellCount(c);
+          const cellRows = cellRowsOf(c);
+          const cnt = cellRows.length;
           const color = COLORS[ci % COLORS.length];
           // Each visible number is a click target: count → count of catVar=c;
           // percent → proportion catVar=c. "Other" has no clean target.
@@ -1419,9 +1469,13 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
                   rows upward, so column height reflects the count */}
               <div style={{ height: DOT_AREA_H, width:"100%", display:"flex", flexDirection:"row",
                 flexWrap:"wrap-reverse", alignContent:"flex-start", justifyContent:"flex-start", gap:2, overflow:"hidden" }}>
-                {Array.from({ length: cnt }, (_, i) => (
-                  <div key={i} style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%", background:color, flexShrink:0 }} />
-                ))}
+                {cellRows.map((r, i) => {
+                  const sel = isSel(r._id);
+                  return <div key={r._id || i}
+                    onClick={selectable ? () => onToggleSelect(r._id) : undefined}
+                    style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%", background:color, flexShrink:0,
+                      cursor: selectable ? "pointer" : "default", boxShadow: sel ? "0 0 0 2px #1f2937" : "none" }} />;
+                })}
               </div>
               <div style={{ borderTop:"1px solid #ccc", width:"100%", marginTop:2 }} />
               <div style={{ fontSize:11, color:"#444", fontWeight:600, paddingTop:4, textAlign:"center",
@@ -1448,9 +1502,11 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
 
-function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure }) {
+function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
+  const selectable = !!onToggleSelect;
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
   const wrapRef = useRef(null);
   // Per-axis counts drive collapsing of high-cardinality axes (>10 categories)
   const xCount = {}, yCount = {};
@@ -1470,27 +1526,28 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
   const yColor = {};
   yCats.forEach((yc, i) => { yColor[yc] = COLORS[i % COLORS.length]; });
 
-  // Build counts grid[yc][xc], folding overflow categories into "Other"
+  // Build grid[yc][xc] as the actual rows in each cell (not just counts), folding
+  // overflow categories into "Other", so every dot is one case linkable to its row (D1).
   const grid = {};
-  yCats.forEach(yc => { grid[yc] = {}; xCats.forEach(xc => grid[yc][xc] = 0); });
+  yCats.forEach(yc => { grid[yc] = {}; xCats.forEach(xc => grid[yc][xc] = []); });
   rows.forEach(r => {
     let xc = r[xVar], yc = r[yVar];
     if (xc === "" || xc === undefined || yc === "" || yc === undefined) return;
     xc = xSet.has(xc) ? xc : OTHER_CAT;
     yc = ySet.has(yc) ? yc : OTHER_CAT;
-    if (grid[yc] && grid[yc][xc] !== undefined) grid[yc][xc]++;
+    if (grid[yc] && grid[yc][xc] !== undefined) grid[yc][xc].push(r);
   });
 
   // Row totals for row-conditional % (each Y-category row sums to 100%): P(X | Y)
   const rowTotals = {};
-  yCats.forEach(yc => { rowTotals[yc] = xCats.reduce((a, xc) => a + grid[yc][xc], 0); });
+  yCats.forEach(yc => { rowTotals[yc] = xCats.reduce((a, xc) => a + grid[yc][xc].length, 0); });
 
   const LABEL_W = 96, CELL_MIN = 54, CELL_MAX = 150;
   const CELL_H = clamp(Math.round(250 / Math.max(yCats.length, 1)), 56, 110);
   const hasLabel = showCount || showPct;
   // Size dots uniformly so the densest cell's dots all fit (no clipping)
   let maxCell = 0;
-  yCats.forEach(yc => xCats.forEach(xc => { if (grid[yc][xc] > maxCell) maxCell = grid[yc][xc]; }));
+  yCats.forEach(yc => xCats.forEach(xc => { if (grid[yc][xc].length > maxCell) maxCell = grid[yc][xc].length; }));
   const estCellW = clamp(((width || 520) - LABEL_W) / Math.max(xCats.length, 1), CELL_MIN, CELL_MAX);
   const dotAreaH = CELL_H - (hasLabel ? 18 : 0) - 8;
   const dotR = fitDotR(maxCell, estCellW - 12, dotAreaH, 2, Math.min(R + 2, 8));
@@ -1513,7 +1570,8 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
             </div>
             {/* Cells */}
             {xCats.map(xc => {
-              const c = grid[yc][xc];
+              const cellRows = grid[yc][xc];
+              const c = cellRows.length;
               const rowTot = rowTotals[yc] || 0;
               // Each visible number is a click target: count → count of X=xc given
               // Y=yc; proportion → that row-conditional proportion P(X=xc | Y=yc).
@@ -1532,12 +1590,15 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
                       {showPct && <CatNum text={`(${rowTot ? fmtP(c / rowTot) : "—"})`} dim={c === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                     </div>
                   )}
-                  {/* Stacked dots */}
+                  {/* Stacked dots — one per case, click toggles linked highlighting (D1) */}
                   <div style={{ display:"flex", flexWrap:"wrap", gap:2, alignContent:"flex-start", marginTop:3, flex:1, overflow:"hidden" }}>
-                    {Array.from({ length: c }, (_, i) => (
-                      <div key={i} style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%",
-                        background:yColor[yc], flexShrink:0 }} />
-                    ))}
+                    {cellRows.map((r, i) => {
+                      const sel = isSel(r._id);
+                      return <div key={r._id || i}
+                        onClick={selectable ? () => onToggleSelect(r._id) : undefined}
+                        style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%", background:yColor[yc], flexShrink:0,
+                          cursor: selectable ? "pointer" : "default", boxShadow: sel ? "0 0 0 2px #1f2937" : "none" }} />;
+                    })}
                   </div>
                 </div>
               );
@@ -1573,8 +1634,10 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff }) {
+function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
+  const selectable = !!onToggleSelect;
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
   // Per-group tracking spec: a numeric stat conditioned on this group (null for the
   // "Other" bucket or when the plot isn't trackable).
   const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
@@ -1620,7 +1683,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
           ))}
           {cats.map((cat, gi) => {
             const x0 = PL + colW * gi, center = x0 + colW / 2;
-            const groupNums = rows.map(r => groupOf(r[catVar]) === cat ? toNum(r[numVar]) : NaN).filter(v => !isNaN(v));
+            // Keep the rows (not just the numbers) so each dot links to its table row (D1)
+            const groupRows = rows.filter(r => groupOf(r[catVar]) === cat && !isNaN(toNum(r[numVar])));
+            const groupNums = groupRows.map(r => toNum(r[numVar]));
             const summary = numericSummary(groupNums);
             const binOf = v => Math.round(sy(v) / (dotR * 2 + 1));
             const binCounts = {};
@@ -1630,9 +1695,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
             const dotAreaW = (x0 + colW) - xData - 4;
             const hsp = Math.min(dotR * 2 + 1, (dotAreaW - dotR) / widest);
             const stacks = {};
-            const groupDots = groupNums.map(v => {
+            const groupDots = groupNums.map((v, di) => {
               const key = binOf(v); stacks[key] = (stacks[key] || 0) + 1;
-              return { x: xData + dotR + 3 + (stacks[key] - 1) * hsp, y: sy(v) };
+              return { id: groupRows[di]._id, x: xData + dotR + 3 + (stacks[key] - 1) * hsp, y: sy(v) };
             });
             const color = COLORS[gi % COLORS.length];
             const bx = xData - 32;                  // vertical boxplot, just left of the mean/SD cluster
@@ -1642,8 +1707,15 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 {gi > 0 && <line x1={x0} y1={PT} x2={x0} y2={PT + iH} stroke="#f0f0f0" strokeWidth={1} />}
                 {/* per-category baseline the mean tip touches */}
                 <line x1={xData} y1={PT} x2={xData} y2={PT + iH} stroke="#f3f4f6" strokeWidth={1} />
-                {groupDots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={dotR} fill={color}
-                  fillOpacity={Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))} />)}
+                {groupDots.map((d, i) => {
+                  const sel = isSel(d.id);
+                  return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? dotR + 1 : dotR}
+                    fill={sel ? "#f97316" : color}
+                    fillOpacity={sel ? 1 : Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))}
+                    stroke={sel ? "#1f2937" : "none"} strokeWidth={sel ? 1.5 : 0}
+                    style={selectable ? { cursor:"pointer" } : undefined}
+                    onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
+                })}
                 {/* boxplot (vertical, Tukey whiskers) */}
                 {showBox && summary && (
                   <g>
@@ -1721,7 +1793,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
         {cats.map((cat, gi) => {
           const top = PT + gi * GROUP_H;
           const baseY = top + GROUP_H - 52; // dots stack upward from here; mean/SD/box below
-          const groupNums = rows.map(r => groupOf(r[catVar]) === cat ? toNum(r[numVar]) : NaN).filter(v => !isNaN(v));
+          // Keep the rows (not just the numbers) so each dot links to its table row (D1)
+          const groupRows = rows.filter(r => groupOf(r[catVar]) === cat && !isNaN(toNum(r[numVar])));
+          const groupNums = groupRows.map(r => toNum(r[numVar]));
           const summary = numericSummary(groupNums);
           // First pass: bin counts to find the tallest stack, so dots fit the band
           const binOf = v => Math.round(sx(v) / (dotR * 2 + 1));
@@ -1731,10 +1805,10 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
           const avail = baseY - top - 4;
           const spacing = Math.min(dotR * 2 + 1, avail / tallest);
           const stacks = {};
-          const groupDots = groupNums.map(v => {
+          const groupDots = groupNums.map((v, di) => {
             const x = sx(v); const key = binOf(v);
             stacks[key] = (stacks[key] || 0) + 1;
-            return { x, y: baseY - (stacks[key] - 1) * spacing };
+            return { id: groupRows[di]._id, x, y: baseY - (stacks[key] - 1) * spacing };
           });
           const color = COLORS[gi % COLORS.length];
           // Ruler snap candidates for this band (mean ring sits on the triangle; box
@@ -1762,9 +1836,16 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 fontSize={9} fill="#aaa">n={groupNums.length}</text>
               {/* baseline */}
               <line x1={PL} y1={baseY + dotR + 1} x2={W - PR} y2={baseY + dotR + 1} stroke="#e0e0e0" strokeWidth={1} />
-              {/* dots */}
-              {groupDots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={dotR} fill={color}
-                fillOpacity={Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))} />)}
+              {/* dots — one per row; click toggles linked highlighting (D1) */}
+              {groupDots.map((d, i) => {
+                const sel = isSel(d.id);
+                return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? dotR + 1 : dotR}
+                  fill={sel ? "#f97316" : color}
+                  fillOpacity={sel ? 1 : Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))}
+                  stroke={sel ? "#1f2937" : "none"} strokeWidth={sel ? 1.5 : 0}
+                  style={selectable ? { cursor:"pointer" } : undefined}
+                  onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
+              })}
               {/* ±1 SD — runs through the mean triangle, centred on the mean */}
               {showSD && summary && (() => {
                 const gb = baseY + dotR + 1, y = gb + 5, mx = sx(summary.mean);
