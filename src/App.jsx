@@ -30,6 +30,19 @@ export default function App() {
   // sample, keyed by stat id) that later phases will fill.
   const [trackedStats, setTrackedStats] = useState([]);
   const [collectRows, setCollectRows] = useState([]);
+  // Linked highlighting for Collect Statistics: a set of collected-row `_id`s shared
+  // by the CollectTable (rows) and the DistributionPlot (dots), toggled from either.
+  const [collectSelectedIds, setCollectSelectedIds] = useState(() => new Set());
+  const [collectScroll, setCollectScroll] = useState(null); // { id } — reveal a just-selected row
+  const toggleCollectId = id => {
+    const adding = !collectSelectedIds.has(id);
+    setCollectSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+    if (adding) setCollectScroll({ id });
+  };
   // The most recently finished manual draw: { id, rows }. Tracking a stat seeds its
   // value for this sample immediately (its number is on the plot right now), and the
   // per-run accumulator tags that sample's row with this id so a later track fills the
@@ -212,7 +225,7 @@ export default function App() {
       return ns;
     });
   };
-  const clearCollected = () => { setCollectRows([]); setBatchProgress(0); setCurrentSample(null); };
+  const clearCollected = () => { setCollectRows([]); setBatchProgress(0); setCurrentSample(null); setCollectSelectedIds(new Set()); };
 
   // Manual statistic builder (advanced, hidden by default): authors one stat spec
   // and adds it as a column to the same tracked-stat table — not a separate workflow.
@@ -568,7 +581,8 @@ export default function App() {
         {/* Stacked top-to-bottom: the tracked-statistic table, then the manual
             builder (a table-authoring tool), then the sampling-distribution plot. */}
         <div style={{ marginBottom:14 }}>
-          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} labelFor={labelFor} titleFor={exprFor} />
+          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} labelFor={labelFor} titleFor={exprFor}
+            selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} scrollTarget={collectScroll} />
         </div>
 
         {/* Derived-statistic calculator — combine collected columns into a new column
@@ -621,7 +635,8 @@ export default function App() {
         {/* Sampling-distribution plot for a chosen tracked column. */}
         {trackedStats.length > 0 && collectRows.length > 0 && (
           <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12 }}>
-            <DistributionPlot columns={trackedStats.map(s => ({ label: labelFor(s), values: collectRows.map(r => r[s.id]) }))} />
+            <DistributionPlot columns={trackedStats.map(s => ({ label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
+              rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} />
           </div>
         )}
       </div>
