@@ -146,10 +146,17 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
 // ══════════════════════════════════════════════════════════════════════════════
 function StacksDevice({ device, onChange, animState }) {
   const BAR_MAX_H = 130, MAX_CT = 200;
-  const dragIdx = useRef(null), dragY0 = useRef(0), dragCount0 = useRef(0);
+  const dragY0 = useRef(0), dragCount0 = useRef(0);
+  // Local preview of the bar being dragged. We do NOT call onChange on every
+  // mousemove: each onChange runs updDevice's invalidation guard, which can pop a
+  // window.confirm — firing one dialog per pixel of drag (and never settling, since
+  // the collected-rows state clears asynchronously). Instead preview locally and
+  // commit a single onChange on mouseup.
+  const [dragPreview, setDragPreview] = useState(null); // { i, count } | null
 
-  // Live counts: from animState when animating, else from device
-  const displayCounts = (animState && animState.liveCounts) || device.items.map(it => it.count);
+  // Live counts: from animState when animating, else the drag preview, else device
+  const displayCounts = (animState && animState.liveCounts) ||
+    device.items.map((it, idx) => (dragPreview && dragPreview.i === idx ? dragPreview.count : it.count));
   const highlightIdx = animState && animState.highlightIdx;
   const shuffling = animState && animState.shuffling;
   const merged = animState && animState.merged;
@@ -158,14 +165,25 @@ function StacksDevice({ device, onChange, animState }) {
 
   const startDrag = (e, i) => {
     e.preventDefault();
-    dragIdx.current = i; dragY0.current = e.clientY; dragCount0.current = device.items[i].count;
+    dragY0.current = e.clientY; dragCount0.current = device.items[i].count;
+    let lastCount = dragCount0.current;
     const move = ev => {
       const delta = Math.round((dragY0.current - ev.clientY) / 7);
-      const items = [...device.items];
-      items[i] = { ...items[i], count:clamp(dragCount0.current + delta, 0, MAX_CT) };
-      onChange({ ...device, items });
+      lastCount = clamp(dragCount0.current + delta, 0, MAX_CT);
+      setDragPreview({ i, count:lastCount });
     };
-    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setDragPreview(null);
+      // Commit once, and only if the count actually changed (a bare click shouldn't
+      // trip the invalidation guard).
+      if (lastCount !== dragCount0.current) {
+        const items = [...device.items];
+        items[i] = { ...items[i], count:lastCount };
+        onChange({ ...device, items });
+      }
+    };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   };
