@@ -29,7 +29,9 @@ function parseCSV(text) {
   const headers = parseLine(lines[0]).map(h => h || "col");
   const rows = lines.slice(1).map(line => {
     const cells = parseLine(line);
-    const row = {};
+    // `_id` is a stable per-row identity (used to link plot dots to table rows and
+    // to target edits); it is never a column — column rendering iterates `headers`.
+    const row = { _id: uid() };
     headers.forEach((h, i) => { row[h] = cells[i] !== undefined ? cells[i] : ""; });
     return row;
   });

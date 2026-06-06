@@ -283,6 +283,15 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  // Seed an empty editable dataset for manual entry (shares the single `dataset`
+  // slot with uploads). Two starter columns, three blank rows; the EDA table is
+  // editable so the student fills it in. `_id` keys each row for stable edits.
+  const startManualData = () => {
+    const headers = ["x", "y"];
+    const rows = Array.from({ length: 3 }, () => ({ _id: uid(), x: "", y: "" }));
+    setDataset({ headers, rows, name: "Manual data" });
+  };
+
   const updDevice = (i, d) => {
     const old = pipeline[i];
     const structural = samplingShape(old) !== samplingShape(d);
@@ -434,13 +443,15 @@ export default function App() {
             <input type="file" accept=".csv,text/csv" style={{ display:"none" }}
               onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleCSVFile(f); }} />
           </label>
+          <button onClick={startManualData} style={{ ...btnNav, fontSize:12 }}>✏️ Enter data manually</button>
           {dataset && <button onClick={() => setDataset(null)} style={{ ...btnNav, fontSize:12 }}>✕ Clear</button>}
         </div>
 
         {edaOpen && (
           dataset ? (
             <div>
-              <EDAPlot rows={dataset.rows} headers={dataset.headers} />
+              <EDAPlot rows={dataset.rows} headers={dataset.headers}
+                onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })} />
               <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #f0f0f0" }}>
                 <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:6 }}>
                   Copy a column
