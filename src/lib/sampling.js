@@ -77,7 +77,7 @@ function drawSample(pipeline, sampleSize) {
   const state = makeDrawState(pipeline);
   const rows = [];
   for (let s = 0; s < sampleSize; s++) {
-    const row = { _sample: s + 1 };
+    const row = { _id: uid(), _sample: s + 1 };
     pipeline.forEach(dev => {
       // Rows are keyed by the device's stable id (not varName), so a rename never
       // strands the drawn data; display names resolve through nameOf at render time.
@@ -146,7 +146,7 @@ async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates
     // Recompute timing per draw so a live speed change is picked up next draw.
     const speed = speedRef.current;
     const delay = speed === 0 ? 1800 : speed === 1 ? 500 : 0;
-    const row = { _sample: s + 1 };
+    const row = { _id: uid(), _sample: s + 1 };
 
     for (const dev of pipeline) {
       if (cancelRef.current) break;

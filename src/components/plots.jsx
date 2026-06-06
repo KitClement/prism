@@ -1117,7 +1117,22 @@ function DerivedBuilder({ columns, onAdd }) {
 // StatDistPlot small-multiples with one EDA-grade, selectable plot.
 //   columns: [{ label, values:number[] }]  (one value per repetition/sample)
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
-function DistributionPlot({ columns, width }) {
+// Scroll a table row (tagged `data-rowid`) into view within its own scroll container,
+// accounting for the sticky header. Only nudges the container's own scrollTop — never
+// the page. Used to reveal the row a just-clicked plot dot highlights.
+function scrollRowIntoView(container, id) {
+  if (!container || id == null) return;
+  const row = container.querySelector(`[data-rowid="${String(id).replace(/"/g, '\\"')}"]`);
+  if (!row) return;
+  const cRect = container.getBoundingClientRect();
+  const rRect = row.getBoundingClientRect();
+  const head = container.querySelector("thead");
+  const headH = head ? head.offsetHeight : 0;
+  if (rRect.top < cRect.top + headH) container.scrollTop -= (cRect.top + headH - rRect.top);
+  else if (rRect.bottom > cRect.bottom) container.scrollTop += (rRect.bottom - cRect.bottom);
+}
+
+function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect }) {
   // Disambiguate any repeated labels so each column is a distinct header/key
   // (tracked stats are already unique; manually-defined ones may collide).
   const headers = useMemo(() => {
@@ -1138,7 +1153,9 @@ function DistributionPlot({ columns, width }) {
     const len = Math.max(0, ...columns.map(c => c.values.length));
     const out = [];
     for (let i = 0; i < len; i++) {
-      const o = {};
+      // `_id` ties each plotted point to its collected-statistics row (same index)
+      // for linked highlighting; falls back to the index when no ids are supplied.
+      const o = { _id: (rowIds && rowIds[i]) != null ? rowIds[i] : i };
       columns.forEach((c, k) => {
         const v = c.values[i];
         o[headers[k]] = (typeof v === "number" && isFinite(v)) ? v : "";
@@ -1146,10 +1163,11 @@ function DistributionPlot({ columns, width }) {
       out.push(o);
     }
     return out;
-  }, [columns, headers]);
+  }, [columns, headers, rowIds]);
 
   if (!columns.length) return null;
-  return <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} width={width} />;
+  return <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} width={width}
+    selectedIds={selectedIds} onToggleSelect={onToggleSelect} />;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1162,13 +1180,19 @@ function EDAPlot({ rows, headers, onChange }) {
   const [yVar, setYVar] = useState("none");
 
   // Linked highlighting (D1): a shared set of selected row `_id`s, toggled by
-  // clicking a plot dot or a table row, highlighting both together.
+  // clicking a plot dot or a table row, highlighting both together. On select, a
+  // `scrollTarget` nudges the table to reveal the just-highlighted row.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
-  const toggleId = id => setSelectedIds(prev => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const [scrollTarget, setScrollTarget] = useState(null);
+  const toggleId = id => {
+    const adding = !selectedIds.has(id);
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+    if (adding) setScrollTarget({ id });
+  };
 
   // The table is editable whenever the host supplies an onChange (EDA's single
   // dataset slot — both uploaded CSVs and manually-entered data flow back up).
@@ -1179,7 +1203,7 @@ function EDAPlot({ rows, headers, onChange }) {
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
       {/* LEFT: data viewer / editor */}
       <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} editable={editable} onChange={onChange}
-        selectedIds={selectedIds} onToggleSelect={toggleId} />
+        selectedIds={selectedIds} onToggleSelect={toggleId} scrollTarget={scrollTarget} />
       {/* RIGHT: shared interactive plot */}
       <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
         selectedIds={selectedIds} onToggleSelect={toggleId} />
@@ -1201,23 +1225,37 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
   const scrollRef = useRef(null);
   const trackedKeys = useMemo(() => new Set((trackedStats || []).map(statKey)), [trackedStats]);
 
+  // Linked highlighting (D1): clicking a draw-dot or a Draws-table row highlights both.
+  // Keyed by each draw's stable `_id`; on select, scroll the row into view.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [scrollTarget, setScrollTarget] = useState(null);
+  const toggleId = id => {
+    const adding = !selectedIds.has(id);
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+    if (adding) setScrollTarget({ id });
+  };
+  const isSel = id => selectedIds.has(id);
+
   // Auto-scroll the table to the bottom as new draws arrive
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [sampleData.length]);
+  // Reveal the row whose dot was just clicked
+  useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
 
   if (!sampleData.length) {
     return <div style={{ color:"#bbb", textAlign:"center", padding:24 }}>Press "Draw Sample" to begin</div>;
   }
 
   const cols = ["_sample", ...varNames];
+  const HL = "#fde68a"; // selected-row highlight (amber); overrides column tint
   const cellColor = c => c === "_sample" ? "#bbb" : (c === xVar ? "#3730a3" : (c === yVar ? "#047857" : "#2c3e50"));
-  const cellBg = c => c === xVar ? "#eef2ff" : (c === yVar ? "#ecfdf5" : "transparent");
-  // Cap the rendered rows for performance; the most recent draws are kept.
-  const MAX_ROWS = 200;
-  const shown = sampleData.slice(-MAX_ROWS);
-  const offset = sampleData.length - shown.length;
+  const cellBg = (c, sel) => sel ? HL : (c === xVar ? "#eef2ff" : (c === yVar ? "#ecfdf5" : "transparent"));
 
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
@@ -1234,21 +1272,24 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
               </tr>
             </thead>
             <tbody>
-              {shown.map((row, i) => (
-                <tr key={offset + i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+              {sampleData.map((row, i) => {
+                const sel = isSel(row._id);
+                return (
+                <tr key={row._id || i} data-rowid={row._id} onClick={() => toggleId(row._id)} style={{ borderBottom:"1px solid #f5f5f5", cursor:"pointer" }}>
                   {cols.map(c => (
-                    <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c), textAlign: c === "_sample" ? "right" : "left", whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{row[c]}</td>
+                    <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c, sel), textAlign: c === "_sample" ? "right" : "left", whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{row[c]}</td>
                   ))}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
-        {sampleData.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing last {MAX_ROWS} of {sampleData.length} draws</div>}
       </div>
       {/* RIGHT: shared interactive plot */}
       <Plot rows={sampleData} headers={varNames} nameOf={nameOf} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedKeys={trackedKeys} />
+        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedKeys={trackedKeys}
+        selectedIds={selectedIds} onToggleSelect={toggleId} />
     </div>
   );
 }
@@ -1257,11 +1298,14 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
 // DATA TABLE — scrollable view of the raw rows; X/Y columns highlighted
 // ══════════════════════════════════════════════════════════════════════════════
 
-function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, selectedIds, onToggleSelect }) {
+function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, selectedIds, onToggleSelect, scrollTarget }) {
   // Render every row so each plot dot has a reachable table row for linked
   // highlighting (D1). Datasets here are EDA-sized; if a pathologically large CSV
   // ever lags, add windowed rendering (no virtualization library).
   const selectable = !!onToggleSelect;
+  const scrollRef = useRef(null);
+  // Reveal the row whose dot was just clicked (no-op when it's already in view).
+  useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
   const isSel = id => !!(selectedIds && selectedIds.has(id));
   const HL = "#fde68a"; // selected-row highlight (amber); overrides column tint
   const cellBg = (h, sel) => sel ? HL : (h === xVar ? "#eef2ff" : (h === yVar ? "#ecfdf5" : "transparent"));
@@ -1286,7 +1330,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
   return (
     <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
       <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
-      <div style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
           <thead>
             <tr>
@@ -1312,7 +1356,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
             {rows.map((r, i) => {
               const sel = isSel(r._id);
               return (
-              <tr key={r._id || i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+              <tr key={r._id || i} data-rowid={r._id} style={{ borderBottom:"1px solid #f5f5f5" }}>
                 {/* row-number cell doubles as the select handle (clicking a data cell
                     edits it, so selection lives here to avoid clobbering inline edit) */}
                 <td onClick={selectable ? () => onToggleSelect(r._id) : undefined}
@@ -1348,7 +1392,13 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
 // across runs; columns are the `trackedStats` specs (named by statLabel), each with
 // a remove control. (Accumulation itself is wired in a later phase.)
 // ══════════════════════════════════════════════════════════════════════════════
-function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabel, titleFor }) {
+function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabel, titleFor, selectedIds, onToggleSelect, scrollTarget }) {
+  const selectable = !!onToggleSelect;
+  const isSel = id => !!(selectedIds && selectedIds.has(id));
+  const HL = "#fde68a";
+  const scrollRef = useRef(null);
+  // Reveal the row whose distribution-plot dot was just clicked (key for 500-row collects)
+  useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
   if (!trackedStats.length) {
     return (
       <div style={{ flex:"1 1 280px", minWidth:220, color:"#bbb", fontSize:13, padding:"16px 8px", lineHeight:1.5 }}>
@@ -1357,16 +1407,15 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
       </div>
     );
   }
-  const MAX_ROWS = 200;
-  const shown = collectRows.slice(-MAX_ROWS);
-  const offset = collectRows.length - shown.length;
+  // Render every collected row so each distribution-plot dot has a reachable row for
+  // linked highlighting; collected counts (≈500 default) stay light to render.
   const fmt = v => (typeof v === "number" ? (isFinite(v) ? parseFloat(v.toFixed(4)) : "—") : v);
   return (
     <div style={{ flex:"1 1 280px", minWidth:220 }}>
       <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>
         Collected statistics {collectRows.length > 0 && <span style={{ color:"#ccc", fontWeight:600 }}>· {collectRows.length} rows</span>}
       </div>
-      <div style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
           <thead>
             <tr>
@@ -1381,24 +1430,27 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
             </tr>
           </thead>
           <tbody>
-            {shown.length === 0 ? (
+            {collectRows.length === 0 ? (
               <tr>
                 <td colSpan={trackedStats.length + 1} style={{ padding:"12px 8px", color:"#bbb", textAlign:"center" }}>
                   No samples collected yet.
                 </td>
               </tr>
-            ) : shown.map((row, i) => (
-              <tr key={row._id || offset + i} style={{ borderBottom:"1px solid #f5f5f5" }}>
-                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right" }}>{offset + i + 1}</td>
+            ) : collectRows.map((row, i) => {
+              const sel = isSel(row._id);
+              return (
+              <tr key={row._id || i} data-rowid={row._id} onClick={selectable ? () => onToggleSelect(row._id) : undefined}
+                style={{ borderBottom:"1px solid #f5f5f5", cursor: selectable ? "pointer" : "default" }}>
+                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right", background: sel ? HL : undefined }}>{i + 1}</td>
                 {trackedStats.map(s => (
-                  <td key={s.id} style={{ padding:"3px 8px", color:"#555", whiteSpace:"nowrap" }}>{fmt(row[s.id])}</td>
+                  <td key={s.id} style={{ padding:"3px 8px", color:"#555", whiteSpace:"nowrap", background: sel ? HL : undefined }}>{fmt(row[s.id])}</td>
                 ))}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
-      {collectRows.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing last {MAX_ROWS} of {collectRows.length} rows</div>}
     </div>
   );
 }
