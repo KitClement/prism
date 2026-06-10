@@ -610,11 +610,14 @@ export default function App() {
     <div style={{ fontFamily:"'IBM Plex Sans',system-ui,sans-serif", background:"#f1f2f5", minHeight:"100vh", padding:14, boxSizing:"border-box" }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14, flexWrap:"wrap" }}>
-        <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
-          {/* PRISM logo (the color-blind variant swaps in with the code-panel cbMode). */}
+        <div style={{ display:"inline-flex", flexDirection:"column", gap:2, width:"fit-content" }}>
+          {/* PRISM logo (the color-blind variant swaps in with the code-panel cbMode). The
+              tagline's nowrap width sizes the column; the logo fills that width via the
+              width:0 / min-width:100% trick (so its large intrinsic size doesn't inflate the
+              column) with height:auto keeping the aspect ratio — image matches the text below. */}
           <img src={cbMode ? prismLogoCb : prismLogo} alt="PRISM"
-            style={{ height:50, width:"auto", display:"block" }} />
-          <p style={{ margin:0, fontSize:11, color:"#999" }}>Python &amp; R Integrated Simulation Machine</p>
+            style={{ width:0, minWidth:"100%", height:"auto", display:"block" }} />
+          <p style={{ margin:0, fontSize:11, color:"#999", whiteSpace:"nowrap" }}>Python &amp; R Integrated Simulation Machine</p>
         </div>
         {/* Code-panel controls live at the top-right of the whole page; each section's code
             box then sits beside the tool it mirrors. */}
