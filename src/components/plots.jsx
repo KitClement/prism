@@ -644,7 +644,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const setPct = raw => {
     const p = parseFloat(raw);
     if (isNaN(p)) return;
-    setDivPct(clampVal(p / 100, 0.0001, 0.9999)); setDivBy("pct");
+    setDivPct(clampVal(p, 0.0001, 0.9999)); setDivBy("pct"); // stored as a proportion (0–1)
   };
   // Overall regions for the univariate on-plot read-out (num × cat read-outs are
   // computed per-group inside SplitDotPlots).
@@ -857,9 +857,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               cut(s) to the empirical quantile (→ critical value / CI); reading it shows the
               proportion at the current cut (→ p-value). Hidden for a two-sided single divider. */}
           {(divRange || divDir !== "none") && (
-            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "#4338ca" : undefined }}>{divRange ? "middle %" : "tail %"}
-              <NumInput step="any" min="0" max="100" round={2}
-                value={isNaN(shownPct) ? "" : shownPct * 100}
+            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "#4338ca" : undefined }}>{divRange ? "middle" : "tail"}
+              <NumInput step="any" min="0" max="1" round={3}
+                value={isNaN(shownPct) ? "" : shownPct}
                 onChange={n => setPct(n)} style={{ ...iSm, width:64, marginLeft:4 }} />
             </label>
           )}

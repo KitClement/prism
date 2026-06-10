@@ -176,12 +176,15 @@ Both are off by default and gated to plots where they make sense.
   num×num scatter.
   - **Inference framing** (`divDir`/`divBy`/`divPct`): a single divider can pick a one-sided
     **tail** (`◂ Left | Both | Right ▸`) — an arrow highlights the focused tail and only its
-    proportion shows. The value box and a linked **%** box are two ends of one relationship
-    (`divBy`): editing the value (drag/type) reads a probability; editing the % snaps the
-    cut(s) to that empirical **quantile** (reusing `stats.js` `quantile`, type-7 — constraint
-    #5). Toggling Range or direction resets `divBy` to `"value"`. On the Collect plot this
-    drives the generated **inference**: tail+value → p-value, tail+% → critical value,
-    range+value → band proportion, range+% → CI (see codegen note below).
+    proportion shows. The value box and a linked **tail/middle proportion** box (0–1, matching
+    the tool's proportion convention) are two ends of one relationship (`divBy`): editing the
+    value (drag/type) reads a probability; editing the proportion snaps the cut(s) to that
+    empirical **quantile** (reusing `stats.js` `quantile`, type-7 — constraint #5; on a discrete
+    distribution a band of targets can map to the same achievable cut — that plateau is the
+    honest empirical quantile, not a bug). Toggling Range or direction resets `divBy` to
+    `"value"`. `divPct` is stored as a fraction; generated-code comments keep conventional `%`.
+    On the Collect plot this drives the generated **inference**: tail+value → p-value, tail+prop
+    → critical value, range+value → band proportion, range+prop → CI (see codegen note below).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
   *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
