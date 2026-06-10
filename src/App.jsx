@@ -10,6 +10,8 @@ import { CodeControls, CodeBeside } from "./components/code";
 import { generateCode } from "./lib/codegen";
 import { CopyColumnButton } from "./components/ui";
 import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
+import prismLogo from "./assets/prism-logo.svg";
+import prismLogoCb from "./assets/prism-logo-cb.svg";
 
 // Browser dialogs can be unavailable in sandboxed/embedded contexts (they throw, e.g.
 // "prompt() is not supported"). Wrap them so a blocked dialog degrades gracefully —
@@ -608,9 +610,11 @@ export default function App() {
     <div style={{ fontFamily:"'IBM Plex Sans',system-ui,sans-serif", background:"#f1f2f5", minHeight:"100vh", padding:14, boxSizing:"border-box" }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14, flexWrap:"wrap" }}>
-        <div>
-          <h1 style={{ margin:0, fontSize:20, fontWeight:800, color:"#1a1a2e" }}>🎲 TinkerSim</h1>
-          <p style={{ margin:0, fontSize:11, color:"#999" }}>Probability sampler & simulation</p>
+        <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+          {/* PRISM logo (the color-blind variant swaps in with the code-panel cbMode). */}
+          <img src={cbMode ? prismLogoCb : prismLogo} alt="PRISM"
+            style={{ height:50, width:"auto", display:"block" }} />
+          <p style={{ margin:0, fontSize:11, color:"#999" }}>Python &amp; R Integrated Simulation Machine</p>
         </div>
         {/* Code-panel controls live at the top-right of the whole page; each section's code
             box then sits beside the tool it mirrors. */}

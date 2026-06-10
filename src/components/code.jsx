@@ -91,25 +91,21 @@ export function CodeControls({ codeLang, cbMode, onSetLang, onToggleCb }) {
       {label}
     </button>
   );
+  // The color-blind checkbox sits to the LEFT of the toggle, so the toggle (which is the
+  // rightmost item and the group is right-anchored in the header) stays fixed in place as the
+  // checkbox shows/hides. The logo up top now signals the active color palette.
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+    <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", justifyContent:"flex-end" }}>
+      {on && (
+        <label style={{ fontSize:11.5, color:"#666", display:"flex", alignItems:"center", gap:5, cursor:"pointer" }}>
+          <input type="checkbox" checked={cbMode} onChange={onToggleCb} />
+          Color-blind
+        </label>
+      )}
       <span style={{ fontSize:12, fontWeight:700, color:"#888" }}>{"</> "}Code</span>
       <div style={{ display:"flex" }}>
         {langBtn("off", "Off")}{langBtn("r", "R")}{langBtn("python", "Python")}
       </div>
-      {on && (
-        <>
-          <label style={{ fontSize:11.5, color:"#666", display:"flex", alignItems:"center", gap:5, cursor:"pointer" }}>
-            <input type="checkbox" checked={cbMode} onChange={onToggleCb} />
-            Color-blind
-          </label>
-          <span style={{ display:"flex", gap:8, alignItems:"center" }}>
-            {CODE_SECTIONS.map(s => (
-              <Glyph key={s.id} symbol={s.symbol} color={sectionColor(s, cbMode)} size={12} />
-            ))}
-          </span>
-        </>
-      )}
     </div>
   );
 }
