@@ -102,10 +102,14 @@ branch devices' declared outcomes.
   serializes the minimal config (`pipeline`, `sampleSize`, `runMode`/`stopRule`,
   `trackedStats`, `codeLang`) → a `?s=` blob; a one-time mount `useEffect` in `App.jsx`
   imports it, runs `migratePipeline` + `rekeyStats`/`rekeyStopRule`, then cleans the URL.
-- **Hidden samplers** (Task D): a password XOR-veils the compressed config (salt travels, the
-  plaintext password never does — **not** crypto-grade). A hidden sampler still draws/collects
-  but renders opaque placeholders until a "Reveal" re-prompts. Browser dialogs are wrapped in
-  module-level `safePrompt`/`safeAlert`/`safeConfirm` (they throw in embedded/headless contexts).
+- **Hidden samplers** (Task D): a hidden link **opens and runs for anyone — no password
+  needed**; the password gates only *revealing* the device internals. The config is XOR-
+  obfuscated with a code-known `PEPPER` (so a casual URL decompress shows garbage, but the app
+  always decodes it to run concealed); the blob also carries a salted password *verifier*
+  (`checkHiddenPassword`), never the plaintext. **Not** crypto-grade. A hidden sampler renders
+  opaque placeholders + a "Reveal" button until the password is entered. Browser dialogs are
+  wrapped in module-level `safePrompt`/`safeAlert`/`safeConfirm` (they throw in embedded/
+  headless contexts).
 - **Code panels** (`components/code.jsx`, `lib/codegen.js`): off by default; the toggle reveals
   four runnable R/Python sections + an integrated program. See "Hard-won constraints" #7.
 
