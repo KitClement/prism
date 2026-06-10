@@ -103,6 +103,7 @@ export default function App() {
   const onCollectDivider = useCallback(d => {
     setDividerState(prev => {
       const same = prev === d || (prev && d && prev.statId === d.statId && prev.range === d.range &&
+        prev.dir === d.dir && prev.by === d.by && prev.pct === d.pct &&
         prev.cuts.length === d.cuts.length && prev.cuts.every((v, i) => v === d.cuts[i]));
       return same ? prev : d;
     });

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
-import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS } from "../lib/stats";
+import { numericSummary, lsFit, statLabel, statKey, computeStat, quantile, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
@@ -77,7 +77,7 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
 // `onChange`. Pointer events with capture; clientX is mapped to svg-attribute pixels
 // via `W / rect.width` so it stays correct under the plot's `maxWidth:100%` scaling.
 //   cuts: [v] (single) | [lo, hi] (range) — values in data units, in array order.
-function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCandidates, shade, fmt }) {
+function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCandidates, shade, fmt, dir = "none" }) {
   const [dragI, setDragI] = useState(-1);
   const pxPerUnit = Math.abs(sx(xhi) - sx(xlo)) / (Math.abs(xhi - xlo) || 1);
   const xL = sx(xlo), xR = sx(xhi);
@@ -114,16 +114,37 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
   const shades = [];
   if (shade && cuts.length === 1) {
     const xv = sx(cuts[0]);
-    shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.07} />);
-    shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.07} />);
+    // Two-sided: shade both halves faintly. Directional: shade only the focused tail (the
+    // arrow points into it), the side whose proportion is the p-value / critical value.
+    if (dir === "left") shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.14} />);
+    else if (dir === "right") shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.14} />);
+    else {
+      shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.07} />);
+      shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.07} />);
+    }
   } else if (shade && cuts.length === 2) {
     const a = sx(Math.min(cuts[0], cuts[1])), b = sx(Math.max(cuts[0], cuts[1]));
     shades.push(<rect key="mid" x={a} y={topY} width={Math.max(0, b - a)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+  }
+  // Direction arrow for a one-sided single divider: a short horizontal arrow at mid-height
+  // pointing into the shaded tail (blue ◂ left, orange ▸ right).
+  let arrow = null;
+  if (dir !== "none" && cuts.length === 1) {
+    const x = sx(cuts[0]), my = (topY + botY) / 2, right = dir === "right";
+    const tip = x + (right ? 26 : -26), base = x + (right ? 8 : -8), col = right ? "#d97706" : "#2563eb";
+    const back = tip + (right ? -7 : 7);
+    arrow = (
+      <g style={{ pointerEvents: "none" }}>
+        <line x1={base} y1={my} x2={tip} y2={my} stroke={col} strokeWidth={2} />
+        <path d={`M ${tip} ${my} L ${back} ${my - 4} L ${back} ${my + 4} Z`} fill={col} />
+      </g>
+    );
   }
 
   return (
     <g>
       {shades}
+      {arrow}
       {cuts.map((v, i) => {
         const x = sx(v);
         return (
@@ -429,6 +450,14 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const [divCuts, setDivCuts] = useState([]);
   const [divShowCount, setDivShowCount] = useState(false);
   const [divShowPct, setDivShowPct] = useState(false);
+  // Inference framing for the single divider: `divDir` picks a one-sided tail (an arrow
+  // highlights it and only that tail's proportion shows → a p-value); `divBy` records whether
+  // the student last set a VALUE (drag/type → read a probability) or a PERCENTAGE (`divPct`,
+  // a tail/middle fraction → the cut snaps to that empirical quantile → read a critical value
+  // / CI). The two are linked: editing the value box switches to "value", the % box to "pct".
+  const [divDir, setDivDir] = useState("none"); // "none" | "left" | "right"
+  const [divBy, setDivBy] = useState("value");  // "value" | "pct"
+  const [divPct, setDivPct] = useState(0.05);   // fraction: tail (single) / middle (range)
   // Ruler measurement tool (Phase 6c): off by default; opt-in per plot. Endpoints carry
   // their snapped operand ({ value, spec, label }) so a difference of two measures can be
   // tracked as a derived column.
@@ -584,32 +613,64 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // else sensible defaults derived from the domain (so the line follows the data until
   // the student grabs it). Drag/typing then makes `divCuts` authoritative.
   const showDivider = divOn && !!divDomain;
+  // The percentage drives the cut only when there's a tail/middle to target (a single
+  // direction, or range mode) — a two-sided single divider is always value-driven.
+  const pctActive = divBy === "pct" && (divRange || divDir !== "none");
   let effCuts = [];
   if (showDivider) {
     const { lo, hi } = divDomain, want = divRange ? 2 : 1;
-    const inRange = v => v >= lo && v <= hi;
-    effCuts = (divCuts.length === want && divCuts.every(inRange))
-      ? divCuts
-      : (divRange ? [lo + (hi - lo) / 3, lo + 2 * (hi - lo) / 3] : [(lo + hi) / 2]);
+    if (pctActive && divDomain.values.length) {
+      const sorted = [...divDomain.values].sort((a, b) => a - b), m = divPct;
+      const cut = q => clampVal(quantile(sorted, q), lo, hi);
+      // Empirical quantiles for the target proportion: range → symmetric middle band;
+      // single → the upper (right) or lower (left) tail. Matches measure.js `regions`.
+      effCuts = divRange ? [cut((1 - m) / 2), cut(1 - (1 - m) / 2)]
+        : [cut(divDir === "right" ? 1 - m : m)];
+    } else {
+      const inRange = v => v >= lo && v <= hi;
+      effCuts = (divCuts.length === want && divCuts.every(inRange))
+        ? divCuts
+        : (divRange ? [lo + (hi - lo) / 3, lo + 2 * (hi - lo) / 3] : [(lo + hi) / 2]);
+    }
   }
+  // Editing a value (drag or type) makes the cut authoritative (value mode); typing a
+  // percentage snaps the cut to that quantile (pct mode). The two boxes stay linked.
+  const onDivDrag = next => { setDivCuts(next); setDivBy("value"); };
   const setCut = (i, raw) => {
     const v = clampVal(parseFloat(raw), divDomain.lo, divDomain.hi);
     if (isNaN(v)) return;
-    const next = effCuts.slice(); next[i] = v; setDivCuts(next);
+    const next = effCuts.slice(); next[i] = v; setDivCuts(next); setDivBy("value");
+  };
+  const setPct = raw => {
+    const p = parseFloat(raw);
+    if (isNaN(p)) return;
+    setDivPct(clampVal(p / 100, 0.0001, 0.9999)); setDivBy("pct");
   };
   // Overall regions for the univariate on-plot read-out (num × cat read-outs are
   // computed per-group inside SplitDotPlots).
   const divRegions = showDivider ? regions(divDomain.values, effCuts) : null;
-  const divProps = { divOn: showDivider, divCuts: effCuts, onDivChange: setDivCuts,
+  // The single divider's focused region when a tail direction is chosen (right → the ≥ side,
+  // left → the < side); null for two-sided / range. Drives the one-tail read-out + the linked
+  // % box (its proportion is what "tail %" shows in value mode).
+  const divDirected = showDivider && !divRange && divDir !== "none";
+  const focusRegion = divRegions
+    ? (divRange ? divRegions.find(r => r.key === "mid")
+      : divDir === "left" ? divRegions.find(r => r.key === "lt")
+      : divDir === "right" ? divRegions.find(r => r.key === "ge") : null)
+    : null;
+  const shownPct = divBy === "pct" ? divPct : (focusRegion ? focusRegion.p : NaN);
+  const divProps = { divOn: showDivider, divCuts: effCuts, onDivChange: onDivDrag,
     divSnap: showDivider ? divDomain.snap : null, divShowCount, divShowPct,
     divFmt: showDivider ? divDomain.fmt : null };
-  // Report the active divider cut to a host that wants to mirror it (the Collect plot lifts
-  // this into App so the generated inference code uses the real cutoff). `variable` is the
-  // current X header; `cuts` are in stat units. Null when the divider is off.
+  // Report the active divider to a host that wants to mirror it (the Collect plot lifts this
+  // into App so the generated inference code uses the real cutoff / framing). `variable` is
+  // the current X header; `cuts` are in stat units. Null when the divider is off.
   useEffect(() => {
     if (!onDivider) return;
-    onDivider(showDivider ? { variable: xVar, cuts: effCuts, range: divRange } : null);
-  }, [onDivider, showDivider, xVar, divRange, effCuts.join(",")]);
+    onDivider(showDivider
+      ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct }
+      : null);
+  }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, effCuts.join(",")]);
 
   // ── Ruler tool (Phase 6c) ──
   // Mechanic 1 (axis distance / difference of measures) shares the divider's gating and
@@ -765,13 +826,36 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       {/* Divider controls (Phase 6) — the read-outs themselves live on the plot */}
       {showDivider && (
         <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
-          <ChkLabel checked={divRange} onChange={setDivRange} label="↔ Range (band)" />
+          <ChkLabel checked={divRange} onChange={v => { setDivRange(v); setDivBy("value"); }} label="↔ Range (band)" />
+          {/* Single-divider tail direction: Both (two-sided) | ◂ Left | Right ▸. A tail focuses
+              one side (arrow + one proportion → p-value / critical value). Switching framing
+              returns to value mode so the % box re-reads the live proportion. */}
+          {!divRange && (
+            <div style={{ display:"flex", border:"1px solid #ddd", borderRadius:6, overflow:"hidden" }}>
+              {[["none", "Both"], ["left", "◂ Left"], ["right", "Right ▸"]].map(([val, lab]) => (
+                <button key={val} onClick={() => { setDivDir(val); setDivBy("value"); }}
+                  style={{ padding:"3px 9px", border:"none", borderLeft: val === "none" ? "none" : "1px solid #eee",
+                    background: divDir === val ? "#6366f1" : "#fff", color: divDir === val ? "#fff" : "#666",
+                    fontSize:11, fontWeight:600, cursor:"pointer" }}>{lab}</button>
+              ))}
+            </div>
+          )}
           {effCuts.map((v, i) => (
             <label key={i} style={ctrlLbl}>{divRange ? (i === 0 ? "low" : "high") : "at"}
               <input type="number" step="any" value={parseFloat(Number(v).toFixed(4))}
                 onChange={e => setCut(i, e.target.value)} style={{ ...iSm, width:72, marginLeft:4 }} />
             </label>
           ))}
+          {/* Linked percentage: range → middle %, single tail → tail %. Editing it snaps the
+              cut(s) to the empirical quantile (→ critical value / CI); reading it shows the
+              proportion at the current cut (→ p-value). Hidden for a two-sided single divider. */}
+          {(divRange || divDir !== "none") && (
+            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "#4338ca" : undefined }}>{divRange ? "middle %" : "tail %"}
+              <input type="number" step="any" min="0" max="100"
+                value={isNaN(shownPct) ? "" : parseFloat((shownPct * 100).toFixed(2))}
+                onChange={e => setPct(e.target.value)} style={{ ...iSm, width:64, marginLeft:4 }} />
+            </label>
+          )}
           <ChkLabel checked={divShowCount} onChange={setDivShowCount} label="# Count" />
           <ChkLabel checked={divShowPct} onChange={setDivShowPct} label="Proportion" />
         </div>
@@ -951,10 +1035,12 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               <>
                 <DividerLines W={W} topY={PT} botY={PT + iH} sx={sx}
                   inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
-                  xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} onChange={setDivCuts}
-                  snapCandidates={divDomain.snap} shade fmt={divDomain.fmt} />
-                <RegionLabels regions={divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}
-                  y={PT + 9} showCount={divShowCount} showPct={divShowPct} total={divDomain.values.length}
+                  xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} onChange={onDivDrag}
+                  snapCandidates={divDomain.snap} shade fmt={divDomain.fmt} dir={divRange ? "none" : divDir} />
+                {/* Directional single divider shows only the focused tail's proportion (always),
+                    plus the Count read-out when its checkbox is on; otherwise the usual regions. */}
+                <RegionLabels regions={divDirected && focusRegion ? [focusRegion] : divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}
+                  y={PT + 9} showCount={divShowCount} showPct={divShowPct || divDirected} total={divDomain.values.length}
                   base={{ variable: xVar }} trackProps={trackProps} />
               </>
             )}
@@ -1178,7 +1264,7 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
     if (!onDivider) return;
     if (!d) { onDivider(null); return; }
     const k = headers.indexOf(d.variable);
-    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range });
+    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct });
   }, [onDivider, headers, columns]);
 
   if (!columns.length) return null;

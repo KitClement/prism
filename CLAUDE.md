@@ -169,6 +169,14 @@ Both are off by default and gated to plots where they make sense.
   are **click-to-track** in Sample Results (`countBetween`/`propBetween`).
   Gated to univariate numeric and num×cat-with-numeric-X; hidden on cat×cat, uni-cat, and
   num×num scatter.
+  - **Inference framing** (`divDir`/`divBy`/`divPct`): a single divider can pick a one-sided
+    **tail** (`◂ Left | Both | Right ▸`) — an arrow highlights the focused tail and only its
+    proportion shows. The value box and a linked **%** box are two ends of one relationship
+    (`divBy`): editing the value (drag/type) reads a probability; editing the % snaps the
+    cut(s) to that empirical **quantile** (reusing `stats.js` `quantile`, type-7 — constraint
+    #5). Toggling Range or direction resets `divBy` to `"value"`. On the Collect plot this
+    drives the generated **inference**: tail+value → p-value, tail+% → critical value,
+    range+value → band proportion, range+% → CI (see codegen note below).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
   *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
@@ -241,13 +249,16 @@ R/Python code panels, serialization polish) all shipped. Possible follow-ons:
 - Trackability for the ruler's **residual** case; the divider on num×num scatter (both
   deferred earlier). More device types or pipeline composition, if the curriculum needs them.
 
-The Collect-plot **divider is wired into the inference code**: `Plot` reports its active cut
-via an `onDivider` callback, `DistributionPlot` maps the X header back to its tracked-stat id,
-and `App` lifts it into `dividerState` (a deduped setter prevents a re-render loop) → the
-`generateCode` cfg. `codegen.js`'s `dividerInfo`/`tailLines` then emit the real cutoff —
-`mean(vec >= v)` / a band `mean(vec >= lo & vec <= hi)` (matching `measure.js` `regions`) over
-the matched statistic's result vector — falling back to the `>= 0` placeholder when the divider
-is off or sits on a non-emitted (derived) column.
+The Collect-plot **divider is wired into the inference code**: `Plot` reports its active cut +
+framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
+`DistributionPlot` maps the X header back to its tracked-stat id, and `App` lifts it into
+`dividerState` (a deduped setter prevents a re-render loop) → the `generateCode` cfg.
+`codegen.js`'s `dividerInfo`/`dividerExprs` then emit, over the matched statistic's result
+vector, one of: **p-value** `mean(vec >= v)` / `mean(vec < v)` (tail + value), **critical
+value** `quantile(vec, q, type=7)` (tail + %), **band proportion** `mean(vec >= lo & vec <= hi)`
+(range + value), or **CI** `quantile(vec, c(qlo, qhi))` (range + %); two-sided shows both
+proportions. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
+(derived) column.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.
