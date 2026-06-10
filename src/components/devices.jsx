@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnPlus, btnArr } from "../lib/styles";
 import { COLORS, clamp, uid, nextItemLabel } from "../lib/util";
 import { InlineEdit, PasteButton, ReplacementToggle, RangeInput } from "./ui";
+import { mkSpinner, mkStacks, mkMixer, stageOutcomes } from "../lib/sampling";
 
 // ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
 // Floor so a slice never fully vanishes (small enough that manual entry stays flexible;
@@ -853,8 +854,144 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ANIMATION LOOP
-// Drives animState for each device sequentially, then commits a row to the table
+// STAGE CARD — one output column. Holds 1+ conditional branches, each a device whose
+// outcomes can depend on an upstream stage's draw (fork). A single-branch stage renders
+// like a plain device; a forked stage stacks its branch sub-cards with condition labels.
 // ══════════════════════════════════════════════════════════════════════════════
 
-export { SpinnerDevice, StacksDevice, MixerDevice, DeviceCard };
+// Deep-clone a device with FRESH ids (its own + every outcome's), so a cloned branch
+// device gets a separate without-replacement pool and its own animState slot.
+function cloneDeviceFresh(dev) {
+  const c = JSON.parse(JSON.stringify(dev));
+  c.id = uid();
+  const coll = c.items || c.balls || c.slices;
+  if (coll) coll.forEach(o => { o.id = uid(); });
+  return c;
+}
+const mkDeviceOfType = type => ({ spinner:mkSpinner, stacks:mkStacks, mixer:mkMixer }[type] || mkStacks)(1);
+
+// The body of one branch: result badge + the device editor, dimmable when not selected.
+function BranchDeviceBody({ device, onChange, animState, locked }) {
+  const [spinnerReady, setSpinnerReady] = useState(false);
+  const drawId = animState && animState.drawId;
+  const isAnimating = animState && animState.animating;
+  useEffect(() => { setSpinnerReady(!isAnimating); }, [drawId]);
+  const rawResult = animState && animState.result;
+  const result = device.type === "spinner" ? (spinnerReady ? rawResult : null) : rawResult;
+  const edit = locked ? () => {} : onChange;
+  return (
+    <div style={{ opacity: animState && animState.inactive ? 0.32 : 1, transition:"opacity 0.2s" }}>
+      <div style={{ minHeight:26, display:"flex", alignItems:"center", justifyContent:"center" }}>
+        {result ? (
+          <div style={{ background:"#6366f1", color:"#fff", borderRadius:20, padding:"3px 16px", fontSize:14, fontWeight:700, boxShadow:"0 2px 8px rgba(99,102,241,0.35)" }}>{result}</div>
+        ) : (
+          <div style={{ height:24, width:64, borderRadius:20, border:"1.5px dashed #e0e0e0", background:"#fafafa" }} />
+        )}
+      </div>
+      {device.type === "spinner" && <SpinnerDevice device={device} onChange={edit} animState={animState} onSpinReady={() => setSpinnerReady(true)} />}
+      {device.type === "stacks" && <StacksDevice device={device} onChange={edit} animState={animState} />}
+      {device.type === "mixer" && <MixerDevice device={device} onChange={edit} animState={animState} />}
+    </div>
+  );
+}
+
+// Inline condition editor for one conditional branch: "if <upstream> = <value>".
+function BranchConditionEditor({ branch, upstreamStages, nameOf, onChange, locked }) {
+  const condStage = upstreamStages.find(s => s.id === branch.condVar) || upstreamStages[0];
+  const opts = condStage ? stageOutcomes(condStage) : [];
+  const selSty = { ...iSm, fontSize:11, padding:"2px 4px" };
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11, color:"#7c3aed", flexWrap:"wrap" }}>
+      <span style={{ fontWeight:700 }}>if</span>
+      <select value={branch.condVar || (condStage && condStage.id) || ""} disabled={locked}
+        onChange={e => { const sid = e.target.value; const st = upstreamStages.find(s => s.id === sid); const vs = st ? stageOutcomes(st) : []; onChange({ ...branch, condVar:sid, condVal: vs.includes(branch.condVal) ? branch.condVal : (vs[0] || "") }); }}
+        style={selSty}>
+        {upstreamStages.map(s => <option key={s.id} value={s.id}>{nameOf(s.id)}</option>)}
+      </select>
+      <span>=</span>
+      <select value={branch.condVal != null ? branch.condVal : ""} disabled={locked}
+        onChange={e => onChange({ ...branch, condVal:e.target.value })} style={selSty}>
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+const DTYPE_OPTS = [["stacks","📊 Stacks"], ["mixer","🎱 Mixer"], ["spinner","🎰 Spinner"]];
+
+function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRemove, onMove, animStates, locked, nameError }) {
+  const branches = stage.branches;
+  const forked = branches.length > 1;
+  const canFork = upstreamStages.length > 0; // need an upstream stage to condition on
+
+  const setBranches = bs => onChange({ ...stage, branches: bs });
+  const setBranch = (bid, nb) => setBranches(branches.map(b => b.id === bid ? nb : b));
+  const setBranchDevice = (bid, dev) => setBranch(bid, { ...branches.find(b => b.id === bid), device: dev });
+
+  const addBranch = () => {
+    const def = branches.find(b => b.condVar === null) || branches[0];
+    const up = upstreamStages[0];
+    const vals = up ? stageOutcomes(up) : [];
+    const nb = { id:uid(), condVar: up ? up.id : null, condVal: vals[0] || "", device: cloneDeviceFresh(def.device) };
+    // Keep the default branch last so it always reads as the "otherwise" fall-through.
+    const cond = branches.filter(b => b.condVar !== null);
+    const dft = branches.filter(b => b.condVar === null);
+    setBranches([...cond, nb, ...dft]);
+  };
+  const remBranch = bid => { const b = branches.find(x => x.id === bid); if (b.condVar === null) return; setBranches(branches.filter(x => x.id !== bid)); };
+  const changeBranchType = (bid, type) => { const b = branches.find(x => x.id === bid); if (b.device.type === type) return; setBranchDevice(bid, mkDeviceOfType(type)); };
+
+  return (
+    <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 10px rgba(0,0,0,0.06)",
+      border: forked ? "1.5px solid #c4b5fd" : "1.5px solid #e8e8e8", padding:12,
+      display:"flex", flexDirection:"column", gap:7, flex:"1 1 200px", minWidth:184, maxWidth:260, position:"relative" }}>
+      {locked && <div style={{ position:"absolute", inset:0, borderRadius:12, zIndex:10, background:"transparent", cursor:"not-allowed" }} />}
+      {/* Stage header: column name + reorder/remove */}
+      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+        <span style={{ fontSize:10, color:"#bbb" }}>var:</span>
+        <input value={stage.varName} disabled={locked}
+          title={nameError ? "Column names must be unique and non-blank" : undefined}
+          onChange={e => onChange({ ...stage, varName:e.target.value.replace(/\s/g, "_") })}
+          style={{ ...iSm, flex:1, fontFamily:"monospace", fontSize:11, borderColor: nameError ? "#ef4444" : undefined, boxShadow: nameError ? "0 0 0 1px #ef4444" : undefined }} />
+        <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr}>←</button>
+        <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr}>→</button>
+        <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }}>✕</button>
+      </div>
+
+      {branches.map(branch => {
+        const isDefault = branch.condVar === null;
+        return (
+          <div key={branch.id} style={{ borderTop: forked ? "1px dashed #ede9fe" : "none", paddingTop: forked ? 6 : 0 }}>
+            {forked && (
+              <div style={{ display:"flex", alignItems:"center", gap:4, marginBottom:4 }}>
+                {isDefault ? (
+                  <span style={{ fontSize:11, fontWeight:700, color:"#7c3aed" }}>otherwise</span>
+                ) : (
+                  <BranchConditionEditor branch={branch} upstreamStages={upstreamStages} nameOf={nameOf}
+                    onChange={nb => setBranch(branch.id, nb)} locked={locked} />
+                )}
+                <select value={branch.device.type} disabled={locked}
+                  onChange={e => changeBranchType(branch.id, e.target.value)}
+                  style={{ ...iSm, fontSize:10, padding:"2px 3px", marginLeft:"auto" }}>
+                  {DTYPE_OPTS.map(([t, l]) => <option key={t} value={t}>{l}</option>)}
+                </select>
+                {!isDefault && <button disabled={locked} onClick={() => remBranch(branch.id)} style={btnX}>×</button>}
+              </div>
+            )}
+            <BranchDeviceBody device={branch.device} animState={animStates[branch.device.id] || null}
+              locked={locked} onChange={dev => setBranchDevice(branch.id, dev)} />
+          </div>
+        );
+      })}
+
+      {canFork && !locked && (
+        <button onClick={addBranch} style={{ ...btnPlus, marginTop:2 }}
+          title="Add a branch whose device depends on an upstream draw">
+          ⑂ {forked ? "add branch" : "make conditional"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export { SpinnerDevice, StacksDevice, MixerDevice, DeviceCard, StageCard };

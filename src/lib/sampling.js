@@ -1,17 +1,19 @@
 import { uid, sleep, parseTimeToMinutes } from "./util";
 
-// Classify a sampler variable num/cat from its device's DECLARED outcomes (not from
-// drawn rows). A device's var is **numeric only if every declared outcome parses as a
-// number or time** — any non-numeric label makes it categorical, because a rare outcome
-// is still a possible draw (a stricter rule than colKind's 80%, which would let a rare
-// non-numeric outcome silently break a plot set up as numeric). Mirrors colKind's shape
-// and time flag so plots can consume either interchangeably.
-function deviceVarKind(dev) {
-  const labels =
-    dev.type === "stacks"  ? dev.items.map(it => it.label)
-    : dev.type === "mixer"   ? dev.balls.map(b => b.label)
-    : dev.type === "spinner" ? dev.slices.map(s => s.label)
-    : [];
+// ─── Outcome classification ─────────────────────────────────────────────────────
+// Extract the declared outcome labels from a single device.
+function deviceLabels(dev) {
+  return dev.type === "stacks"  ? dev.items.map(it => it.label)
+       : dev.type === "mixer"   ? dev.balls.map(b => b.label)
+       : dev.type === "spinner" ? dev.slices.map(s => s.label)
+       : [];
+}
+// Classify a set of outcome labels as numeric/time. A variable is **numeric only if
+// every declared outcome parses as a number or time** — any non-numeric label makes it
+// categorical, because a rare outcome is still a possible draw (a stricter rule than
+// colKind's 80%, which would let a rare non-numeric outcome silently break a plot set up
+// as numeric). Mirrors colKind's shape and time flag so plots can consume either.
+function classifyLabels(labels) {
   const vals = labels.filter(v => v !== undefined && v !== null && String(v).trim() !== "");
   if (!vals.length) return { numeric: false, time: false };
   let plainNum = 0, timeCount = 0, nonNum = 0;
@@ -22,6 +24,76 @@ function deviceVarKind(dev) {
   });
   const numeric = nonNum === 0;
   return { numeric, time: numeric && timeCount > plainNum };
+}
+// Classify a single device's var num/cat from its DECLARED outcomes (not drawn rows).
+function deviceVarKind(dev) { return classifyLabels(deviceLabels(dev)); }
+// A STAGE's kind comes from the UNION of all its branch devices' declared outcomes: a
+// fork is numeric only if every outcome on every branch parses numeric/time.
+function stageVarKind(stage) { return classifyLabels(stage.branches.flatMap(b => deviceLabels(b.device))); }
+// Unique declared outcomes across all branch devices (for condition-value dropdowns).
+function stageOutcomes(stage) {
+  const out = [], seen = new Set();
+  stage.branches.forEach(b => deviceLabels(b.device).forEach(l => {
+    const s = String(l);
+    if (!seen.has(s)) { seen.add(s); out.push(s); }
+  }));
+  return out;
+}
+
+// ─── Stages & branches ──────────────────────────────────────────────────────────
+// A stage owns one output column (stable id + varName) and holds 1+ branches. Each
+// branch pairs a condition (condVar = an UPSTREAM stage id, condVal = an outcome label)
+// with a device. condVar===null marks the DEFAULT branch (exactly one), which fires when
+// no conditional branch matches — so an unconditional stage always runs (convergence)
+// and a branch may key off any already-resolved upstream stage (nesting). The inner
+// device keeps the existing spinner/stacks/mixer shape; its own varName is vestigial.
+const mkStage = (device, varName) => ({
+  id: uid(), type: "stage", varName: varName || device.varName,
+  branches: [{ id: uid(), condVar: null, condVal: null, device }],
+});
+// Idempotent migration: wrap a legacy flat Device[] into Stage[]; pass Stage[] through.
+const toStages = pipeline => (pipeline || []).map(el => (el && el.type === "stage" ? el : mkStage(el)));
+
+// Same migration, but also return the old-id → stage-id map so references stored against
+// the *pre-migration* ids (tracked-stat variable/variable2/condVar, stopRule.stageId) can
+// be rekeyed in ONE place (Task F). For an already-staged pipeline the map is identity, so
+// the rekey is a harmless no-op; for a legacy flat pipeline a tracked stat that referenced a
+// device id is rewritten to the id of the stage now wrapping that device.
+function migratePipeline(pipeline) {
+  const idMap = {};
+  const stages = (pipeline || []).map(el => {
+    if (el && el.type === "stage") { idMap[el.id] = el.id; return el; }
+    const stage = mkStage(el);
+    if (el && el.id) idMap[el.id] = stage.id;
+    return stage;
+  });
+  return { stages, idMap };
+}
+// Rewrite a tracked-stat list's id-valued reference fields through an id map. condVal/target
+// are outcome LABELS (not ids) and stay put; derived columns reference other stat columns
+// (not pipeline ids) so they pass through untouched.
+function rekeyStats(stats, idMap) {
+  const m = id => (id && idMap[id] !== undefined ? idMap[id] : id);
+  return (stats || []).map(s => {
+    if (!s || s.kind === "derived") return s;
+    return { ...s, variable: m(s.variable), variable2: m(s.variable2), condVar: m(s.condVar) };
+  });
+}
+// Rekey a stop rule's stageId through the same map (Task B field, Task F coverage).
+function rekeyStopRule(rule, idMap) {
+  if (!rule || !rule.stageId) return rule || null;
+  const mapped = idMap[rule.stageId];
+  return mapped !== undefined ? { ...rule, stageId: mapped } : rule;
+}
+
+// Pick the branch whose (condVar,condVal) matches the row's already-drawn upstream
+// values; fall back to the default branch (condVar===null). First match wins.
+function selectBranch(stage, row) {
+  for (const b of stage.branches) {
+    if (b.condVar === null) continue;
+    if (row[b.condVar] === b.condVal) return b;
+  }
+  return stage.branches.find(b => b.condVar === null) || stage.branches[0];
 }
 
 // ─── Sampling helpers ─────────────────────────────────────────────────────────
@@ -34,16 +106,18 @@ function sampleSpinner(slices) {
 
 // ─── Shared single-draw logic (used by both the animation loop and the
 //     collect loop, so sampling behavior stays identical in both) ──────────────
-// `state` carries per-repetition mutable tracking:
+// `state` carries per-repetition mutable tracking, keyed by BRANCH-DEVICE id (each
+// branch device draws from its own pool, so without-replacement counting can't bleed
+// across branches):
 //   state.liveCounts[devId] = number[]  (remaining count per stacks item)
 //   state.drawnBalls[devId] = Set       (drawn mixer ball indices)
 // Initialize it for a fresh repetition with makeDrawState(pipeline).
 function makeDrawState(pipeline) {
   const liveCounts = {}, drawnBalls = {};
-  pipeline.forEach(dev => {
+  pipeline.forEach(stage => stage.branches.forEach(({ device: dev }) => {
     if (dev.type === "stacks") liveCounts[dev.id] = dev.items.map(it => it.count);
     if (dev.type === "mixer") drawnBalls[dev.id] = new Set();
-  });
+  }));
   return { liveCounts, drawnBalls };
 }
 
@@ -69,29 +143,50 @@ function drawMixer(dev, state) {
   return { label: dev.balls[ballIdx].label, ballIdx };
 }
 
-// Draw one complete sample (sampleSize rows) through the pipeline, non-animated.
-// Single source of truth for the batch/collect path: both Collect loops must call
-// this so with/without-replacement counting can never diverge from the animation
-// loop (which shares makeDrawState/drawStacks/drawMixer above).
-function drawSample(pipeline, sampleSize) {
+// Draw one value from a device (shared by stage resolver below).
+function drawValueFromDevice(dev, state) {
+  if (dev.type === "spinner") return sampleSpinner(dev.slices);
+  if (dev.type === "stacks") { const d = drawStacks(dev, state); return d ? d.label : ""; }
+  if (dev.type === "mixer") { const d = drawMixer(dev, state); return d ? d.label : ""; }
+  return "";
+}
+// Resolve a stage to one value given the row's already-drawn upstream values.
+function drawStageValue(stage, row, state) {
+  return drawValueFromDevice(selectBranch(stage, row).device, state);
+}
+
+// ─── Stop-until rule ────────────────────────────────────────────────────────────
+// In "until" mode a sample keeps drawing rows until the rule holds (checked against the
+// rows accumulated so far this sample). `rule` = { kind, stageId, value, n }.
+function stopReached(rows, rule) {
+  if (!rule || !rule.stageId) return false;
+  const vals = rows.map(r => r[rule.stageId]);
+  if (rule.kind === "outcome") return vals.includes(rule.value);
+  if (rule.kind === "count") return vals.filter(v => v === rule.value).length >= (rule.n || 1);
+  if (rule.kind === "distinct") return new Set(vals.filter(v => v !== "" && v != null)).size >= (rule.n || 1);
+  return false;
+}
+
+// Draw one complete sample through the pipeline, non-animated. Single source of truth
+// for the batch/collect path: both Collect loops must call this so with/without-
+// replacement counting can never diverge from the animation loop (which shares
+// makeDrawState/drawStacks/drawMixer above). `opts` = { runMode, stopRule }; in "until"
+// mode `sampleSize` is the safety cap (max draws) so an unsatisfiable rule terminates.
+function drawSample(pipeline, sampleSize, opts) {
+  const runMode = opts && opts.runMode === "until" ? "until" : "fixed";
+  const rule = opts && opts.stopRule;
+  const cap = Math.max(1, sampleSize || 1);
   const state = makeDrawState(pipeline);
   const rows = [];
-  for (let s = 0; s < sampleSize; s++) {
+  let s = 0;
+  while (true) {
+    if (runMode === "fixed") { if (s >= sampleSize) break; }
+    else if (stopReached(rows, rule) || s >= cap) break;
     const row = { _id: uid(), _sample: s + 1 };
-    pipeline.forEach(dev => {
-      // Rows are keyed by the device's stable id (not varName), so a rename never
-      // strands the drawn data; display names resolve through nameOf at render time.
-      if (dev.type === "spinner") {
-        row[dev.id] = sampleSpinner(dev.slices);
-      } else if (dev.type === "stacks") {
-        const drawn = drawStacks(dev, state);
-        row[dev.id] = drawn ? drawn.label : "";
-      } else if (dev.type === "mixer") {
-        const drawn = drawMixer(dev, state);
-        row[dev.id] = drawn ? drawn.label : "";
-      }
-    });
+    // Build the row incrementally so a downstream stage's branch sees upstream values.
+    pipeline.forEach(stage => { row[stage.id] = drawStageValue(stage, row, state); });
     rows.push(row);
+    s++;
   }
   return rows;
 }
@@ -123,11 +218,13 @@ const mkMixer = n => ({
   ]
 });
 
-async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates, onRow, onDone, cancelRef }) {
+async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, speedRef, setAnimStates, onRow, onDone, cancelRef }) {
   // speed (0=slow, 1=fast, 2=instant) is read live from speedRef.current so a
   // mid-run slider change takes effect on the next draw. delay/spinMs are
   // recomputed at the top of each draw iteration; `set` stamps the current speed
   // so device visuals follow too.
+  const mode = runMode === "until" ? "until" : "fixed";
+  const cap = Math.max(1, sampleSize || 1);
 
   // Per-device without-replacement tracking (same shape as collect loop)
   const drawState = makeDrawState(pipeline);
@@ -137,19 +234,29 @@ async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates
   const set = (devId, patch) => setAnimStates(prev => ({ ...prev, [devId]: { ...prev[devId], ...patch, speed: speedRef.current } }));
   const clearAll = () => setAnimStates(prev => {
     const next = { ...prev };
-    Object.keys(next).forEach(k => { next[k] = { ...next[k], result:null, bouncing:false, surfaceIdx:null, highlightIdx:null, animating:false }; });
+    Object.keys(next).forEach(k => { next[k] = { ...next[k], result:null, bouncing:false, surfaceIdx:null, highlightIdx:null, animating:false, inactive:false }; });
     return next;
   });
 
-  for (let s = 0; s < sampleSize; s++) {
+  const collected = []; // rows so far this sample (for the until-rule check)
+  let s = 0;
+  while (true) {
     if (cancelRef.current) break;
+    if (mode === "fixed") { if (s >= sampleSize) break; }
+    else if (stopReached(collected, stopRule) || s >= cap) break;
     // Recompute timing per draw so a live speed change is picked up next draw.
     const speed = speedRef.current;
     const delay = speed === 0 ? 1800 : speed === 1 ? 500 : 0;
     const row = { _id: uid(), _sample: s + 1 };
 
-    for (const dev of pipeline) {
+    for (const stage of pipeline) {
       if (cancelRef.current) break;
+      // Resolve which branch fires from the upstream values already in `row`; animate
+      // only that branch's device, dim the other branch devices of a forked stage.
+      const branch = selectBranch(stage, row);
+      const dev = branch.device;
+      stage.branches.forEach(b => { if (b.device.id !== dev.id) set(b.device.id, { inactive:true, result:null, animating:false }); });
+      set(dev.id, { inactive:false });
       let result = "";
 
       if (dev.type === "spinner") {
@@ -178,7 +285,7 @@ async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates
         // Pool maps each remaining unit to its item index; live counts already
         // reflect without-replacement removals, so just sample by current counts.
         const pool = dev.items.flatMap((it, i) => Array(Math.max(0, counts[i])).fill(i));
-        if (!pool.length) { set(dev.id, { result:"—" }); continue; }
+        if (!pool.length) { set(dev.id, { result:"—" }); row[stage.id] = ""; continue; }
         const pickedIdx = pool[Math.floor(Math.random() * pool.length)];
         result = dev.items[pickedIdx].label;
         if (delay > 0) {
@@ -215,7 +322,7 @@ async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates
       } else if (dev.type === "mixer") {
         const removed = drawnSets[dev.id];
         const avail = dev.balls.map((b, i) => i).filter(i => dev.withReplacement || !removed.has(i));
-        if (!avail.length) { set(dev.id, { result:"—" }); continue; }
+        if (!avail.length) { set(dev.id, { result:"—" }); row[stage.id] = ""; continue; }
         const pickedIdx = avail[Math.floor(Math.random() * avail.length)];
         result = dev.balls[pickedIdx].label;
         if (delay > 0) {
@@ -232,20 +339,26 @@ async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates
           set(dev.id, { result, removedSet:new Set(removed), bouncing:false });
         }
       }
-      row[dev.id] = result; // keyed by stable id (see drawSample)
+      row[stage.id] = result; // keyed by the stage's stable id (see drawSample)
     }
 
+    collected.push({ ...row });
     onRow({ ...row });
+    s++;
     if (delay > 0) { await sleep(delay * 0.2); clearAll(); await sleep(60); }
   }
 
-  // Reset live state
-  pipeline.forEach(dev => {
+  // Reset live state across every branch device
+  pipeline.forEach(stage => stage.branches.forEach(({ device: dev }) => {
     if (dev.type === "stacks") set(dev.id, { liveCounts:null, result:null, highlightIdx:null });
     if (dev.type === "mixer") set(dev.id, { removedSet:new Set(), result:null, bouncing:false });
-  });
+  }));
   clearAll();
   onDone();
 }
 
-export { sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, deviceVarKind, mkSpinner, mkStacks, mkMixer, runAnimatedSample };
+export {
+  sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, deviceVarKind,
+  deviceLabels, stageVarKind, stageOutcomes, mkStage, toStages, migratePipeline, rekeyStats, rekeyStopRule, selectBranch, stopReached,
+  mkSpinner, mkStacks, mkMixer, runAnimatedSample,
+};

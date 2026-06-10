@@ -21,10 +21,19 @@ dependency-light and self-contained (no chart lib, no state lib).
     `parseTimeToMinutes`, `collapseCats`, `COLORS`, `uid`, …
   - `stats.js` — `quantile` (interpolating), `numericSummary`, `lsFit`, `computeStat`,
     `statLabel`, `FN_OPTS`, `NUMERIC_FNS`.
-  - `sampling.js` — the shared draw helpers `makeDrawState` / `drawStacks` / `drawMixer` /
-    `sampleSpinner`, the non-animated `drawSample(pipeline, n)` (batch path), the animated
-    `runAnimatedSample` (per-run path), device factories `mkStacks`/`mkMixer`/`mkSpinner`,
-    and `deviceVarKind` (classify a sampler var from its **declared outcomes**).
+  - `sampling.js` — the **stage** model (`mkStage`/`toStages`/`migratePipeline`+`rekeyStats`/
+    `rekeyStopRule`, `selectBranch`, `stageVarKind`/`stageOutcomes`), the shared draw helpers
+    `makeDrawState` / `drawStacks` / `drawMixer` / `sampleSpinner` / `drawStageValue`, the
+    run-until predicate `stopReached`, the non-animated `drawSample(pipeline, n, opts)` (batch
+    path), the animated `runAnimatedSample` (per-run path), device factories
+    `mkStacks`/`mkMixer`/`mkSpinner`, and `deviceVarKind` (classify a sampler var from its
+    **declared outcomes**).
+  - `share.js` — URL sharing (Task C/D): `encodeConfig`/`decodeConfig`/`decodeHidden`/
+    `shareURL`, lz-string compression, and the XOR password-veil helpers (not crypto-grade).
+  - `codegen.js` — parallel R/Python code generation (Task E): `generateCode(config, lang)`
+    returns `{sampler, single, collect, inference, integrated}`, each an array of
+    `{text, section}` lines. Reads the **same** specs the UI uses (stage outcomes, the
+    `computeStat` fn semantics, `stopReached`) so code and tool never diverge.
   - `scale.js` — `makeScale` (axis scale builder) + `stackDots` (tallest-column dot
     stacking). Shared by every plot.
   - `expr.js` — derived-statistic engine: `lexExpr`/`evalExpr`/`validateExpr`,
@@ -32,15 +41,19 @@ dependency-light and self-contained (no chart lib, no state lib).
     `aliasFor`.
   - `measure.js` — measurement-tool math: `clampVal`, `snapValue`/`snapMeasure` (snap a
     handle to dots/visible measures), `regions` (divider proportions).
-  - `styles.js` — shared style consts (`iSm`, `btnX`, `Sel`, …); `hooks.js` —
-    `useContainerWidth`.
+  - `styles.js` — shared style consts (`iSm`, `btnX`, `Sel`, …) plus the code-panel palette
+    `CODE_SECTIONS` / `sectionColor` / `SHAPE_PATH` (Task E); `hooks.js` — `useContainerWidth`.
 - **`src/components/`**
   - `plots.jsx` — `Plot` (the unified controls+body primitive), `EDAPlot`,
     `SampleResults`, `DistributionPlot`, `DataTable`/`CollectTable`, `CatCatGrid`,
     `SplitDotPlots`, `UniCatPlot`, the measurement overlays `DividerLines` / `RulerOverlay`
     / `ResidualOverlay` / `MeasureConnector`, plus the manual authoring UIs `StatDefiner`
     and `DerivedBuilder`.
-  - `devices.jsx` — `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
+  - `devices.jsx` — `StageCard` (wraps a stage; renders forked branch sub-cards +
+    `BranchConditionEditor`), `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
+  - `code.jsx` — `CodePanels` (Task E): the language toggle (off/R/Python) + color-blind
+    toggle, the four `CodeBox` panels (gradient header with the section shape cut out in
+    white), and the integrated panel whose gutter color-codes each line by its section.
   - `ui.jsx` — small shared widgets (`Sel`, `InlineEdit`, `ReplacementToggle`, …).
 
 ## Architecture (current)
@@ -49,13 +62,52 @@ The app has three workflow stages, top to bottom:
    categorical columns, plot with toggleable stat overlays (boxplot, mean triangle,
    ±1 SD, LS line; cat×cat grid; cat×numeric split dot plots). Copy a column to paste
    into a sampler device.
-2. **Sampler Pipeline** — chain of devices (Stacks, Mixer, Spinner), each producing one
-   variable per draw. Animated sampling.
+2. **Sampler Pipeline** — a linear list of **stages**, each owning one output column and
+   producing one variable per draw. A stage can be **forked** (conditional/branched on an
+   upstream draw — see the stage model below). Animated sampling; "Repeat n" or "Run until"
+   a stopping rule (variable n). A **Share** button encodes the whole sampler into a URL
+   (optionally password-veiled), and a **Code** panel mirrors the simulation in R/Python.
 3. **Sample Results** (raw draws) → **Collect Statistics** (sampling distribution over
    many repetitions). Sample Results mirrors the EDA layout (data table left, `Plot`
    right). Collect Statistics is **click-to-track**: any statistic whose number is
    *visible* on the Sample Results plot can be clicked to promote it into a tracked
    **column**; every draw appends a row. See "Sample Results & Collect Statistics" below.
+
+### The stage model (forked / conditional sampler)
+`pipeline` is a `Stage[]`. Each **stage** `{ id, type:"stage", varName, branches }` owns one
+output column (the **stage id** is the column identity that rows, `varKinds`, tracked-stat
+specs, and plots key on). A stage holds 1+ **branches** `{ id, condVar, condVal, device }`:
+- `condVar===null` is the **default** branch (exactly one). It fires when no conditional
+  branch matches, so an unconditional stage always runs (**convergence**).
+- A conditional branch's `condVar` references an **upstream** stage id and `condVal` an
+  outcome label; it may key off an already-forked stage (**nesting**). The upstream-only
+  invariant is enforced in `movStage`/`remStage`/the branch editor.
+- The inner `device` keeps the existing spinner/stacks/mixer shape verbatim — `mkSpinner`/
+  `mkStacks`/`mkMixer` are reused, and each **branch device** keeps its own id (the
+  without-replacement draw-state key, so per-branch pools never bleed — constraint #2).
+
+Both draw paths resolve a stage through the **shared** `selectBranch(stage, row)` →
+`drawStageValue` (first matching `(condVar,condVal)`, else default), building `row`
+incrementally so a downstream branch sees upstream values in one pass (constraint #1 holds —
+no third loop). `runAnimatedSample` animates only the selected branch and dims the others via
+an `inactive` flag. `stageVarKind`/`stageOutcomes` classify a fork by the **union** of its
+branch devices' declared outcomes.
+
+### Run-until, sharing, hidden, and code (the latest wave)
+- **Run until a condition** (`runMode` `"fixed"|"until"`, `stopRule {kind,stageId,value,n}`):
+  only the **outer** per-sample loop changes — `until` keeps drawing rows until `stopReached`
+  holds, with `sampleSize` reused as the mandatory safety cap (max draws). Switching mode or
+  editing the rule clears `collectRows` (an until distribution must not mix with a fixed-n one).
+- **URL sharing** (`lib/share.js`, the one new dependency **lz-string**): `encodeConfig`
+  serializes the minimal config (`pipeline`, `sampleSize`, `runMode`/`stopRule`,
+  `trackedStats`, `codeLang`) → a `?s=` blob; a one-time mount `useEffect` in `App.jsx`
+  imports it, runs `migratePipeline` + `rekeyStats`/`rekeyStopRule`, then cleans the URL.
+- **Hidden samplers** (Task D): a password XOR-veils the compressed config (salt travels, the
+  plaintext password never does — **not** crypto-grade). A hidden sampler still draws/collects
+  but renders opaque placeholders until a "Reveal" re-prompts. Browser dialogs are wrapped in
+  module-level `safePrompt`/`safeAlert`/`safeConfirm` (they throw in embedded/headless contexts).
+- **Code panels** (`components/code.jsx`, `lib/codegen.js`): off by default; the toggle reveals
+  four runnable R/Python sections + an integrated program. See "Hard-won constraints" #7.
 
 ### The unified `Plot` primitive
 `Plot` (in `plots.jsx`) is the single plotting component behind EDA, Sample Results, and
@@ -130,6 +182,17 @@ These were the source of real bugs during development. Preserve them.
    `computeStat` and `numericSummary`. Keep them consistent.
 6. **Plots must fit vertically.** Dot-stacking computes the tallest column first, then
    `dotSpacing = min(normalSpacing, availableHeight / tallest)` so stacks never overflow.
+7. **Generated code reads the live specs, never a parallel copy.** `lib/codegen.js` mirrors
+   the *same* sources the UI computes from (stage outcomes, the `computeStat` fn semantics,
+   `stopReached`) so the R/Python can't drift from the tool. Scope of v1: row-by-row **with
+   replacement** (a without-replacement device is flagged in a comment, not reproduced);
+   population SD; type-7 quantiles (R `type=7`, a hand-written interpolator in Python) to
+   match `quantile()`; the headline statistic is the first plain tracked stat (derived
+   columns aren't emitted). Verify a change by copying the integrated program into a real
+   REPL — `npm`-free Node round-trips of `generateCode` plus an actual `python` run are the
+   cheap check (R isn't installed here). Keep the four section colors/symbols in `styles.js`'
+   `CODE_SECTIONS` as the single palette source; color-blind mode remaps **only** red→black
+   and green→gray.
 
 ## Device behavior reference
 - **Spinner**: always with replacement (toggle is disabled). Arrow lands at a random
@@ -147,14 +210,17 @@ These were the source of real bugs during development. Preserve them.
 Slider: 0 = Slow (default, left), 1 = Fast, 2 = Instant (right).
 
 ## Suggested next steps
-The Phase 0–7 roadmap in `plan.md` is complete: the module split, the shared `Plot`
-primitive, the Sample Results / Collect Statistics overhaul (click-to-track, derived
-columns), and the divider + ruler measurement tools all shipped. Possible follow-ons:
-- Trackability for the ruler's **residual** case (deferred — a measured scatter point has
-  no stable cross-repetition identity).
-- The divider on num×num scatter (deferred — a vertical cut reads as a statement about
-  x alone).
-- More device types or sampler-pipeline composition, if the curriculum needs them.
+Both roadmaps are complete: the Phase 0–7 plan (module split, shared `Plot`, the Sample
+Results / Collect Statistics overhaul, divider + ruler) and the next feature wave Tasks A–F
+in `.claude/plans/` (forked/conditional stages, run-until, URL sharing, hidden samplers,
+R/Python code panels, serialization polish) all shipped. Possible follow-ons:
+- **Without-replacement fidelity in generated code** (currently flagged-but-with-replacement).
+- **Per-tool placement of the code panels** (today they live in one bottom "Code" card; the
+  plan's ideal is each section beside its tool — sampler / Sample Results / Collect / divider).
+- **Multi-condition stop rules** (run-until is single-condition v1; no AND/OR yet) and a
+  divider state lifted into `App` so `genInference` can mirror the actual cut.
+- Trackability for the ruler's **residual** case; the divider on num×num scatter (both
+  deferred earlier). More device types or pipeline composition, if the curriculum needs them.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.
