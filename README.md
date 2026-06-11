@@ -1,5 +1,4 @@
-# TinkerSim
-
+# PRISM
 A browser-based probability **sampler & simulation** tool for statistics education,
 modeled on [TinkerPlots](https://www.tinkerplots.com/). Build sampling devices
 (stacks, mixers, spinners), draw animated samples, collect sampling distributions, and
