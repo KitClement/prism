@@ -13,8 +13,9 @@
 //     single column. Each device is drawn as ONE vector (`sample(c(...), n)` / `pop.sample(n)`)
 //     and each statistic is inlined — no helper functions, even with several devices.
 //   • SPLIT (forks, run-until, or multi-column stats like slope / group means): keeps the
-//     `draw_one` / `draw_sample` / `compute_stats` decomposition those genuinely require
-//     (per-row drawing keeps columns row-aligned for regression / cross-column subsetting).
+//     per-row `draw_one` / `draw_sample` decomposition those genuinely require (per-row drawing
+//     keeps columns row-aligned for regression / cross-column subsetting), then computes each
+//     statistic inline and collects with a plain for-loop, mirroring the compact path.
 //
 // The Sample-Results ("single") and Collect ("collect") sections mirror the TABLE state:
 // one entry per *enabled* tracked statistic (nothing until the student enables one), and the
@@ -405,17 +406,20 @@ function pyStatExpr(s, v, v2, D) {
     default: return "float('nan')";
   }
 }
-// One stat as a value expression for R `data.frame(...)` — group stats subset df in a block.
-function rStatValue(s, names) {
+// One stat as a value expression over R data-frame `D` — group stats subset it in a block.
+function rStatValue(s, names, D = "df") {
   const v = names[s.variable], v2 = names[s.variable2];
-  if (s.condVar) return `{ sub <- df[df$${names[s.condVar]} == ${lit(s.condVal)}, , drop = FALSE]; ${rStatExpr(s, v, v2, "sub")} }`;
-  return rStatExpr(s, v, v2, "df");
+  if (s.condVar) return `{ sub <- ${D}[${D}$${names[s.condVar]} == ${lit(s.condVal)}, , drop = FALSE]; ${rStatExpr(s, v, v2, "sub")} }`;
+  return rStatExpr(s, v, v2, D);
 }
-// One stat as the lines that assign into the `out` dict in Python `compute_stats`.
-function pyStatLines(s, id, names) {
+// Per-stat assignment line(s) over Python data-frame `D`, at indent `ind`. `target(expr)` wraps
+// the computed value into its assignment (`id = …` for the single sample, `id.append(…)` inside
+// the collect loop). A group (condVar) stat slices `sub` first, mirroring computeStat.
+function pyStatAssign(s, id, names, D, ind, target) {
   const v = names[s.variable], v2 = names[s.variable2];
-  if (s.condVar) return [`    sub = df[df[${key(names[s.condVar])}] == ${lit(s.condVal)}]`, `    out[${key(id)}] = ${pyStatExpr(s, v, v2, "sub")}`];
-  return [`    out[${key(id)}] = ${pyStatExpr(s, v, v2, "df")}`];
+  if (s.condVar) return [`${ind}sub = ${D}[${D}[${key(names[s.condVar])}] == ${lit(s.condVal)}]`,
+    `${ind}${target(pyStatExpr(s, v, v2, "sub"))}`];
+  return [`${ind}${target(pyStatExpr(s, v, v2, D))}`];
 }
 
 function genSplit(cfg, names, lang) {
@@ -453,24 +457,27 @@ function genSplit(cfg, names, lang) {
       sampler.push("# A sample = n rows drawn through the pipeline");
       sampler.push("draw_sample <- function(n) do.call(rbind, lapply(seq_len(n), function(i) draw_one()))");
     }
+    sampler.push("");
+    sampler.push(`${cap} <- ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
 
     const single = mk("single");
-    single.push(`${cap} <- ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
     if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
     else {
-      single.push("compute_stats <- function(df) {   # one value per enabled statistic");
-      single.push("  data.frame(");
-      stats.forEach(({ s, id }, i) => single.push(`    ${id} = ${rStatValue(s, names)}${i < stats.length - 1 ? "," : ""}`));
-      single.push("  )");
-      single.push("}");
-      single.push(`stats <- compute_stats(draw_sample(${cap}))`);
+      single.push("# Draw one sample, then one value per enabled statistic");
+      single.push(`df <- draw_sample(${cap})`);
+      stats.forEach(({ s, id }) => single.push(`${id} <- ${rStatValue(s, names)}`));
     }
 
     const collect = mk("collect");
     if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
     else {
       collect.push(`N <- ${collectN(cfg)}${collectNote(cfg)}`);
-      collect.push("dist <- do.call(rbind, lapply(1:N, function(i) compute_stats(draw_sample(" + cap + "))))");
+      stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
+      collect.push("for (i in 1:N) {");
+      collect.push(`  df <- draw_sample(${cap})`);
+      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${rStatValue(s, names)}`));
+      collect.push("}");
+      collect.push(`dist <- data.frame(${stats.map(({ id }) => id).join(", ")})`);
     }
 
     const inference = mk("inference");
@@ -514,23 +521,26 @@ function genSplit(cfg, names, lang) {
     sampler.push("def draw_sample(n):");
     sampler.push("    return pd.DataFrame([draw_one() for _ in range(n)])");
   }
+  sampler.push("");
+  sampler.push(`${cap} = ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
 
   const single = mk("single");
-  single.push(`${cap} = ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
   if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
   else {
-    single.push("def compute_stats(df):   # one value per enabled statistic");
-    single.push("    out = {}");
-    stats.forEach(({ s, id }) => pyStatLines(s, id, names).forEach(t => single.push(t)));
-    single.push("    return out");
-    single.push(`stats = compute_stats(draw_sample(${cap}))`);
+    single.push("# Draw one sample, then one value per enabled statistic");
+    single.push(`df = draw_sample(${cap})`);
+    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "df", "", e => `${id} = ${e}`).forEach(t => single.push(t)));
   }
 
   const collect = mk("collect");
   if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
   else {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
-    collect.push(`dist = pd.DataFrame([compute_stats(draw_sample(${cap})) for _ in range(N)])`);
+    stats.forEach(({ id }) => collect.push(`${id} = []`));
+    collect.push("for i in range(N):");
+    collect.push(`    df = draw_sample(${cap})`);
+    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "df", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t)));
+    collect.push(`dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`);
   }
 
   const inference = mk("inference");
@@ -609,13 +619,13 @@ function genIntegrated(cfg, names, lang) {
     compactInfLines(cfg, stats, lang).forEach(([t, sec]) => push(t, sec));
     return L;
   }
-  // Split: the function defs / loop / inference already carry the right section tags; stitch
-  // them, dropping the redundant single-sample demo line (`stats <- compute_stats(...)`).
+  // Split: the sampler defs, the inline collect for-loop, and the inference already carry the
+  // right section tags; stitch them in order. The standalone single-sample demo is omitted —
+  // the collect loop already draws and computes every sample (mirroring the compact case).
   const secs = genSplit(cfg, names, lang);
-  const demo = /^stats\s*(<-|=)\s*compute_stats/;
-  ["sampler", "single", "collect", "inference"].forEach((k, i) => {
+  ["sampler", "collect", "inference"].forEach((k, i) => {
     if (i > 0) push("", secs[k][0] ? secs[k][0].section : k);
-    secs[k].forEach(ln => { if (!demo.test(ln.text.trim())) push(ln.text, ln.section); });
+    secs[k].forEach(ln => push(ln.text, ln.section));
   });
   return L;
 }

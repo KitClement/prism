@@ -38,8 +38,10 @@ dependency-light and self-contained (no chart lib, no state lib).
     single-column) draws each device as ONE vector — `sample(c(...),n)` / `pop.sample(n)`,
     multiple devices ⇒ multiple vectors — and inlines each statistic, no helper functions;
     the **split** form (forks, run-until, or multi-column stats like slope/group means) keeps
-    the `draw_one`/`draw_sample`/`compute_stats` decomposition those genuinely need (per-row
-    drawing keeps columns row-aligned). The **single** + **collect** sections mirror the
+    the per-row `draw_one`/`draw_sample` decomposition those genuinely need (per-row drawing
+    keeps columns row-aligned), then — like the compact path — computes each statistic inline
+    (one line per stat over the drawn `df`, no `compute_stats` wrapper) and collects with a
+    plain `for`-loop (not `lapply` / a list comprehension). The **single** + **collect** sections mirror the
     *tracked-stat table*: one entry per enabled stat (nothing until one is enabled), and the
     collect loop's `N` is `collectedCount` (samples collected so far, default 1000 before any).
     R is base R; Python is **pandas/numpy** (and **statsmodels** for regression).
