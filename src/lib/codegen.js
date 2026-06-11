@@ -132,9 +132,11 @@ function dividerInfo(cfg, stats) {
 }
 // The inference line(s) a divider implies over a vector/Series expression `vec`, by mode:
 //   range + value → band proportion P(lo ≤ x ≤ hi)
-//   range + pct   → CI: each bound is the data value with ~(1-m)/2 of the distribution beyond
-//                   it (the achievable empirical cut nearest the target — see measure.js
-//                   `nearestCut`; this minimizes coverage error on a discrete distribution)
+//   range + pct   → CI: the central band whose coverage P(lo ≤ x ≤ hi) is closest to the
+//                   target — walk the nested family of central bands (start at the median,
+//                   extend the larger excluded tail), then pick the nearest (see measure.js
+//                   `nearestBand`). Keeps tails balanced and tracks the target's total
+//                   coverage, unlike two independent tail snaps.
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
 //   tail  + pct   → critical value: the data value with ~the target proportion in the tail
 //   two-sided     → both proportions P(x ≥ v) / P(x < v)
@@ -153,16 +155,27 @@ function dividerExprs(vec, div, lang) {
 
   if (div.range) {
     if (div.by === "pct") {
-      const t = numLit((1 - div.pct) / 2);
-      // CI: lower bound leaves ~t below it, upper bound leaves ~t above it.
+      const m = numLit(div.pct);
+      // CI: walk the nested central bands (start at the median, each step extends the side with
+      // the larger excluded tail) and keep the one closest in coverage (matches `nearestBand`).
       if (R) return [xsLine,
-        `lo <- ${nearest("<", t)}`,
-        `hi <- ${nearest(">", t)}`,
-        `c(lo, hi)   # ~${pctLabel(div.pct)} confidence interval`];
+        `i <- which(cumsum(table(factor(${vec}, xs))) >= length(${vec}) / 2)[1]; j <- i`,
+        `best <- c(xs[i], xs[j]); err <- abs(mean(${vec} >= xs[i] & ${vec} <= xs[j]) - ${m})`,
+        `while (i > 1 || j < length(xs)) {`,
+        `  if (i > 1 && (mean(${vec} < xs[i]) > mean(${vec} > xs[j]) || j >= length(xs))) i <- i - 1 else j <- j + 1`,
+        `  e <- abs(mean(${vec} >= xs[i] & ${vec} <= xs[j]) - ${m})`,
+        `  if (e < err) { best <- c(xs[i], xs[j]); err <- e }`,
+        `}`,
+        `best   # central band closest to ~${pctLabel(div.pct)} coverage`];
       return [xsLine,
-        `lo = ${nearest("<", t)}`,
-        `hi = ${nearest(">", t)}`,
-        `[lo, hi]   # ~${pctLabel(div.pct)} confidence interval`];
+        `i = j = int(np.searchsorted(np.cumsum([(${vec} == x).sum() for x in xs]), len(${vec}) / 2))`,
+        `best, err = (xs[i], xs[j]), abs(((${vec} >= xs[i]) & (${vec} <= xs[j])).mean() - ${m})`,
+        `while i > 0 or j < len(xs) - 1:`,
+        `    if i > 0 and ((${vec} < xs[i]).mean() > (${vec} > xs[j]).mean() or j >= len(xs) - 1): i -= 1`,
+        `    else: j += 1`,
+        `    e = abs(((${vec} >= xs[i]) & (${vec} <= xs[j])).mean() - ${m})`,
+        `    if e < err: best, err = (xs[i], xs[j]), e`,
+        `[best[0], best[1]]   # central band closest to ~${pctLabel(div.pct)} coverage`];
     }
     const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
     return [`${band(a, b)}   # P(${a} <= stat <= ${b})`];

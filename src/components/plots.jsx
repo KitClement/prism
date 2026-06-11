@@ -620,12 +620,14 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   if (showDivider) {
     const { lo, hi } = divDomain, want = divRange ? 2 : 1;
     if (pctActive && divDomain.values.length) {
-      const vals = divDomain.values, m = divPct, snap = (t, side) => clampVal(nearestCut(vals, t, side), lo, hi);
-      // Snap to the achievable empirical cut nearest the target proportion (minimizing coverage
-      // error on a discrete distribution): range → the symmetric middle band's excluded tails;
-      // single → the upper (right, x≥v) or lower (left, x≤v) tail. Matches measure.js `regions`.
-      effCuts = divRange ? [snap((1 - m) / 2, "lt"), snap((1 - m) / 2, "gt")]
-        : [snap(m, divDir === "right" ? "ge" : "le")];
+      const vals = divDomain.values, m = divPct;
+      // Snap to the achievable empirical cut(s) nearest the target proportion (minimizing
+      // coverage error on a discrete distribution). Range → the band whose *total* coverage
+      // P(lo ≤ x ≤ hi) is closest to m (a joint search — `nearestBand`); single → the upper
+      // (right, x≥v) or lower (left, x≤v) tail (`nearestCut`). Matches measure.js `regions`.
+      effCuts = divRange
+        ? nearestBand(vals, m).map(c => clampVal(c, lo, hi))
+        : [clampVal(nearestCut(vals, m, divDir === "right" ? "ge" : "le"), lo, hi)];
     } else {
       const inRange = v => v >= lo && v <= hi;
       effCuts = (divCuts.length === want && divCuts.every(inRange))

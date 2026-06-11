@@ -75,6 +75,37 @@ export function nearestCut(values, target, side) {
   return best;
 }
 
+// Snap a middle band to the **achievable central interval** whose coverage P(lo ≤ x ≤ hi) is
+// closest to `target`. The candidate set is the nested family of *central* bands, built by
+// starting at the median value and repeatedly extending whichever side currently has the
+// larger excluded tail (ties → the upper side, matching the divider's inclusive-upper
+// convention). Snapping the two tails independently (each → (1-target)/2) doesn't coordinate
+// the band's total coverage; an unconstrained joint search over all (lo, hi) pairs is worse —
+// it picks degenerate one-sided bands (e.g. [min, hi]) that happen to land closer in raw
+// coverage but aren't a CI. Walking the central family keeps the tails balanced and makes the
+// chosen coverage switch at the *midpoint* between consecutive achievable central coverages.
+// Returns [lo, hi] data values. O(k) in the number of *distinct* values via cumulative counts.
+export function nearestBand(values, target) {
+  const N = values.length;
+  if (!N) return [NaN, NaN];
+  const cnt = new Map();
+  for (const v of values) cnt.set(v, (cnt.get(v) || 0) + 1);
+  const xs = [...cnt.keys()].sort((a, b) => a - b);
+  const k = xs.length;
+  const cum = new Array(k); // cum[i] = count of values ≤ xs[i]
+  let run = 0;
+  for (let i = 0; i < k; i++) { run += cnt.get(xs[i]); cum[i] = run; }
+  let med = 0; while (med < k - 1 && cum[med] < N / 2) med++; // first value reaching the median
+  let i = med, j = med, best = [xs[i], xs[j]], bestErr = Math.abs((cum[j] - (i ? cum[i - 1] : 0)) / N - target);
+  while (i > 0 || j < k - 1) {
+    const below = i > 0 ? cum[i - 1] : 0, above = N - cum[j];
+    if (i > 0 && (below > above || j >= k - 1)) i--; else j++; // extend the larger excluded tail; tie → upper
+    const err = Math.abs((cum[j] - (i ? cum[i - 1] : 0)) / N - target);
+    if (err < bestErr - 1e-12) { best = [xs[i], xs[j]]; bestErr = err; } // first (narrowest) on ties
+  }
+  return best;
+}
+
 // Split `values` (finite plotted numbers) into proportion regions about `cuts`.
 //   cuts = [v]      → [{<v}, {≥v}]                using x < v / x ≥ v
 //   cuts = [lo, hi] → [{<lo}, {lo–hi}, {>hi}]     using x < lo / lo ≤ x ≤ hi / x > hi

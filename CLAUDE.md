@@ -179,13 +179,19 @@ Both are off by default and gated to plots where they make sense.
     proportion shows. The value box and a linked **tail/middle proportion** box (0–1, matching
     the tool's proportion convention) are two ends of one relationship (`divBy`): editing the
     value (drag/type) reads a probability; editing the proportion snaps the cut(s) to the
-    **achievable empirical cut nearest the target** (`measure.js` `nearestCut`: the distinct
-    data value whose directional proportion — `ge`/`le` tail, `lt`/`gt` middle-excluded — is
-    closest to the target). This *minimizes coverage error* on a discrete distribution, where
-    a plain quantile snaps to a tie cluster and overshoots (e.g. a 95% CI lands ~0.94 vs type-7's
-    ~0.976); the residual plateaus are inherent to coarse data. Toggling Range or direction
-    resets `divBy` to `"value"`. `divPct` is stored as a fraction; generated-code comments keep
-    conventional `%`.
+    **achievable empirical cut nearest the target**. A single tail uses `measure.js` `nearestCut`
+    (the distinct data value whose directional proportion — `ge`/`le` — is closest). A **range**
+    (CI) uses `nearestBand`: walk the *nested central* family (start at the median value, each
+    step extends whichever side has the larger excluded tail, ties → upper) and keep the member
+    whose coverage `P(lo ≤ x ≤ hi)` is closest to the target. This *minimizes coverage error*
+    on a discrete distribution while keeping the tails balanced — snapping the two tails
+    independently to `(1-m)/2` does **not** coordinate the band's total coverage (wide spans of
+    targets collapse onto one band), and an unconstrained joint search over all `(lo,hi)` pairs
+    picks degenerate one-sided bands that land closer in raw coverage but aren't a CI (e.g. a
+    95% target → `[min, hi]`). Walking the central family makes the chosen coverage switch at the
+    *midpoint* between consecutive achievable central coverages; the residual plateaus there are
+    inherent to coarse data. Toggling Range or direction resets `divBy` to `"value"`. `divPct` is
+    stored as a fraction; generated-code comments keep conventional `%`.
     On the Collect plot this drives the generated **inference**: tail+value → p-value, tail+prop
     → critical value, range+value → band proportion, range+prop → CI (see codegen note below).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
@@ -266,9 +272,11 @@ framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
 `dividerState` (a deduped setter prevents a re-render loop) → the `generateCode` cfg.
 `codegen.js`'s `dividerInfo`/`dividerExprs` then emit, over the matched statistic's result
 vector, one of: **p-value** `mean(vec >= v)` (right) / `mean(vec <= v)` (left — the focused
-tail is always inclusive of the cut) (tail + value), **critical value** (tail + %) and **CI**
-(range + %) as the `nearestCut` search — `xs[which.min(abs(sapply(xs, …) - t))]` (R) /
-`xs[np.argmin(np.abs(… - t))]` (Python), the empirical cut minimizing coverage error to match
+tail is always inclusive of the cut) (tail + value), **critical value** (tail + %) as the
+`nearestCut` search `xs[which.min(abs(sapply(xs, …) - t))]` (R) / `xs[np.argmin(np.abs(… - t))]`
+(Python), **CI** (range + %) as the `nearestBand` central-family walk (a short median-start
+loop that extends the larger excluded tail and keeps the band closest in coverage — emitted
+verbatim so the code reproduces the tool's exact band), both minimizing coverage error to match
 the tool — **band proportion** `mean(vec >= lo & vec <= hi)` (range + value); two-sided shows
 both `>= v` / `< v` proportions (disjoint). The on-plot left-tail read-out is built inclusively
 to match. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
