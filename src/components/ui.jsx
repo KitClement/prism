@@ -43,26 +43,30 @@ function ReplacementToggle({ device, onChange }) {
   );
 }
 
-function PasteButton({ onApply }) {
-  const [open, setOpen] = useState(false);
-  const [text, setText] = useState("");
-  if (!open) return (
-    <button onClick={() => setOpen(true)}
-      style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff" }}>
-      📋 paste
+// Fill a device from an uploaded CSV column. Replaces the old free-text paste: a styled
+// select listing the dataset's headers. Picking a column hands its raw values to `onFill`
+// along with the column name + dataset name, so the device can stamp a `source` link the
+// codegen reads (read.csv / pd.read_csv). Disabled with a hint when no dataset is loaded.
+function FillFromData({ dataset, onFill }) {
+  const headers = (dataset && dataset.headers) || [];
+  if (!headers.length) return (
+    <button disabled title="Upload a CSV in Data & Exploratory Analysis first"
+      style={{ ...btnPlus, color:"#bbb", borderColor:"#e5e5e5", background:"#fafafa", cursor:"not-allowed" }}>
+      Fill from data
     </button>
   );
   return (
-    <div style={{ marginTop:4, padding:7, background:"#f8f9fa", borderRadius:7, border:"1px solid #e2e8f0" }}>
-      <textarea value={text} onChange={e => setText(e.target.value)}
-        placeholder="Red, Blue, Red, Green…"
-        style={{ width:"100%", height:44, fontSize:11, border:"1px solid #ddd", borderRadius:5, padding:4, resize:"none", boxSizing:"border-box" }} />
-      <div style={{ display:"flex", gap:5, marginTop:3 }}>
-        <button onClick={() => { onApply(text.split(/[\n,\t]+/).map(s => s.trim()).filter(Boolean)); setOpen(false); setText(""); }}
-          style={{ ...btnPlus, background:"#2c3e50", color:"#fff", borderColor:"#2c3e50" }}>Apply</button>
-        <button onClick={() => setOpen(false)} style={btnPlus}>Cancel</button>
-      </div>
-    </div>
+    <select value="" title="Fill this device from a CSV column"
+      onChange={e => {
+        const h = e.target.value; if (!h) return;
+        const vals = dataset.rows.map(r => r[h]).filter(v => v !== undefined && v !== "");
+        onFill(vals, h, dataset.name);
+        e.target.value = "";
+      }}
+      style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff", cursor:"pointer" }}>
+      <option value="">Fill from data…</option>
+      {headers.map(h => <option key={h} value={h}>{h}</option>)}
+    </select>
   );
 }
 
@@ -105,6 +109,30 @@ function RangeInput({ onApply, onClose }) {
   );
 }
 
+// A number input that keeps a local text buffer while focused, so the last digit CAN be
+// deleted (the box goes empty) without snapping back. An empty/invalid box is remembered —
+// `onChange` only fires for a parseable number — and on blur the box reverts to the live
+// `value`. External changes (e.g. a drag moving a divider cut) sync in only when not editing.
+// `round` (digits) controls display rounding; min/max/step/style pass straight through.
+function NumInput({ value, onChange, round, style, ...rest }) {
+  const fmt = v => (v == null || v === "" || isNaN(v) ? "" : String(round != null ? parseFloat(Number(v).toFixed(round)) : v));
+  const [text, setText] = useState(() => fmt(value));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { if (!editing) setText(fmt(value)); }, [value, editing]);
+  const handle = e => {
+    const t = e.target.value;
+    setText(t);                       // allow empty / a partial number while typing
+    if (t.trim() === "") return;      // remember the prior value — don't propagate the blank
+    const n = parseFloat(t);
+    if (!isNaN(n)) onChange(n);
+  };
+  return (
+    <input type="number" value={text} onChange={handle} style={style}
+      onFocus={() => setEditing(true)}
+      onBlur={() => { setEditing(false); setText(fmt(value)); }} {...rest} />
+  );
+}
+
 function ChkLabel({ checked, onChange, label }) {
   return (
     <label style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer", color:"#555" }}>
@@ -114,33 +142,4 @@ function ChkLabel({ checked, onChange, label }) {
   );
 }
 
-function CopyColumnButton({ header, rows }) {
-  const [copied, setCopied] = useState(false);
-  const vals = rows.map(r => r[header]).filter(v => v !== undefined && v !== "");
-  const doCopy = () => {
-    const text = vals.join(", ");
-    const fallback = () => {
-      const ta = document.createElement("textarea");
-      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta); ta.select();
-      try { document.execCommand("copy"); } catch (e) {}
-      document.body.removeChild(ta);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(fallback);
-    } else { fallback(); }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
-  };
-  return (
-    <button onClick={doCopy}
-      style={{ ...btnPlus, color: copied ? "#fff" : "#4338ca",
-        borderColor: copied ? "#10b981" : "#a5b4fc",
-        background: copied ? "#10b981" : "#eef2ff",
-        transition:"all 0.15s" }}>
-      {copied ? "✓ Copied " + vals.length + " values" : "📋 " + header}
-    </button>
-  );
-}
-
-export { Sel, InlineEdit, ReplacementToggle, PasteButton, RangeInput, ChkLabel, CopyColumnButton };
+export { Sel, InlineEdit, ReplacementToggle, FillFromData, RangeInput, ChkLabel, NumInput };

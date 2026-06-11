@@ -51,6 +51,33 @@ export function snapMeasure(v, candidates, pxPerUnit, cursorY = null, threshold 
   return best;
 }
 
+// Snap a middle band to the **smallest achievable central band that covers ≥ `target`** — a
+// conservative CI: setting 0.95 yields an interval whose coverage is at least 0.95 (never
+// under, even though discrete data rarely lands exactly on the nominal level). Builds the
+// nested family of *central* bands — start at the median value and repeatedly extend whichever
+// side currently has the larger excluded tail (ties → the upper side, matching the divider's
+// inclusive-upper convention) — and stops at the first band reaching the target (else the full
+// range). Returns [lo, hi] data values. O(N + k log k) in the number of *distinct* values.
+export function conservativeBand(values, target) {
+  const N = values.length;
+  if (!N) return [NaN, NaN];
+  const cnt = new Map();
+  for (const v of values) cnt.set(v, (cnt.get(v) || 0) + 1);
+  const xs = [...cnt.keys()].sort((a, b) => a - b);
+  const k = xs.length;
+  const cum = new Array(k); // cum[i] = count of values ≤ xs[i]
+  let run = 0;
+  for (let c = 0; c < k; c++) { run += cnt.get(xs[c]); cum[c] = run; }
+  let med = 0; while (med < k - 1 && cum[med] < N / 2) med++; // first value reaching the median
+  let i = med, j = med;
+  const cov = () => (cum[j] - (i ? cum[i - 1] : 0)) / N;
+  while (cov() < target && (i > 0 || j < k - 1)) {
+    const below = i > 0 ? cum[i - 1] : 0, above = N - cum[j];
+    if (i > 0 && (below > above || j >= k - 1)) i--; else j++; // extend the larger excluded tail; tie → upper
+  }
+  return [xs[i], xs[j]];
+}
+
 // Split `values` (finite plotted numbers) into proportion regions about `cuts`.
 //   cuts = [v]      → [{<v}, {≥v}]                using x < v / x ≥ v
 //   cuts = [lo, hi] → [{<lo}, {lo–hi}, {>hi}]     using x < lo / lo ≤ x ≤ hi / x > hi

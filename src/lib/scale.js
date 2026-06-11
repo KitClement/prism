@@ -3,6 +3,30 @@
 // one implementation (scales + dot-stacking were the duplicated bits).
 import { minutesToTime } from "./util";
 
+// A "nice" tick step from the 1/2/5×10^k family, sized so the data span yields about
+// `count` intervals. `integral` forces an integer step ≥ 1 (whole-number data should
+// never show fractional ticks like 0.5). Returns the step plus the decimal places its
+// labels need (0 for an integer step).
+function niceStep(span, count, integral) {
+  const raw = span / Math.max(1, count);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  let step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  if (integral) step = Math.max(1, Math.round(step));
+  const decimals = Number.isInteger(step) ? 0 : Math.max(0, -Math.floor(Math.log10(step)));
+  return { step, decimals };
+}
+
+// Tick values aligned to a nice step across [mn, mx] (endpoints not forced).
+function niceTicks(mn, mx, count, integral) {
+  if (!(mx > mn)) return { ticks: [mn], decimals: integral ? 0 : 2 };
+  const { step, decimals } = niceStep(mx - mn, count, integral);
+  const start = Math.ceil(mn / step) * step;
+  const n = Math.floor((mx - start) / step + 1e-9);
+  const ticks = Array.from({ length: n + 1 }, (_, i) => start + i * step);
+  return { ticks, decimals };
+}
+
 // Build a scale mapping data values to pixel offsets in [0, size].
 //   opts.numeric   — treat values as numeric (else categorical band scale)
 //   opts.time      — format numeric ticks as clock times (minutes → "h:mm")
@@ -20,8 +44,19 @@ export function makeScale(values, size, opts = {}) {
     const mn = Math.min(...nums), mx = Math.max(...nums);
     const range = mx - mn || 1, p = range * pad, lo = mn - p, hi = mx + p;
     const nT = typeof tickCount === "function" ? tickCount(range) : tickCount;
-    const ticks = Array.from({ length: nT }, (_, i) => mn + (i / (nT - 1)) * range);
-    const fmt = time ? (v => minutesToTime(v)) : (v => parseFloat(v.toFixed(precision)));
+    // Time keeps its old interpolated ticks (clock formatting). Otherwise use nice
+    // 1/2/5×10^k steps so whole-number data gets whole-number ticks (no stray decimals),
+    // forcing an integer step when every value is an integer.
+    let ticks, fmt;
+    if (time) {
+      ticks = Array.from({ length: nT }, (_, i) => mn + (i / (nT - 1)) * range);
+      fmt = v => minutesToTime(v);
+    } else {
+      const allInt = nums.every(Number.isInteger);
+      const nice = niceTicks(mn, mx, nT, allInt);
+      ticks = nice.ticks;
+      fmt = nice.decimals === 0 ? (v => Math.round(v)) : (v => parseFloat(v.toFixed(precision)));
+    }
     return { numeric: true, lo, hi, min: mn, max: mx, scale: v => ((toNumber(v) - lo) / (hi - lo)) * size, ticks, fmt };
   }
   const cats = [...new Set(clean)].sort();

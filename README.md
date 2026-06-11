@@ -1,8 +1,9 @@
-# PRISM
+# PRISM — Python & R Integrated Simulation Machine
+
 A browser-based probability **sampler & simulation** tool for statistics education,
 modeled on [TinkerPlots](https://www.tinkerplots.com/). Build sampling devices
 (stacks, mixers, spinners), draw animated samples, collect sampling distributions, and
-explore uploaded CSV data.
+explore uploaded CSV data — with the equivalent R/Python code generated alongside.
 
 ## Quick start
 
@@ -23,7 +24,7 @@ npm run preview    # serve the build locally
 ## Project layout
 
 ```
-tinkersim/
+prism/
 ├── index.html          # entry HTML
 ├── package.json        # Vite + React deps and scripts
 ├── vite.config.js      # Vite config (React plugin)
@@ -43,7 +44,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 # 2. from this folder, initialize git and make the first commit:
 git init
 git add .
-git commit -m "Initial import of TinkerSim from artifact"
+git commit -m "Initial import of PRISM from artifact"
 
 # 3. start Claude Code in the project:
 claude

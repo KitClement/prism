@@ -21,10 +21,30 @@ dependency-light and self-contained (no chart lib, no state lib).
     `parseTimeToMinutes`, `collapseCats`, `COLORS`, `uid`, …
   - `stats.js` — `quantile` (interpolating), `numericSummary`, `lsFit`, `computeStat`,
     `statLabel`, `FN_OPTS`, `NUMERIC_FNS`.
-  - `sampling.js` — the shared draw helpers `makeDrawState` / `drawStacks` / `drawMixer` /
-    `sampleSpinner`, the non-animated `drawSample(pipeline, n)` (batch path), the animated
-    `runAnimatedSample` (per-run path), device factories `mkStacks`/`mkMixer`/`mkSpinner`,
-    and `deviceVarKind` (classify a sampler var from its **declared outcomes**).
+  - `sampling.js` — the **stage** model (`mkStage`/`toStages`/`migratePipeline`+`rekeyStats`/
+    `rekeyStopRule`, `selectBranch`, `stageVarKind`/`stageOutcomes`), the shared draw helpers
+    `makeDrawState` / `drawStacks` / `drawMixer` / `sampleSpinner` / `drawStageValue`, the
+    run-until predicate `stopReached`, the non-animated `drawSample(pipeline, n, opts)` (batch
+    path), the animated `runAnimatedSample` (per-run path), device factories
+    `mkStacks`/`mkMixer`/`mkSpinner`, and `deviceVarKind` (classify a sampler var from its
+    **declared outcomes**).
+  - `share.js` — URL sharing (Task C/D): `encodeConfig`/`decodeConfig`/`decodeHidden`/
+    `shareURL`, lz-string compression, and the XOR password-veil helpers (not crypto-grade).
+  - `codegen.js` — parallel R/Python code generation (Task E): `generateCode(config, lang)`
+    returns `{sampler, single, collect, inference, integrated}`, each an array of
+    `{text, section}` lines. Reads the **same** specs the UI uses (stage outcomes, the
+    `computeStat` fn semantics, `stopReached`) so code and tool never diverge. Emits one of
+    **two shapes** (`isSimple`): the **compact** form (no fork, fixed n, every enabled stat
+    single-column) draws each device as ONE vector — `sample(c(...),n)` / `pop.sample(n)`,
+    multiple devices ⇒ multiple vectors — and inlines each statistic, no helper functions;
+    the **split** form (forks, run-until, or multi-column stats like slope/group means) keeps
+    the per-row `draw_one`/`draw_sample` decomposition those genuinely need (per-row drawing
+    keeps columns row-aligned), then — like the compact path — computes each statistic inline
+    (one line per stat over the drawn `df`, no `compute_stats` wrapper) and collects with a
+    plain `for`-loop (not `lapply` / a list comprehension). The **single** + **collect** sections mirror the
+    *tracked-stat table*: one entry per enabled stat (nothing until one is enabled), and the
+    collect loop's `N` is `collectedCount` (samples collected so far, default 1000 before any).
+    R is base R; Python is **pandas/numpy** (and **statsmodels** for regression).
   - `scale.js` — `makeScale` (axis scale builder) + `stackDots` (tallest-column dot
     stacking). Shared by every plot.
   - `expr.js` — derived-statistic engine: `lexExpr`/`evalExpr`/`validateExpr`,
@@ -32,16 +52,23 @@ dependency-light and self-contained (no chart lib, no state lib).
     `aliasFor`.
   - `measure.js` — measurement-tool math: `clampVal`, `snapValue`/`snapMeasure` (snap a
     handle to dots/visible measures), `regions` (divider proportions).
-  - `styles.js` — shared style consts (`iSm`, `btnX`, `Sel`, …); `hooks.js` —
-    `useContainerWidth`.
+  - `styles.js` — shared style consts (`iSm`, `btnX`, `Sel`, …) plus the code-panel palette
+    `CODE_SECTIONS` / `sectionColor` / `SHAPE_PATH` (Task E); `hooks.js` — `useContainerWidth`.
 - **`src/components/`**
   - `plots.jsx` — `Plot` (the unified controls+body primitive), `EDAPlot`,
     `SampleResults`, `DistributionPlot`, `DataTable`/`CollectTable`, `CatCatGrid`,
     `SplitDotPlots`, `UniCatPlot`, the measurement overlays `DividerLines` / `RulerOverlay`
     / `ResidualOverlay` / `MeasureConnector`, plus the manual authoring UIs `StatDefiner`
     and `DerivedBuilder`.
-  - `devices.jsx` — `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
-  - `ui.jsx` — small shared widgets (`Sel`, `InlineEdit`, `ReplacementToggle`, …).
+  - `devices.jsx` — `StageCard` (wraps a stage; renders forked branch sub-cards +
+    `BranchConditionEditor`), `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
+  - `code.jsx` — Task E UI: `CodeControls` (page-header off/R/Python + color-blind toggle),
+    `CodeBox` (a panel with a white→section-color gradient header carrying the section symbol
+    as a white watermark), `CodeBeside` (lays a tool's content next to its code box, stacking
+    on narrow widths), and `CodeIntegrated` (the whole program as one script with the section
+    symbol in a color-coded gutter where line numbers would go — see codegen's `genIntegrated`).
+  - `ui.jsx` — small shared widgets (`Sel`, `InlineEdit`, `ReplacementToggle`, `ChkLabel`,
+    `NumInput` — a number field whose last digit can be cleared without snapping back, …).
 
 ## Architecture (current)
 The app has three workflow stages, top to bottom:
@@ -49,13 +76,65 @@ The app has three workflow stages, top to bottom:
    categorical columns, plot with toggleable stat overlays (boxplot, mean triangle,
    ±1 SD, LS line; cat×cat grid; cat×numeric split dot plots). Copy a column to paste
    into a sampler device.
-2. **Sampler Pipeline** — chain of devices (Stacks, Mixer, Spinner), each producing one
-   variable per draw. Animated sampling.
+2. **Sampler Pipeline** — a linear list of **stages**, each owning one output column and
+   producing one variable per draw. A stage can be **forked** (conditional/branched on an
+   upstream draw — see the stage model below). Animated sampling; "Repeat n" or "Run until"
+   a stopping rule (variable n). A **Share** button encodes the whole sampler into a URL
+   (optionally password-veiled), and a **Code** panel mirrors the simulation in R/Python.
 3. **Sample Results** (raw draws) → **Collect Statistics** (sampling distribution over
    many repetitions). Sample Results mirrors the EDA layout (data table left, `Plot`
    right). Collect Statistics is **click-to-track**: any statistic whose number is
    *visible* on the Sample Results plot can be clicked to promote it into a tracked
    **column**; every draw appends a row. See "Sample Results & Collect Statistics" below.
+
+### The stage model (forked / conditional sampler)
+`pipeline` is a `Stage[]`. Each **stage** `{ id, type:"stage", varName, branches }` owns one
+output column (the **stage id** is the column identity that rows, `varKinds`, tracked-stat
+specs, and plots key on). A stage holds 1+ **branches** `{ id, condVar, condVal, device }`:
+- `condVar===null` is the **default** branch (exactly one). It fires when no conditional
+  branch matches, so an unconditional stage always runs (**convergence**).
+- A conditional branch's `condVar` references an **upstream** stage id and `condVal` an
+  outcome label; it may key off an already-forked stage (**nesting**). The upstream-only
+  invariant is enforced in `movStage`/`remStage`/the branch editor.
+- The inner `device` keeps the existing spinner/stacks/mixer shape verbatim — `mkSpinner`/
+  `mkStacks`/`mkMixer` are reused, and each **branch device** keeps its own id (the
+  without-replacement draw-state key, so per-branch pools never bleed — constraint #2).
+
+Both draw paths resolve a stage through the **shared** `selectBranch(stage, row)` →
+`drawStageValue` (first matching `(condVar,condVal)`, else default), building `row`
+incrementally so a downstream branch sees upstream values in one pass (constraint #1 holds —
+no third loop). `runAnimatedSample` animates only the selected branch and dims the others via
+an `inactive` flag. `stageVarKind`/`stageOutcomes` classify a fork by the **union** of its
+branch devices' declared outcomes.
+
+### Run-until, sharing, hidden, and code (the latest wave)
+- **Run until a condition** (`runMode` `"fixed"|"until"`, `stopRule {kind,stageId,value,n}`):
+  only the **outer** per-sample loop changes — `until` keeps drawing rows until `stopReached`
+  holds, with `sampleSize` reused as the mandatory safety cap (max draws). Switching mode or
+  editing the rule clears `collectRows` (an until distribution must not mix with a fixed-n one).
+- **URL sharing** (`lib/share.js`, the one new dependency **lz-string**): `encodeConfig`
+  serializes the minimal config (`pipeline`, `sampleSize`, `runMode`/`stopRule`,
+  `trackedStats`, `codeLang`) → a `?s=` blob; a one-time mount `useEffect` in `App.jsx`
+  imports it, runs `migratePipeline` + `rekeyStats`/`rekeyStopRule`, then cleans the URL.
+- **Hidden samplers** (Task D): a hidden link **opens and runs for anyone — no password
+  needed**; the password gates only *revealing* the device internals. The config is XOR-
+  obfuscated with a code-known `PEPPER` (so a casual URL decompress shows garbage, but the app
+  always decodes it to run concealed); the blob also carries a salted password *verifier*
+  (`checkHiddenPassword`), never the plaintext. **Not** crypto-grade. A hidden sampler renders
+  opaque placeholders + a "Reveal" button until the password is entered. Browser dialogs are
+  wrapped in module-level `safePrompt`/`safeAlert`/`safeConfirm` (they throw in embedded/
+  headless contexts).
+- **Code panels** (`components/code.jsx`, `lib/codegen.js`): off by default. The page-header
+  `CodeControls` toggle (off/R/Python + color-blind) drives them; each section's `CodeBox` is
+  then placed **beside the tool it mirrors** via `CodeBeside` (Sampler ★ → Sampler Pipeline,
+  Single sample ● → Sample Results, For-loop ▲ → Collect table, Inference ■ → Collect plot),
+  wrapping to stacked (code below) on narrow widths. The `CodeBox` header is a white→section-
+  color gradient with the section symbol as a large white watermark. See "Hard-won
+  constraints" #7. After the Collect section, `CodeIntegrated` renders `generateCode`'s
+  `integrated` array — the whole simulation as one script with each line's section symbol in
+  a color-coded gutter (the compact loop shows ★ red draw + ● orange stat lines nested inside
+  the ▲ green for-loop). `genIntegrated` builds that interleaving directly (reusing the same
+  `drawVec`/`vStat`/`compactInfLines` helpers, so it can't drift from the panels).
 
 ### The unified `Plot` primitive
 `Plot` (in `plots.jsx`) is the single plotting component behind EDA, Sample Results, and
@@ -97,6 +176,22 @@ Both are off by default and gated to plots where they make sense.
   are **click-to-track** in Sample Results (`countBetween`/`propBetween`).
   Gated to univariate numeric and num×cat-with-numeric-X; hidden on cat×cat, uni-cat, and
   num×num scatter.
+  - **Inference framing** (`divDir`/`divBy`/`divPct`): a single divider can pick a one-sided
+    **tail** (`◂ Left | Both | Right ▸`) — an arrow highlights the focused tail and only its
+    proportion shows. The value box and a linked **tail/middle proportion** box (0–1, matching
+    the tool's proportion convention) are two ends of one relationship (`divBy`): editing the
+    value (drag/type) reads a probability; editing the proportion snaps the cut(s) to a target.
+    A **range** (CI) uses `measure.js` `conservativeBand`: the **smallest achievable central
+    band that covers ≥ the target** — so setting 0.95 yields an interval covering *at least*
+    0.95 (conservative; discrete data rarely lands exactly on the nominal level). It walks the
+    nested central family (start at the median value, each step extends whichever side has the
+    larger excluded tail, ties → upper) and stops at the first band reaching the target. A
+    single **tail** snaps to a standard interpolating percentile (`stats.js` `quantile`): the
+    `1-m` percentile for a right tail, the `m` percentile for a left tail (the critical value).
+    Both are O(N + k log k) — no per-value rescans. Toggling Range or direction resets `divBy`
+    to `"value"`. `divPct` is stored as a fraction; generated-code comments keep conventional `%`.
+    On the Collect plot this drives the generated **inference**: tail+value → p-value, tail+prop
+    → critical value, range+value → band proportion, range+prop → CI (see codegen note below).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
   *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
@@ -130,6 +225,19 @@ These were the source of real bugs during development. Preserve them.
    `computeStat` and `numericSummary`. Keep them consistent.
 6. **Plots must fit vertically.** Dot-stacking computes the tallest column first, then
    `dotSpacing = min(normalSpacing, availableHeight / tallest)` so stacks never overflow.
+7. **Generated code reads the live specs, never a parallel copy.** `lib/codegen.js` mirrors
+   the *same* sources the UI computes from (stage outcomes, the `computeStat` fn semantics,
+   `stopReached`) so the R/Python can't drift from the tool. Scope: **with replacement**
+   (a without-replacement device is flagged in a comment, not reproduced); population SD;
+   type-7 quantiles (R `type=7`; pandas `.quantile()`/`np.quantile` are type-7 by default) to
+   match `quantile()`; one column per **enabled** tracked stat — nothing until one is enabled,
+   derived columns aren't emitted, and inference targets the first enabled stat. The **compact**
+   path draws the whole sample at once (`sample(...,n)` / `pop.sample(n)`); the **split** path
+   draws row-by-row (needed for forks/until/multi-column). `codegen.js` has **no imports**
+   (it's self-contained), so a bare-Node ESM round-trip of `generateCode` plus an actual
+   `python` run (pandas/numpy/statsmodels installed) are the cheap check (R isn't installed here). Keep the four section colors/symbols in `styles.js`'
+   `CODE_SECTIONS` as the single palette source; color-blind mode remaps **only** red→black
+   and green→gray.
 
 ## Device behavior reference
 - **Spinner**: always with replacement (toggle is disabled). Arrow lands at a random
@@ -147,14 +255,30 @@ These were the source of real bugs during development. Preserve them.
 Slider: 0 = Slow (default, left), 1 = Fast, 2 = Instant (right).
 
 ## Suggested next steps
-The Phase 0–7 roadmap in `plan.md` is complete: the module split, the shared `Plot`
-primitive, the Sample Results / Collect Statistics overhaul (click-to-track, derived
-columns), and the divider + ruler measurement tools all shipped. Possible follow-ons:
-- Trackability for the ruler's **residual** case (deferred — a measured scatter point has
-  no stable cross-repetition identity).
-- The divider on num×num scatter (deferred — a vertical cut reads as a statement about
-  x alone).
-- More device types or sampler-pipeline composition, if the curriculum needs them.
+Both roadmaps are complete: the Phase 0–7 plan (module split, shared `Plot`, the Sample
+Results / Collect Statistics overhaul, divider + ruler) and the next feature wave Tasks A–F
+in `.claude/plans/` (forked/conditional stages, run-until, URL sharing, hidden samplers,
+R/Python code panels, serialization polish) all shipped. Possible follow-ons:
+- **Without-replacement fidelity in generated code** (currently flagged-but-with-replacement).
+- **Multi-condition stop rules** (run-until is single-condition v1; no AND/OR yet).
+- Trackability for the ruler's **residual** case; the divider on num×num scatter (both
+  deferred earlier). More device types or pipeline composition, if the curriculum needs them.
+
+The Collect-plot **divider is wired into the inference code**: `Plot` reports its active cut +
+framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
+`DistributionPlot` maps the X header back to its tracked-stat id, and `App` lifts it into
+`dividerState` (a deduped setter prevents a re-render loop) → the `generateCode` cfg.
+`codegen.js`'s `dividerInfo`/`dividerExprs` then emit, over the matched statistic's result
+vector, one of: **p-value** `mean(vec >= v)` (right) / `mean(vec <= v)` (left — the focused
+tail is always inclusive of the cut) (tail + value), **critical value** (tail + %) as the
+percentile `quantile(vec, 1-m)` (right) / `quantile(vec, m)` (left), **CI** (range + %) as the
+plain percentile interval `quantile(vec, c((1-m)/2, 1-(1-m)/2))` for the set % — deliberately
+**not** the tool's `conservativeBand` (the student-facing code stays a simple one-liner; it
+won't match the drawn band exactly on discrete data, which is acceptable) — **band proportion**
+`mean(vec >= lo & vec <= hi)` (range + value); two-sided shows
+both `>= v` / `< v` proportions (disjoint). The on-plot left-tail read-out is built inclusively
+to match. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
+(derived) column.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.

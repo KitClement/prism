@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnPlus, btnArr } from "../lib/styles";
 import { COLORS, clamp, uid, nextItemLabel } from "../lib/util";
-import { InlineEdit, PasteButton, ReplacementToggle, RangeInput } from "./ui";
+import { InlineEdit, FillFromData, ReplacementToggle, RangeInput, NumInput } from "./ui";
+import { mkSpinner, mkStacks, mkMixer, stageOutcomes } from "../lib/sampling";
 
 // ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
 // Floor so a slice never fully vanishes (small enough that manual entry stays flexible;
@@ -287,8 +288,12 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // STACKS COMPONENT
 // ══════════════════════════════════════════════════════════════════════════════
-function StacksDevice({ device, onChange, animState }) {
+function StacksDevice({ device, onChange, animState, dataset }) {
   const BAR_MAX_H = 130, MAX_CT = 200;
+  // Manual content edits break any CSV link: drop the `source` so codegen reverts to a
+  // literal vector. Only Fill-from-data (below) sets `source`. Color and the replacement
+  // toggle don't change the sampled values, so they keep the live `onChange`.
+  const editClear = next => onChange({ ...next, source: undefined });
   const dragY0 = useRef(0), dragCount0 = useRef(0);
   // Local preview of the bar being dragged. We do NOT call onChange on every
   // mousemove: each onChange runs updDevice's invalidation guard, which can pop a
@@ -324,7 +329,7 @@ function StacksDevice({ device, onChange, animState }) {
       if (lastCount !== dragCount0.current) {
         const items = [...device.items];
         items[i] = { ...items[i], count:lastCount };
-        onChange({ ...device, items });
+        editClear({ ...device, items });
       }
     };
     window.addEventListener("mousemove", move);
@@ -527,7 +532,7 @@ function StacksDevice({ device, onChange, animState }) {
               <div style={{ fontSize:8, color:it.color, fontWeight:700, marginTop:2,
                 overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%", textAlign:"center" }}>
                 <InlineEdit value={it.label}
-                  onChange={v => { const items = [...device.items]; items[i] = { ...items[i], label:v }; onChange({ ...device, items }); }}
+                  onChange={v => { const items = [...device.items]; items[i] = { ...items[i], label:v }; editClear({ ...device, items }); }}
                   style={{ fontSize:9 }} />
               </div>
             </div>
@@ -535,7 +540,7 @@ function StacksDevice({ device, onChange, animState }) {
         })}
       </div>
       )}
-      <div style={{ fontSize:10, color:"#bbb", textAlign:"center", marginBottom:6 }}>↕ drag · total: {total}</div>
+      <div style={{ fontSize:10, color:"#bbb", textAlign:"center", marginBottom:6 }}>drag · total: {total}</div>
       <div style={{ display:"flex", flexDirection:"column", gap:3, maxHeight:110, overflowY:"auto" }}>
         {device.items.map((it, i) => (
           <div key={it.id} style={{ display:"flex", alignItems:"center", gap:3 }}>
@@ -544,22 +549,22 @@ function StacksDevice({ device, onChange, animState }) {
               style={{ width:20, height:20, border:"none", padding:0, cursor:"pointer", borderRadius:3, flexShrink:0 }} />
             <div style={{ flex:1, fontSize:12 }}>
               <InlineEdit value={it.label}
-                onChange={v => { const items = [...device.items]; items[i] = { ...items[i], label:v }; onChange({ ...device, items }); }} />
+                onChange={v => { const items = [...device.items]; items[i] = { ...items[i], label:v }; editClear({ ...device, items }); }} />
             </div>
-            <input type="number" value={it.count} min={0} max={MAX_CT}
-              onChange={e => { const items = [...device.items]; items[i] = { ...items[i], count:parseInt(e.target.value) || 0 }; onChange({ ...device, items }); }}
+            <NumInput value={it.count} min={0} max={MAX_CT} round={0}
+              onChange={v => { const items = [...device.items]; items[i] = { ...items[i], count:Math.max(0, Math.round(v)) }; editClear({ ...device, items }); }}
               style={{ ...iSm, width:42 }} />
-            <button onClick={() => onChange({ ...device, items:device.items.filter((_, j) => j !== i) })} style={btnX}>×</button>
+            <button onClick={() => editClear({ ...device, items:device.items.filter((_, j) => j !== i) })} style={btnX}>×</button>
           </div>
         ))}
       </div>
       <div style={{ display:"flex", gap:5, marginTop:6, flexWrap:"wrap" }}>
-        <button onClick={() => onChange({ ...device, items:[...device.items, { id:uid(), label:nextItemLabel(device.items.map(it => it.label)), count:3, color:COLORS[device.items.length % COLORS.length] }] })}
+        <button onClick={() => editClear({ ...device, items:[...device.items, { id:uid(), label:nextItemLabel(device.items.map(it => it.label)), count:3, color:COLORS[device.items.length % COLORS.length] }] })}
           style={btnPlus}>+ category</button>
-        <PasteButton onApply={vals => {
+        <FillFromData dataset={dataset} onFill={(vals, varName, dsName) => {
           const counts = {}, order = [], cm = {};
           vals.forEach(v => { if (!counts[v]) { counts[v] = 0; order.push(v); cm[v] = COLORS[order.length % COLORS.length]; } counts[v]++; });
-          onChange({ ...device, items:order.map(label => ({ id:uid(), label, count:counts[label], color:cm[label] })) });
+          onChange({ ...device, items:order.map(label => ({ id:uid(), label, count:counts[label], color:cm[label] })), source:{ dataset:dsName, var:varName } });
         }} />
       </div>
       <ReplacementToggle device={device} onChange={onChange} />
@@ -571,8 +576,11 @@ function StacksDevice({ device, onChange, animState }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // MIXER COMPONENT
 // ══════════════════════════════════════════════════════════════════════════════
-function MixerDevice({ device, onChange, animState }) {
+function MixerDevice({ device, onChange, animState, dataset }) {
   const BOWL_W = 190, BOWL_H = 108;
+  // Manual content edits break any CSV link — drop `source` so codegen reverts to a literal
+  // vector. Only Fill-from-data sets it. Color/replacement keep the live `onChange`.
+  const editClear = next => onChange({ ...next, source: undefined });
   const posRef = useRef([]);
   const frameRef = useRef(null);
   const [positions, setPositions] = useState([]);
@@ -737,14 +745,14 @@ function MixerDevice({ device, onChange, animState }) {
               style={{ width:20, height:20, border:"none", padding:0, cursor:"pointer", borderRadius:3, flexShrink:0 }} />
             <div style={{ flex:1, fontSize:12 }}>
               <InlineEdit value={group.label}
-                onChange={newL => { const balls = device.balls.map(b => b.label === group.label ? { ...b, label:newL } : b); onChange({ ...device, balls }); }} />
+                onChange={newL => { const balls = device.balls.map(b => b.label === group.label ? { ...b, label:newL } : b); editClear({ ...device, balls }); }} />
             </div>
             <span style={{ fontSize:10, color:"#888" }}>×{group.count}</span>
-            <button onClick={() => { const idx = [...device.balls.map((b, i) => b.label === group.label ? i : -1)].filter(i => i >= 0).at(-1); onChange({ ...device, balls:device.balls.filter((_, i) => i !== idx) }); }}
+            <button onClick={() => { const idx = [...device.balls.map((b, i) => b.label === group.label ? i : -1)].filter(i => i >= 0).at(-1); editClear({ ...device, balls:device.balls.filter((_, i) => i !== idx) }); }}
               style={{ ...btnArr, padding:"0 5px", fontSize:13 }}>−</button>
-            <button onClick={() => onChange({ ...device, balls:[...device.balls, { id:uid(), label:group.label, color:group.color }] })}
+            <button onClick={() => editClear({ ...device, balls:[...device.balls, { id:uid(), label:group.label, color:group.color }] })}
               style={{ ...btnArr, padding:"0 5px", fontSize:13 }}>+</button>
-            <button onClick={() => onChange({ ...device, balls:device.balls.filter(b => b.label !== group.label) })} style={btnX}>×</button>
+            <button onClick={() => editClear({ ...device, balls:device.balls.filter(b => b.label !== group.label) })} style={btnX}>×</button>
           </div>
         ))}
       </div>
@@ -755,19 +763,19 @@ function MixerDevice({ device, onChange, animState }) {
             // merging into an existing one.
             const label = nextItemLabel(grouped.map(g => g.label));
             const color = COLORS[grouped.length % COLORS.length];
-            onChange({ ...device, balls:[...device.balls, { id:uid(), label, color }] });
+            editClear({ ...device, balls:[...device.balls, { id:uid(), label, color }] });
           }}
           style={btnPlus}>+ ball type</button>
         <button onClick={() => setRangeOpen(r => !r)}
           style={{ ...btnPlus, color:"#7c3aed", borderColor:"#c4b5fd", background:"#f5f3ff" }}>… range</button>
-        <PasteButton onApply={vals => {
+        <FillFromData dataset={dataset} onFill={(vals, varName, dsName) => {
           const cm = {}; [...new Set(vals)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; });
-          onChange({ ...device, balls:vals.map(label => ({ id:uid(), label, color:cm[label] })) });
+          onChange({ ...device, balls:vals.map(label => ({ id:uid(), label, color:cm[label] })), source:{ dataset:dsName, var:varName } });
         }} />
       </div>
       {rangeOpen && (
         <RangeInput
-          onApply={items => { const cm = {}; [...new Set(items)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; }); onChange({ ...device, balls:[...device.balls, ...items.map(label => ({ id:uid(), label, color:cm[label] }))] }); setRangeOpen(false); }}
+          onApply={items => { const cm = {}; [...new Set(items)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; }); editClear({ ...device, balls:items.map(label => ({ id:uid(), label, color:cm[label] })) }); setRangeOpen(false); }}
           onClose={() => setRangeOpen(false)} />
       )}
       <ReplacementToggle device={device} onChange={onChange} />
@@ -778,10 +786,10 @@ function MixerDevice({ device, onChange, animState }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // DEVICE CARD
 // ══════════════════════════════════════════════════════════════════════════════
-const DTYPE = { spinner:{ icon:"🎰", label:"Spinner" }, stacks:{ icon:"📊", label:"Stacks" }, mixer:{ icon:"🎱", label:"Mixer" } };
+const DTYPE = { spinner:{ label:"Spinner" }, stacks:{ label:"Stacks" }, mixer:{ label:"Mixer" } };
 
 function DeviceCard({ device, index, total, onChange, onRemove, onMove, animState, locked, nameError }) {
-  const { icon, label } = DTYPE[device.type] || { icon:"?", label:"?" };
+  const { label } = DTYPE[device.type] || { label:"?" };
 
   // For spinners, the badge only shows after the arrow finishes spinning.
   // Reset readiness on each new draw; if not animating (instant mode), it's ready now.
@@ -813,7 +821,7 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
           background:"transparent", cursor:"not-allowed" }} />
       )}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <span style={{ fontWeight:700, fontSize:13, color:"#2c3e50" }}>{icon} {label}</span>
+        <span style={{ fontWeight:700, fontSize:13, color:"#2c3e50" }}>{label}</span>
         <div style={{ display:"flex", gap:2 }}>
           <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr}>←</button>
           <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr}>→</button>
@@ -853,8 +861,144 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ANIMATION LOOP
-// Drives animState for each device sequentially, then commits a row to the table
+// STAGE CARD — one output column. Holds 1+ conditional branches, each a device whose
+// outcomes can depend on an upstream stage's draw (fork). A single-branch stage renders
+// like a plain device; a forked stage stacks its branch sub-cards with condition labels.
 // ══════════════════════════════════════════════════════════════════════════════
 
-export { SpinnerDevice, StacksDevice, MixerDevice, DeviceCard };
+// Deep-clone a device with FRESH ids (its own + every outcome's), so a cloned branch
+// device gets a separate without-replacement pool and its own animState slot.
+function cloneDeviceFresh(dev) {
+  const c = JSON.parse(JSON.stringify(dev));
+  c.id = uid();
+  const coll = c.items || c.balls || c.slices;
+  if (coll) coll.forEach(o => { o.id = uid(); });
+  return c;
+}
+const mkDeviceOfType = type => ({ spinner:mkSpinner, stacks:mkStacks, mixer:mkMixer }[type] || mkStacks)(1);
+
+// The body of one branch: result badge + the device editor, dimmable when not selected.
+function BranchDeviceBody({ device, onChange, animState, locked, dataset }) {
+  const [spinnerReady, setSpinnerReady] = useState(false);
+  const drawId = animState && animState.drawId;
+  const isAnimating = animState && animState.animating;
+  useEffect(() => { setSpinnerReady(!isAnimating); }, [drawId]);
+  const rawResult = animState && animState.result;
+  const result = device.type === "spinner" ? (spinnerReady ? rawResult : null) : rawResult;
+  const edit = locked ? () => {} : onChange;
+  return (
+    <div style={{ opacity: animState && animState.inactive ? 0.32 : 1, transition:"opacity 0.2s" }}>
+      <div style={{ minHeight:26, display:"flex", alignItems:"center", justifyContent:"center" }}>
+        {result ? (
+          <div style={{ background:"#6366f1", color:"#fff", borderRadius:20, padding:"3px 16px", fontSize:14, fontWeight:700, boxShadow:"0 2px 8px rgba(99,102,241,0.35)" }}>{result}</div>
+        ) : (
+          <div style={{ height:24, width:64, borderRadius:20, border:"1.5px dashed #e0e0e0", background:"#fafafa" }} />
+        )}
+      </div>
+      {device.type === "spinner" && <SpinnerDevice device={device} onChange={edit} animState={animState} onSpinReady={() => setSpinnerReady(true)} />}
+      {device.type === "stacks" && <StacksDevice device={device} onChange={edit} animState={animState} dataset={dataset} />}
+      {device.type === "mixer" && <MixerDevice device={device} onChange={edit} animState={animState} dataset={dataset} />}
+    </div>
+  );
+}
+
+// Inline condition editor for one conditional branch: "if <upstream> = <value>".
+function BranchConditionEditor({ branch, upstreamStages, nameOf, onChange, locked }) {
+  const condStage = upstreamStages.find(s => s.id === branch.condVar) || upstreamStages[0];
+  const opts = condStage ? stageOutcomes(condStage) : [];
+  const selSty = { ...iSm, fontSize:11, padding:"2px 4px" };
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11, color:"#7c3aed", flexWrap:"wrap" }}>
+      <span style={{ fontWeight:700 }}>if</span>
+      <select value={branch.condVar || (condStage && condStage.id) || ""} disabled={locked}
+        onChange={e => { const sid = e.target.value; const st = upstreamStages.find(s => s.id === sid); const vs = st ? stageOutcomes(st) : []; onChange({ ...branch, condVar:sid, condVal: vs.includes(branch.condVal) ? branch.condVal : (vs[0] || "") }); }}
+        style={selSty}>
+        {upstreamStages.map(s => <option key={s.id} value={s.id}>{nameOf(s.id)}</option>)}
+      </select>
+      <span>=</span>
+      <select value={branch.condVal != null ? branch.condVal : ""} disabled={locked}
+        onChange={e => onChange({ ...branch, condVal:e.target.value })} style={selSty}>
+        {opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+const DTYPE_OPTS = [["stacks","Stacks"], ["mixer","Mixer"], ["spinner","Spinner"]];
+
+function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRemove, onMove, animStates, locked, nameError, dataset }) {
+  const branches = stage.branches;
+  const forked = branches.length > 1;
+  const canFork = upstreamStages.length > 0; // need an upstream stage to condition on
+
+  const setBranches = bs => onChange({ ...stage, branches: bs });
+  const setBranch = (bid, nb) => setBranches(branches.map(b => b.id === bid ? nb : b));
+  const setBranchDevice = (bid, dev) => setBranch(bid, { ...branches.find(b => b.id === bid), device: dev });
+
+  const addBranch = () => {
+    const def = branches.find(b => b.condVar === null) || branches[0];
+    const up = upstreamStages[0];
+    const vals = up ? stageOutcomes(up) : [];
+    const nb = { id:uid(), condVar: up ? up.id : null, condVal: vals[0] || "", device: cloneDeviceFresh(def.device) };
+    // Keep the default branch last so it always reads as the "otherwise" fall-through.
+    const cond = branches.filter(b => b.condVar !== null);
+    const dft = branches.filter(b => b.condVar === null);
+    setBranches([...cond, nb, ...dft]);
+  };
+  const remBranch = bid => { const b = branches.find(x => x.id === bid); if (b.condVar === null) return; setBranches(branches.filter(x => x.id !== bid)); };
+  const changeBranchType = (bid, type) => { const b = branches.find(x => x.id === bid); if (b.device.type === type) return; setBranchDevice(bid, mkDeviceOfType(type)); };
+
+  return (
+    <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 10px rgba(0,0,0,0.06)",
+      border: forked ? "1.5px solid #c4b5fd" : "1.5px solid #e8e8e8", padding:12,
+      display:"flex", flexDirection:"column", gap:7, flex:"1 1 200px", minWidth:184, maxWidth:260, position:"relative" }}>
+      {locked && <div style={{ position:"absolute", inset:0, borderRadius:12, zIndex:10, background:"transparent", cursor:"not-allowed" }} />}
+      {/* Stage header: column name + reorder/remove */}
+      <div style={{ display:"flex", alignItems:"center", gap:4 }}>
+        <span style={{ fontSize:10, color:"#bbb" }}>var:</span>
+        <input value={stage.varName} disabled={locked}
+          title={nameError ? "Column names must be unique and non-blank" : undefined}
+          onChange={e => onChange({ ...stage, varName:e.target.value.replace(/\s/g, "_") })}
+          style={{ ...iSm, flex:1, fontFamily:"monospace", fontSize:11, borderColor: nameError ? "#ef4444" : undefined, boxShadow: nameError ? "0 0 0 1px #ef4444" : undefined }} />
+        <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr}>←</button>
+        <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr}>→</button>
+        <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }}>✕</button>
+      </div>
+
+      {branches.map(branch => {
+        const isDefault = branch.condVar === null;
+        return (
+          <div key={branch.id} style={{ borderTop: forked ? "1px dashed #ede9fe" : "none", paddingTop: forked ? 6 : 0 }}>
+            {forked && (
+              <div style={{ display:"flex", alignItems:"center", gap:4, marginBottom:4 }}>
+                {isDefault ? (
+                  <span style={{ fontSize:11, fontWeight:700, color:"#7c3aed" }}>otherwise</span>
+                ) : (
+                  <BranchConditionEditor branch={branch} upstreamStages={upstreamStages} nameOf={nameOf}
+                    onChange={nb => setBranch(branch.id, nb)} locked={locked} />
+                )}
+                <select value={branch.device.type} disabled={locked}
+                  onChange={e => changeBranchType(branch.id, e.target.value)}
+                  style={{ ...iSm, fontSize:10, padding:"2px 3px", marginLeft:"auto" }}>
+                  {DTYPE_OPTS.map(([t, l]) => <option key={t} value={t}>{l}</option>)}
+                </select>
+                {!isDefault && <button disabled={locked} onClick={() => remBranch(branch.id)} style={btnX}>×</button>}
+              </div>
+            )}
+            <BranchDeviceBody device={branch.device} animState={animStates[branch.device.id] || null}
+              locked={locked} onChange={dev => setBranchDevice(branch.id, dev)} dataset={dataset} />
+          </div>
+        );
+      })}
+
+      {canFork && !locked && (
+        <button onClick={addBranch} style={{ ...btnPlus, marginTop:2 }}
+          title="Add a branch whose device depends on an upstream draw">
+          ⑂ {forked ? "add branch" : "make conditional"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export { SpinnerDevice, StacksDevice, MixerDevice, DeviceCard, StageCard };
