@@ -1,4 +1,4 @@
-# TinkerSim — Quality-of-Life Roadmap
+# PRISM — Quality-of-Life Roadmap
 
 A backlog of small-to-medium improvements gathered after the Phase 0–7 work in
 `plan.md` shipped. These are independent of each other; the phases below group them
