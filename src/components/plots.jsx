@@ -1535,7 +1535,8 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
               <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
               {trackedStats.map(s => (
                 <th key={s.id} title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "#fef3c7" : "#f1f5f9", color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
-                  <span title={s.kind === "derived" ? "Derived column" : undefined} style={{ fontFamily:"monospace", color: s.kind === "derived" ? "#b45309" : "#4338ca" }}>{labelFor(s)}</span>
+                  {s.kind === "derived" && <span title="Derived column" style={{ marginRight:3 }}>ƒ</span>}
+                  <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "#b45309" : "#4338ca" }}>{labelFor(s)}</span>
                   <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:4, verticalAlign:"middle" }}>×</button>
                 </th>
               ))}
