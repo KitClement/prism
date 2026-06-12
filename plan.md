@@ -1,6 +1,6 @@
 # Roadmap — Sample Results & Collect Statistics Overhaul
 
-A staged plan to rework the bottom two stages of TinkerSim so they reuse the EDA
+A staged plan to rework the bottom two stages of PRISM so they reuse the EDA
 plotting primitives and shift Collect Statistics from a formula-builder to a
 "pick the statistic you can already see" workflow.
 
