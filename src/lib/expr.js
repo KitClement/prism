@@ -156,11 +156,11 @@ function exprLabel(s, byId, nameOf) {
   return renderExpr(s.tokens, id => { const o = byId[id]; return o ? colLabel(o, byId, nameOf) : "?"; });
 }
 
-// Display label for any tracked column: a derived column's custom `name` if the user
-// gave one, otherwise its formula. Plain stats always use statLabel. `nameOf` resolves
-// device ids to display names (threaded down to statLabel).
+// Display label for any tracked column: a user-given custom `name` (on any column kind,
+// derived or plain) wins; otherwise a derived column renders its formula and a plain stat
+// uses statLabel. `nameOf` resolves device ids to display names (threaded to statLabel).
 function colLabel(s, byId, nameOf) {
-  if (s && s.kind === "derived" && s.name && s.name.trim()) return s.name.trim();
+  if (s && s.name && s.name.trim()) return s.name.trim();
   return exprLabel(s, byId, nameOf);
 }
 

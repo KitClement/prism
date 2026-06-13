@@ -1,12 +1,12 @@
 // Shared style constants. Exported from a module so import order can never
 // reintroduce the "const is not hoisted" ordering bug.
 
-const iSm = { padding:"3px 6px", border:"1px solid #ddd", borderRadius:5, fontSize:12, outline:"none", background:"#fafafa" };
-const btnX = { background:"none", border:"none", color:"#ccc", cursor:"pointer", fontSize:15, padding:"0 2px", lineHeight:1 };
-const btnPlus = { padding:"3px 9px", background:"#f7f8fa", border:"1.5px dashed #ddd", borderRadius:5, fontSize:11, cursor:"pointer", color:"#666" };
-const btnArr = { background:"none", border:"1px solid #eee", borderRadius:4, fontSize:11, cursor:"pointer", color:"#999", padding:"1px 4px" };
-const btnNav = { padding:"3px 8px", background:"#f4f5f7", border:"1px solid #ddd", borderRadius:5, fontSize:11, cursor:"pointer", color:"#555" };
-const ctrlLbl = { fontSize:12, color:"#555", display:"flex", alignItems:"center" };
+const iSm = { padding:"3px 6px", border:"1px solid var(--border-2)", borderRadius:5, fontSize:12, outline:"none", background:"var(--surface-2)", color:"var(--text)" };
+const btnX = { background:"none", border:"none", color:"var(--text-faint)", cursor:"pointer", fontSize:15, padding:"0 2px", lineHeight:1 };
+const btnPlus = { padding:"3px 9px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:5, fontSize:11, cursor:"pointer", color:"var(--text-2)" };
+const btnArr = { background:"none", border:"1px solid var(--border)", borderRadius:4, fontSize:11, cursor:"pointer", color:"var(--text-3)", padding:"1px 4px" };
+const btnNav = { padding:"3px 8px", background:"var(--surface-3)", border:"1px solid var(--border-2)", borderRadius:5, fontSize:11, cursor:"pointer", color:"var(--text-2)" };
+const ctrlLbl = { fontSize:12, color:"var(--text-2)", display:"flex", alignItems:"center" };
 
 // Code-panel sections (Task E). Four runnable sections + an integrated program, each
 // color/symbol-coded to match the program's logo (four DISTINCT shapes so they stay
@@ -20,8 +20,18 @@ const CODE_SECTIONS = [
   { id:"collect",   title:"For-loop",         symbol:"triangle", color:"#34ff2b", cbColor:"#9e9e9e" },
   { id:"inference", title:"Inference",        symbol:"square",   color:"#2b66ff", cbColor:"#2b66ff" },
 ];
-// Resolve a section's effective color for the current color-blind mode.
-const sectionColor = (sec, cb) => (cb ? sec.cbColor : sec.color);
+// Resolve a section's effective color for the current color-blind mode. In dark mode the
+// color-blind remap's dark hues (black sampler-star, gray for-loop) would vanish against the
+// panel, so lift them to light equivalents that stay visible (the symbol shape still encodes
+// the section, so the exact hue isn't load-bearing).
+const sectionColor = (sec, cb, dark) => {
+  const c = cb ? sec.cbColor : sec.color;
+  if (dark) {
+    if (c === "#000000") return "#e7e9ed"; // black → light
+    if (c === "#9e9e9e") return "#c4c9d2"; // gray → lighter
+  }
+  return c;
+};
 // SVG path data (24×24 box, centered) for each section shape.
 const SHAPE_PATH = {
   star:     "M12 2 L14.9 8.9 L22.4 9.5 L16.7 14.4 L18.5 21.7 L12 17.8 L5.5 21.7 L7.3 14.4 L1.6 9.5 L9.1 8.9 Z",

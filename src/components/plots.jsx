@@ -32,8 +32,8 @@ function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, 
     <g style={{ cursor:"pointer" }} onClick={e => { e.stopPropagation(); onTrackStat(spec); }}>
       <title>{tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}</title>
       <rect x={rx} y={y - h + 3} width={w} height={h} rx={3}
-        fill={tracked ? "#c7d2fe" : "#eef2ff"} stroke={tracked ? "#6366f1" : "#c7d2fe"} strokeWidth={1} />
-      <text x={x} y={y} textAnchor={anchor} fontSize={fontSize} fill={tracked ? "#3730a3" : color} fontWeight={800}>{label}</text>
+        fill={tracked ? "var(--xsel-head)" : "var(--xsel-cell)"} stroke={tracked ? "#6366f1" : "var(--xsel-head)"} strokeWidth={1} />
+      <text x={x} y={y} textAnchor={anchor} fontSize={fontSize} fill={tracked ? "var(--accent-ink)" : color} fontWeight={800}>{label}</text>
     </g>
   );
 }
@@ -48,22 +48,22 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
       <span data-mkey={statKey(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
         title={sel ? "Selected as " + measureRole + " — click to deselect" : "Click to pick as A or B for the ruler difference"}
         style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
-          background: sel ? "#ccfbf1" : "transparent",
-          color: sel ? "#0f766e" : (dim ? "#bbb" : "#0d9488"),
+          background: sel ? "var(--ruler-soft)" : "transparent",
+          color: sel ? "var(--ruler-text)" : (dim ? "var(--text-faint)" : "var(--ruler-line)"),
           boxShadow: sel ? "none" : "inset 0 -1px 0 #5eead4" }}>
         {text}{sel ? " " + measureRole : ""}
       </span>
     );
   }
-  if (!trackable || !spec) return <span style={{ color: dim ? "#bbb" : "#3730a3" }}>{text}</span>;
+  if (!trackable || !spec) return <span style={{ color: dim ? "var(--text-faint)" : "var(--accent-ink)" }}>{text}</span>;
   const lbl = statLabel(spec, nameOf);
   const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   return (
     <span onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
       title={tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}
       style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
-        background: tracked ? "#c7d2fe" : "transparent",
-        color: tracked ? "#1e1b4b" : "#4338ca",
+        background: tracked ? "var(--xsel-head)" : "transparent",
+        color: tracked ? "#1e1b4b" : "var(--accent-ink)",
         boxShadow: tracked ? "none" : "inset 0 -1px 0 #a5b4fc" }}>
       {text}
     </span>
@@ -154,7 +154,7 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="transparent" strokeWidth={14} />
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="#6366f1" strokeWidth={dragI === i ? 2.5 : 1.5} strokeDasharray="4 3" />
             {/* the cut value, directly above the grab handle */}
-            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmt(v)}</text>}
+            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill="var(--accent-ink)">{fmt(v)}</text>}
             {/* grab handle at the top of the line */}
             <rect x={x - 5} y={topY - 9} width={10} height={9} rx={2} fill="#6366f1" stroke="#fff" strokeWidth={1} />
           </g>
@@ -197,9 +197,9 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
         // right in parentheses (each still individually click-to-track).
         return (
           <g key={r.key}>
-            {showCount && <TrackText x={both ? cx - 3 : cx} y={y} anchor={both ? "end" : "middle"} color="#475569" fontSize={9}
+            {showCount && <TrackText x={both ? cx - 3 : cx} y={y} anchor={both ? "end" : "middle"} color="var(--text-2)" fontSize={9}
               label={String(r.n)} spec={regionSpec(r, "countBetween", base)} {...trackProps} />}
-            {showPct && <TrackText x={both ? cx + 3 : cx} y={y} anchor={both ? "start" : "middle"} color="#475569" fontSize={9}
+            {showPct && <TrackText x={both ? cx + 3 : cx} y={y} anchor={both ? "start" : "middle"} color="var(--text-2)" fontSize={9}
               label={"(" + (total ? fmtP(r.p) : "—") + ")"} spec={regionSpec(r, "propBetween", base)} {...trackProps} />}
           </g>
         );
@@ -269,7 +269,7 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
   return (
     <g>
       {/* connector bar between the endpoints */}
-      <line x1={xa} y1={lineY} x2={xb} y2={lineY} stroke="#0d9488" strokeWidth={1.5} />
+      <line x1={xa} y1={lineY} x2={xb} y2={lineY} stroke="var(--ruler-line)" strokeWidth={1.5} />
       {pts.map((p, i) => {
         const x = sx(p.value);
         const ring = anchorOf(p);
@@ -279,26 +279,26 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
             onPointerDown={onDown(i)} onPointerMove={onMove} onPointerUp={onUp}>
             {/* wide transparent hit area + visible guide line */}
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="transparent" strokeWidth={14} />
-            <line x1={x} y1={topY} x2={x} y2={botY} stroke="#0d9488" strokeWidth={big ? 2.5 : 1.5} strokeDasharray="2 3" />
+            <line x1={x} y1={topY} x2={x} y2={botY} stroke="var(--ruler-line)" strokeWidth={big ? 2.5 : 1.5} strokeDasharray="2 3" />
             {/* anchor ring over the exact target this endpoint is tied to */}
             {ring && (
               <g>
-                <circle cx={ring.x} cy={ring.y} r={big ? 8 : 6.5} fill="none" stroke="#0d9488" strokeWidth={big ? 2.5 : 1.8} />
-                <circle cx={ring.x} cy={ring.y} r={1.6} fill="#0d9488" />
+                <circle cx={ring.x} cy={ring.y} r={big ? 8 : 6.5} fill="none" stroke="var(--ruler-line)" strokeWidth={big ? 2.5 : 1.8} />
+                <circle cx={ring.x} cy={ring.y} r={1.6} fill="var(--ruler-line)" />
               </g>
             )}
             {/* end cap on the connector bar */}
-            <line x1={x} y1={lineY - 5} x2={x} y2={lineY + 5} stroke="#0d9488" strokeWidth={2} />
+            <line x1={x} y1={lineY - 5} x2={x} y2={lineY + 5} stroke="var(--ruler-line)" strokeWidth={2} />
             {/* handle + letter */}
-            <rect x={x - 6} y={lineY - 9} width={12} height={9} rx={2} fill="#0d9488" stroke="#fff" strokeWidth={1} />
+            <rect x={x - 6} y={lineY - 9} width={12} height={9} rx={2} fill="var(--ruler-line)" stroke="#fff" strokeWidth={1} />
             <text x={x} y={lineY - 1.5} textAnchor="middle" fontSize={7} fontWeight={800} fill="#fff">{i === 0 ? "A" : "B"}</text>
             {/* what this endpoint landed on (measure name or constant value) */}
-            <text x={x} y={lineY + 16} textAnchor="middle" fontSize={8} fontWeight={600} fill="#0f766e">{opLabel(p)}</text>
+            <text x={x} y={lineY + 16} textAnchor="middle" fontSize={8} fontWeight={600} fill="var(--ruler-text)">{opLabel(p)}</text>
           </g>
         );
       })}
       {/* signed-distance read-out at the bar midpoint */}
-      <text x={midX} y={lineY - 7} textAnchor="middle" fontSize={9} fontWeight={800} fill="#0f766e">
+      <text x={midX} y={lineY - 7} textAnchor="middle" fontSize={9} fontWeight={800} fill="var(--ruler-text)">
         A − B = {fmtNum(diff)}
       </text>
       {/* ＋ track affordance (Sample Results only) */}
@@ -308,8 +308,8 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
         return (
           <g style={{ cursor:"pointer" }} onClick={e => { e.stopPropagation(); onTrackDiff(a, b); }}>
             <title>Track A − B as a derived column in Collect Statistics</title>
-            <rect x={midX - w / 2} y={ty - 9} width={w} height={13} rx={3} fill="#ccfbf1" stroke="#5eead4" strokeWidth={1} />
-            <text x={midX} y={ty} textAnchor="middle" fontSize={8} fontWeight={800} fill="#0f766e">{label}</text>
+            <rect x={midX - w / 2} y={ty - 9} width={w} height={13} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
+            <text x={midX} y={ty} textAnchor="middle" fontSize={8} fontWeight={800} fill="var(--ruler-text)">{label}</text>
           </g>
         );
       })()}
@@ -351,14 +351,14 @@ function ResidualOverlay({ scatterPts, ls, sx, toPy, xlo, xhi, W, area, sel, onS
         style={{ cursor:"crosshair", touchAction:"none" }}
         onPointerDown={down} onPointerMove={move} onPointerUp={up} />
       {/* the LS line the residual is measured to */}
-      <line x1={sx(xlo)} y1={lineY1} x2={sx(xhi)} y2={lineY2} stroke="#0d9488" strokeWidth={1.6} />
+      <line x1={sx(xlo)} y1={lineY1} x2={sx(xhi)} y2={lineY2} stroke="var(--ruler-line)" strokeWidth={1.6} />
       {p && (
         <g>
-          <line x1={p.px} y1={p.py} x2={p.px} y2={footY} stroke="#0d9488" strokeWidth={2} strokeDasharray="3 2" />
-          <circle cx={p.px} cy={footY} r={3} fill="#fff" stroke="#0d9488" strokeWidth={1.6} />
-          <circle cx={p.px} cy={p.py} r={6} fill="none" stroke="#0d9488" strokeWidth={2} />
-          <rect x={p.px + 7} y={midY - 8} width={lbl.length * 5 + 8} height={14} rx={3} fill="#ccfbf1" stroke="#5eead4" strokeWidth={1} />
-          <text x={p.px + 11} y={midY + 2} fontSize={9} fontWeight={800} fill="#0f766e">{lbl}</text>
+          <line x1={p.px} y1={p.py} x2={p.px} y2={footY} stroke="var(--ruler-line)" strokeWidth={2} strokeDasharray="3 2" />
+          <circle cx={p.px} cy={footY} r={3} fill="#fff" stroke="var(--ruler-line)" strokeWidth={1.6} />
+          <circle cx={p.px} cy={p.py} r={6} fill="none" stroke="var(--ruler-line)" strokeWidth={2} />
+          <rect x={p.px + 7} y={midY - 8} width={lbl.length * 5 + 8} height={14} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
+          <text x={p.px + 11} y={midY + 2} fontSize={9} fontWeight={800} fill="var(--ruler-text)">{lbl}</text>
         </g>
       )}
     </g>
@@ -399,16 +399,16 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
   const pill = "＋ track", pw = pill.length * 5.4 + 12;
   return (
     <svg width={g.w} height={g.h} style={{ position:"absolute", top:0, left:0, pointerEvents:"none", overflow:"visible" }}>
-      <line x1={g.ax} y1={g.ay} x2={g.bx} y2={g.by} stroke="#0d9488" strokeWidth={2} />
-      <circle cx={g.ax} cy={g.ay} r={4} fill="#0d9488" />
-      <circle cx={g.bx} cy={g.by} r={4} fill="#0d9488" />
+      <line x1={g.ax} y1={g.ay} x2={g.bx} y2={g.by} stroke="var(--ruler-line)" strokeWidth={2} />
+      <circle cx={g.ax} cy={g.ay} r={4} fill="var(--ruler-line)" />
+      <circle cx={g.bx} cy={g.by} r={4} fill="var(--ruler-line)" />
       <g transform={"translate(" + mx + "," + my + ")"}>
-        <rect x={-lw / 2} y={trackable ? -23 : -10} width={lw} height={trackable ? 35 : 18} rx={5} fill="#ffffff" stroke="#5eead4" strokeWidth={1.5} />
-        <text x={0} y={trackable ? -10 : 3} textAnchor="middle" fontSize={11} fontWeight={800} fill="#0f766e">{diffLabel}</text>
+        <rect x={-lw / 2} y={trackable ? -23 : -10} width={lw} height={trackable ? 35 : 18} rx={5} fill="var(--surface)" stroke="#5eead4" strokeWidth={1.5} />
+        <text x={0} y={trackable ? -10 : 3} textAnchor="middle" fontSize={11} fontWeight={800} fill="var(--ruler-text)">{diffLabel}</text>
         {trackable && (
           <g style={{ cursor:"pointer", pointerEvents:"auto" }} onClick={e => { e.stopPropagation(); onTrack(); }}>
-            <rect x={-pw / 2} y={2} width={pw} height={14} rx={3} fill="#ccfbf1" stroke="#5eead4" strokeWidth={1} />
-            <text x={0} y={12} textAnchor="middle" fontSize={9} fontWeight={800} fill="#0f766e">{pill}</text>
+            <rect x={-pw / 2} y={2} width={pw} height={14} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
+            <text x={0} y={12} textAnchor="middle" fontSize={9} fontWeight={800} fill="var(--ruler-text)">{pill}</text>
           </g>
         )}
       </g>
@@ -424,7 +424,7 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider }) {
+function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays }) {
   // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
   // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
   // there and every label renders unchanged.
@@ -486,7 +486,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
   useEffect(() => { if (yVar !== "none" && (!headers.includes(yVar) || yVar === xVar)) setYVar("none"); }, [headers.join(","), xVar]);
 
-  if (!rows.length) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data yet.</div>;
+  if (!rows.length) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data yet.</div>;
   if (!xVar) return null;
 
   const xInfo = colInfo[xVar] || { numeric:false, time:false };
@@ -526,6 +526,22 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     x: PL + xps[i],
     y: PT + (yS ? iH - yS.scale(r[yVar]) : yOffsets[i]),
   }));
+
+  // Frequency y-axis for univariate-numeric dot plots (no Y scale): integer ticks aligned to
+  // the dot rows. A dot at stack index f (1-based) has center y = PT + iH - R - (f-1)*spacing
+  // (matches stackDots), so tick f sits on the f-th row. "Nice" integer step keeps ~6 labels.
+  const freqAxis = (() => {
+    if (yS || !xNumeric || !yOffsets || !yOffsets.tallest) return null;
+    const tallest = yOffsets.tallest, spacing = yOffsets.dotSpacing;
+    const niceStep = t => {
+      if (t <= 8) return 1;
+      const raw = t / 6, mag = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / mag;
+      return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * mag;
+    };
+    const step = niceStep(tallest), ticks = [];
+    for (let f = step; f <= tallest + 1e-9; f += step) ticks.push(Math.round(f));
+    return { ticks, spacing };
+  })();
 
   // ── Univariate numeric summary (for box/mean/SD overlays) ──
   const xNums = rows.map(r => toNum(r[xVar])).filter(v => !isNaN(v));
@@ -682,6 +698,16 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct }
       : null);
   }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, effCuts.join(",")]);
+
+  // Report active univariate summary overlays (boxplot / mean / ±1 SD) the same way, so the Collect
+  // plot can drive code that computes those statistics over the sampling distribution. Only the
+  // univariate-numeric case carries these overlays; null when none are on (or not applicable).
+  const uniNumeric = !bivariate && !!xSummary;
+  useEffect(() => {
+    if (!onOverlays) return;
+    const on = uniNumeric && (showMean || showSD || showBox);
+    onOverlays(on ? { variable: xVar, mean: showMean, sd: showSD, box: showBox } : null);
+  }, [onOverlays, uniNumeric, showMean, showSD, showBox, xVar]);
 
   // ── Ruler tool (Phase 6c) ──
   // Mechanic 1 (axis distance / difference of measures) shares the divider's gating and
@@ -843,11 +869,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               one side (arrow + one proportion → p-value / critical value). Switching framing
               returns to value mode so the % box re-reads the live proportion. */}
           {!divRange && (
-            <div style={{ display:"flex", border:"1px solid #ddd", borderRadius:6, overflow:"hidden" }}>
+            <div style={{ display:"flex", border:"1px solid var(--border-2)", borderRadius:6, overflow:"hidden" }}>
               {[["none", "Both"], ["left", "◂ Left"], ["right", "Right ▸"]].map(([val, lab]) => (
                 <button key={val} onClick={() => { setDivDir(val); setDivBy("value"); }}
-                  style={{ padding:"3px 9px", border:"none", borderLeft: val === "none" ? "none" : "1px solid #eee",
-                    background: divDir === val ? "#6366f1" : "#fff", color: divDir === val ? "#fff" : "#666",
+                  style={{ padding:"3px 9px", border:"none", borderLeft: val === "none" ? "none" : "1px solid var(--border)",
+                    background: divDir === val ? "#6366f1" : "var(--surface)", color: divDir === val ? "#fff" : "var(--text-2)",
                     fontSize:11, fontWeight:600, cursor:"pointer" }}>{lab}</button>
               ))}
             </div>
@@ -862,7 +888,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               cut(s) to the empirical quantile (→ critical value / CI); reading it shows the
               proportion at the current cut (→ p-value). Hidden for a two-sided single divider. */}
           {(divRange || divDir !== "none") && (
-            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "#4338ca" : undefined }}>{divRange ? "middle" : "tail"}
+            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "var(--accent-ink)" : undefined }}>{divRange ? "middle" : "tail"}
               <NumInput step="any" min="0" max="1" round={3}
                 value={isNaN(shownPct) ? "" : shownPct}
                 onChange={n => setPct(n)} style={{ ...iSm, width:64, marginLeft:4 }} />
@@ -882,18 +908,18 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               <NumInput step="any" value={p.value} round={4}
                 onChange={n => setRulerPt(i, n)} style={{ ...iSm, width:72, marginLeft:4 }} />
               {p.spec && <span title="anchored — follows this measure as the data changes"
-                style={{ marginLeft:4, padding:"1px 5px", borderRadius:4, background:"#ccfbf1", color:"#0f766e", fontWeight:700, fontSize:11 }}>◎ {p.label}</span>}
+                style={{ marginLeft:4, padding:"1px 5px", borderRadius:4, background:"var(--ruler-soft)", color:"var(--ruler-text)", fontWeight:700, fontSize:11 }}>◎ {p.label}</span>}
             </label>
           ))}
-          <span style={{ color:"#0f766e", fontWeight:700 }}>A − B = {parseFloat((effPts[0].value - effPts[1].value).toFixed(4))}</span>
+          <span style={{ color:"var(--ruler-text)", fontWeight:700 }}>A − B = {parseFloat((effPts[0].value - effPts[1].value).toFixed(4))}</span>
         </div>
       )}
 
       {/* Ruler — residual read-out (mechanic 2, scatter; visual only) */}
       {showResidRuler && (
         <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
-          <span style={{ color:"#0f766e", fontWeight:700 }}>residual y − ŷ = {scatterPts && scatterPts.length ? parseFloat(residual.toFixed(3)) : "—"}</span>
-          <span style={{ color:"#94a3b8" }}>click or drag to a point — the bar shows its vertical distance to the LS line</span>
+          <span style={{ color:"var(--ruler-text)", fontWeight:700 }}>residual y − ŷ = {scatterPts && scatterPts.length ? parseFloat(residual.toFixed(3)) : "—"}</span>
+          <span style={{ color:"var(--text-3)" }}>click or drag to a point — the bar shows its vertical distance to the LS line</span>
         </div>
       )}
 
@@ -901,7 +927,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
           + ＋ track live ON the connector line over the plot; only a slim hint/clear here. */}
       {showCatRuler && (
         <div style={{ display:"flex", gap:10, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
-          <span style={{ color:"#94a3b8" }}>
+          <span style={{ color:"var(--text-3)" }}>
             {catSel.length < 2
               ? "click two numbers on the table to compare them — a connector line shows A − B"
               : "A − B (and ＋ track) are shown on the connector line"}
@@ -912,7 +938,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
 
       {/* Click-to-track hint (suppressed while the cat-difference ruler claims clicks) */}
       {trackable && !showCatRuler && (
-        <div style={{ fontSize:11, color:"#bbb", marginBottom:8 }}>
+        <div style={{ fontSize:11, color:"var(--text-faint)", marginBottom:8 }}>
           Click a number on the plot to collect that statistic (click again to stop).
         </div>
       )}
@@ -947,28 +973,39 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         return (
           <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
             {/* grid */}
-            {xS.ticks.map((t, i) => <line key={"xg"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={PT + iH} stroke="#f5f5f5" strokeWidth={1} />)}
-            {yS && yS.ticks.map((t, i) => <line key={"yg"+i} x1={PL} y1={PT + iH - yS.scale(t)} x2={PL + iW} y2={PT + iH - yS.scale(t)} stroke="#f5f5f5" strokeWidth={1} />)}
+            {xS.ticks.map((t, i) => <line key={"xg"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={PT + iH} stroke="var(--grid)" strokeWidth={1} />)}
+            {yS && yS.ticks.map((t, i) => <line key={"yg"+i} x1={PL} y1={PT + iH - yS.scale(t)} x2={PL + iW} y2={PT + iH - yS.scale(t)} stroke="var(--grid)" strokeWidth={1} />)}
             {/* axes */}
-            <line x1={PL} y1={PT + iH} x2={PL + iW} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-            <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
+            <line x1={PL} y1={PT + iH} x2={PL + iW} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
+            <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
             {/* x ticks */}
             {xS.ticks.map((t, i) => (
               <g key={"xt"+i}>
-                <line x1={sx(t)} y1={PT + iH} x2={sx(t)} y2={PT + iH + 4} stroke="#bbb" />
-                <text x={sx(t)} y={tickLblY} textAnchor="middle" fontSize={10} fill="#999">{xS.fmt(t)}</text>
+                <line x1={sx(t)} y1={PT + iH} x2={sx(t)} y2={PT + iH + 4} stroke="var(--axis)" />
+                <text x={sx(t)} y={tickLblY} textAnchor="middle" fontSize={10} fill="var(--text-3)">{xS.fmt(t)}</text>
               </g>
             ))}
             {/* y ticks */}
             {yS && yS.ticks.map((t, i) => (
               <g key={"yt"+i}>
-                <line x1={PL - 4} y1={PT + iH - yS.scale(t)} x2={PL} y2={PT + iH - yS.scale(t)} stroke="#bbb" />
-                <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#999">{yS.fmt(t)}</text>
+                <line x1={PL - 4} y1={PT + iH - yS.scale(t)} x2={PL} y2={PT + iH - yS.scale(t)} stroke="var(--axis)" />
+                <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--text-3)">{yS.fmt(t)}</text>
               </g>
             ))}
+            {/* frequency y ticks (univariate numeric) — aligned to the stacked dot rows */}
+            {freqAxis && freqAxis.ticks.map((f, i) => {
+              const y = PT + iH - R - (f - 1) * freqAxis.spacing;
+              return (
+                <g key={"ft"+i}>
+                  <line x1={PL - 4} y1={y} x2={PL} y2={y} stroke="var(--axis)" />
+                  <text x={PL - 7} y={y} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--text-3)">{f}</text>
+                </g>
+              );
+            })}
             {/* axis labels */}
-            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(xVar)}</text>
-            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
+            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(xVar)}</text>
+            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
+            {freqAxis && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>Frequency</text>}
             {/* dots — one per row; click toggles linked highlighting (D1) */}
             {dots.map((d, i) => {
               const sel = isSel(d.id);
@@ -1037,7 +1074,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
                 <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
                 <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
-                {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="#4338ca" fontSize={9}
+                {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="var(--accent-ink)" fontSize={9}
                   label={fmtX(xSummary.median)} spec={{ fn:"median", variable:xVar }} {...trackProps} />}
               </g>
             )}
@@ -1091,7 +1128,7 @@ function StatDefiner({ stat, varNames, nameOf, sampleData, onChange, onRemove })
     }
   }, [stat.fn, stat.variable, allVals.length]);
   return (
-    <div style={{ background:"#f8f9fa", borderRadius:9, padding:10, border:"1px solid #e2e8f0", position:"relative" }}>
+    <div style={{ background:"var(--surface-2)", borderRadius:9, padding:10, border:"1px solid var(--border)", position:"relative" }}>
       <button onClick={onRemove} style={{ ...btnX, position:"absolute", top:7, right:7, fontSize:14 }}>×</button>
       <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", paddingRight:20 }}>
         <Sel label="Stat" value={stat.fn} onChange={v => onChange({ ...stat, fn:v })} options={FN_OPTS.map(o => o.v)} labels={FN_OPTS.map(o => o.l)} />
@@ -1155,7 +1192,7 @@ function DerivedBuilder({ columns, onAdd }) {
   };
 
   if (!columns.length) {
-    return <div style={{ fontSize:12, color:"#bbb", padding:"6px 0" }}>
+    return <div style={{ fontSize:12, color:"var(--text-faint)", padding:"6px 0" }}>
       Track at least one statistic above first — then combine collected columns here (e.g. a difference of two means).
     </div>;
   }
@@ -1166,32 +1203,32 @@ function DerivedBuilder({ columns, onAdd }) {
       <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
         {columns.map(c => (
           <button key={c.id} onClick={() => insertAtCaret(aliasOf[c.id])} title={"Insert " + aliasOf[c.id] + " = " + c.label + " (" + fmt(c.value) + " on this sample)"}
-            style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff", display:"inline-flex", gap:5, alignItems:"center" }}>
+            style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)", display:"inline-flex", gap:5, alignItems:"center" }}>
             <strong>{aliasOf[c.id]}</strong>
             <span style={{ fontFamily:"monospace", fontSize:10, color:"#6366f1", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
           </button>
         ))}
-        <span style={{ width:1, height:18, background:"#e5e7eb", margin:"2px 1px" }} />
+        <span style={{ width:1, height:18, background:"var(--border)", margin:"2px 1px" }} />
         {/* Math palette — typing works too; these are discoverability shortcuts that
             insert at the caret. Binary operators carry surrounding spaces for legibility
             (the lexer ignores whitespace). */}
         {[[" + ", "+"], [" − ", "−"], [" × ", "×"], [" ÷ ", "÷"], ["^", "^"], ["(", "("], [")", ")"]].map(([snip, lbl]) => (
-          <button key={lbl} onClick={() => insertAtCaret(snip)} style={{ ...btnPlus, fontFamily:"monospace", minWidth:26, color:"#475569" }}>{lbl}</button>
+          <button key={lbl} onClick={() => insertAtCaret(snip)} style={{ ...btnPlus, fontFamily:"monospace", minWidth:26, color:"var(--text-2)" }}>{lbl}</button>
         ))}
-        <button onClick={() => insertAtCaret("sqrt(")} style={{ ...btnPlus, fontFamily:"monospace", color:"#475569" }}>sqrt(</button>
-        <button onClick={() => insertAtCaret("abs(")} style={{ ...btnPlus, fontFamily:"monospace", color:"#475569" }}>abs(</button>
+        <button onClick={() => insertAtCaret("sqrt(")} style={{ ...btnPlus, fontFamily:"monospace", color:"var(--text-2)" }}>sqrt(</button>
+        <button onClick={() => insertAtCaret("abs(")} style={{ ...btnPlus, fontFamily:"monospace", color:"var(--text-2)" }}>abs(</button>
       </div>
       {/* Typed expression + live preview */}
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        <span style={{ fontSize:13, color:"#94a3b8", fontWeight:700 }}>=</span>
+        <span style={{ fontSize:13, color:"var(--text-3)", fontWeight:700 }}>=</span>
         <input ref={inputRef} value={text} onChange={e => setText(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter") add(); }}
           placeholder="e.g. (A − B)  or  (A − M)^2 + (B − M)^2"
           style={{ ...iSm, flex:"1 1 260px", minWidth:220, fontFamily:"monospace", fontSize:13, padding:"7px 10px",
-            border: msg ? "1px solid #fca5a5" : "1px solid #ddd" }} />
+            border: msg ? "1px solid #fca5a5" : "1px solid var(--border-2)" }} />
         {valid && (
-          <span style={{ fontSize:11, color:"#64748b" }}>
-            on this sample → <strong style={{ color: isFinite(preview) ? "#10b981" : "#b45309", fontFamily:"monospace" }}>{fmt(preview)}</strong>
+          <span style={{ fontSize:11, color:"var(--text-2)" }}>
+            on this sample → <strong style={{ color: isFinite(preview) ? "#10b981" : "var(--derived-text)", fontFamily:"monospace" }}>{fmt(preview)}</strong>
           </span>
         )}
       </div>
@@ -1207,7 +1244,7 @@ function DerivedBuilder({ columns, onAdd }) {
           style={{ padding:"7px 16px", background:"#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:valid ? "pointer" : "not-allowed", opacity:valid ? 1 : 0.5 }}>
           ＋ Add derived column
         </button>
-        <span style={{ fontSize:11, color:"#bbb" }}>Backfills every collected row instantly — no re-sampling.</span>
+        <span style={{ fontSize:11, color:"var(--text-faint)" }}>Backfills every collected row instantly — no re-sampling.</span>
       </div>
     </div>
   );
@@ -1236,7 +1273,7 @@ function scrollRowIntoView(container, id) {
   else if (rRect.bottom > cRect.bottom) container.scrollTop += (rRect.bottom - cRect.bottom);
 }
 
-function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider }) {
+function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider, onOverlays }) {
   // Disambiguate any repeated labels so each column is a distinct header/key
   // (tracked stats are already unique; manually-defined ones may collide).
   const headers = useMemo(() => {
@@ -1278,9 +1315,18 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
     onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct });
   }, [onDivider, headers, columns]);
 
+  // Same header→stat-id translation for the summary overlays.
+  const handleOverlays = useCallback(o => {
+    if (!onOverlays) return;
+    if (!o) { onOverlays(null); return; }
+    const k = headers.indexOf(o.variable);
+    onOverlays({ statId: k >= 0 && columns[k] ? columns[k].id : null, mean: o.mean, sd: o.sd, box: o.box });
+  }, [onOverlays, headers, columns]);
+
   if (!columns.length) return null;
   return <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} width={width}
-    selectedIds={selectedIds} onToggleSelect={onToggleSelect} onDivider={onDivider ? handleDivider : undefined} />;
+    selectedIds={selectedIds} onToggleSelect={onToggleSelect} onDivider={onDivider ? handleDivider : undefined}
+    onOverlays={onOverlays ? handleOverlays : undefined} />;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1310,7 +1356,7 @@ function EDAPlot({ rows, headers, onChange }) {
   // The table is editable whenever the host supplies an onChange (EDA's single
   // dataset slot — both uploaded CSVs and manually-entered data flow back up).
   const editable = !!onChange;
-  if (!rows.length && !editable) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data loaded.</div>;
+  if (!rows.length && !editable) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data loaded.</div>;
 
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
@@ -1362,25 +1408,25 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
   useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
 
   if (!sampleData.length) {
-    return <div style={{ color:"#bbb", textAlign:"center", padding:24 }}>Press "Draw Sample" to begin</div>;
+    return <div style={{ color:"var(--text-faint)", textAlign:"center", padding:24 }}>Press "Draw Sample" to begin</div>;
   }
 
   const cols = ["_sample", ...varNames];
-  const HL = "#fde68a"; // selected-row highlight (amber); overrides column tint
-  const cellColor = c => c === "_sample" ? "#bbb" : (c === xVar ? "#3730a3" : (c === yVar ? "#047857" : "#2c3e50"));
-  const cellBg = (c, sel) => sel ? HL : (c === xVar ? "#eef2ff" : (c === yVar ? "#ecfdf5" : "transparent"));
+  const HL = "var(--highlight)"; // selected-row highlight (amber); overrides column tint
+  const cellColor = c => c === "_sample" ? "var(--text-faint)" : (c === xVar ? "var(--accent-ink)" : (c === yVar ? "var(--green-ink)" : "var(--text)"));
+  const cellBg = (c, sel) => sel ? HL : (c === xVar ? "var(--xsel-cell)" : (c === yVar ? "var(--ysel-cell)" : "transparent"));
 
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
       {/* LEFT: data table (chronological, auto-scrolling) */}
       <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Draws</div>
-        <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+        <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Draws</div>
+        <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
           <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
             <thead>
               <tr>
                 {cols.map(c => (
-                  <th key={c} style={{ position:"sticky", top:0, background: c === xVar ? "#c7d2fe" : (c === yVar ? "#a7f3d0" : "#f8f9fa"), color: c === "_sample" ? "#bbb" : "#334155", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : nm(c)}</th>
+                  <th key={c} style={{ position:"sticky", top:0, background: c === xVar ? "var(--xsel-head)" : (c === yVar ? "var(--ysel-head)" : "var(--surface-2)"), color: c === "_sample" ? "var(--text-faint)" : "var(--text)", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : nm(c)}</th>
                 ))}
               </tr>
             </thead>
@@ -1388,7 +1434,7 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
               {sampleData.map((row, i) => {
                 const sel = isSel(row._id);
                 return (
-                <tr key={row._id || i} data-rowid={row._id} onClick={() => toggleId(row._id)} style={{ borderBottom:"1px solid #f5f5f5", cursor:"pointer" }}>
+                <tr key={row._id || i} data-rowid={row._id} onClick={() => toggleId(row._id)} style={{ borderBottom:"1px solid var(--border)", cursor:"pointer" }}>
                   {cols.map(c => (
                     <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c, sel), textAlign: c === "_sample" ? "right" : "left", whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{row[c]}</td>
                   ))}
@@ -1420,9 +1466,9 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
   // Reveal the row whose dot was just clicked (no-op when it's already in view).
   useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
   const isSel = id => !!(selectedIds && selectedIds.has(id));
-  const HL = "#fde68a"; // selected-row highlight (amber); overrides column tint
-  const cellBg = (h, sel) => sel ? HL : (h === xVar ? "#eef2ff" : (h === yVar ? "#ecfdf5" : "transparent"));
-  const headBg = h => h === xVar ? "#c7d2fe" : (h === yVar ? "#a7f3d0" : "#f1f5f9");
+  const HL = "var(--highlight)"; // selected-row highlight (amber); overrides column tint
+  const cellBg = (h, sel) => sel ? HL : (h === xVar ? "var(--xsel-cell)" : (h === yVar ? "var(--ysel-cell)" : "transparent"));
+  const headBg = h => h === xVar ? "var(--xsel-head)" : (h === yVar ? "var(--ysel-head)" : "var(--stathdr-bg)");
 
   // ── Edit helpers (editable mode): each rebuilds {headers, rows} and calls onChange ──
   const editCell = (id, h, v) => onChange(headers, rows.map(r => r._id === id ? { ...r, [h]: v } : r));
@@ -1442,14 +1488,14 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
 
   return (
     <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
-      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+      <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
+      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
           <thead>
             <tr>
-              <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
+              <th style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
               {headers.map(h => (
-                <th key={h} style={{ position:"sticky", top:0, background:headBg(h), color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
+                <th key={h} style={{ position:"sticky", top:0, background:headBg(h), color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
                   {editable ? (
                     <span style={{ display:"inline-flex", alignItems:"center", gap:2 }}>
                       <InlineEdit value={h} onChange={v => renameHeader(h, v)} style={{ fontWeight:700 }} />
@@ -1459,7 +1505,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
                 </th>
               ))}
               {editable && (
-                <th style={{ position:"sticky", top:0, background:"#f8f9fa", borderBottom:"1px solid #e5e7eb", padding:"2px 6px" }}>
+                <th style={{ position:"sticky", top:0, background:"var(--surface-2)", borderBottom:"1px solid var(--border)", padding:"2px 6px" }}>
                   <button title="Add column" onClick={addCol} style={{ ...btnX, color:"#6366f1", fontSize:15 }}>＋</button>
                 </th>
               )}
@@ -1469,17 +1515,17 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
             {rows.map((r, i) => {
               const sel = isSel(r._id);
               return (
-              <tr key={r._id || i} data-rowid={r._id} style={{ borderBottom:"1px solid #f5f5f5" }}>
+              <tr key={r._id || i} data-rowid={r._id} style={{ borderBottom:"1px solid var(--border)" }}>
                 {/* row-number cell doubles as the select handle (clicking a data cell
                     edits it, so selection lives here to avoid clobbering inline edit) */}
                 <td onClick={selectable ? () => onToggleSelect(r._id) : undefined}
                   title={selectable ? "Select row" : undefined}
-                  style={{ color:"#ccc", padding:"3px 6px", textAlign:"right", whiteSpace:"nowrap", background: sel ? HL : undefined, cursor: selectable ? "pointer" : "default" }}>
+                  style={{ color:"var(--text-faint)", padding:"3px 6px", textAlign:"right", whiteSpace:"nowrap", background: sel ? HL : undefined, cursor: selectable ? "pointer" : "default" }}>
                   {editable && <button title="Delete row" onClick={e => { e.stopPropagation(); delRow(r._id); }} style={{ ...btnX, fontSize:12, marginRight:2 }}>×</button>}
                   {i + 1}
                 </td>
                 {headers.map(h => (
-                  <td key={h} style={{ padding:"3px 8px", color:"#555", background:cellBg(h, sel), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
+                  <td key={h} style={{ padding:"3px 8px", color:"var(--text-2)", background:cellBg(h, sel), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
                     {editable ? <InlineEdit value={r[h] ?? ""} onChange={v => editCell(r._id, h, v)} /> : r[h]}
                   </td>
                 ))}
@@ -1492,7 +1538,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
       </div>
       {editable && (
         <div style={{ marginTop:6 }}>
-          <button onClick={addRow} style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff" }}>＋ row</button>
+          <button onClick={addRow} style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)" }}>＋ row</button>
         </div>
       )}
     </div>
@@ -1505,16 +1551,22 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
 // across runs; columns are the `trackedStats` specs (named by statLabel), each with
 // a remove control. (Accumulation itself is wired in a later phase.)
 // ══════════════════════════════════════════════════════════════════════════════
-function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabel, titleFor, selectedIds, onToggleSelect, scrollTarget }) {
+function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor = statLabel, titleFor, selectedIds, onToggleSelect, scrollTarget }) {
   const selectable = !!onToggleSelect;
   const isSel = id => !!(selectedIds && selectedIds.has(id));
-  const HL = "#fde68a";
+  const HL = "var(--highlight)";
   const scrollRef = useRef(null);
+  // Which column header is being renamed (pencil affordance). Seeded with the existing
+  // custom name; committing an empty string clears it back to the formula/auto label.
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState("");
+  const beginRename = s => { setDraft(s.name || ""); setEditingId(s.id); };
+  const commitRename = () => { if (onRename && editingId != null) onRename(editingId, draft.trim()); setEditingId(null); };
   // Reveal the row whose distribution-plot dot was just clicked (key for 500-row collects)
   useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
   if (!trackedStats.length) {
     return (
-      <div style={{ flex:"1 1 280px", minWidth:220, color:"#bbb", fontSize:13, padding:"16px 8px", lineHeight:1.5 }}>
+      <div style={{ flex:"1 1 280px", minWidth:220, color:"var(--text-faint)", fontSize:13, padding:"16px 8px", lineHeight:1.5 }}>
         No tracked statistics yet. In <strong>Sample Results</strong> above, enable an overlay
         (or click a two-way table cell) and press <strong style={{ color:"#6366f1" }}>＋ track</strong> to add a column here.
       </div>
@@ -1525,19 +1577,31 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
   const fmt = v => (typeof v === "number" ? (isFinite(v) ? parseFloat(v.toFixed(4)) : "—") : v);
   return (
     <div style={{ flex:"1 1 280px", minWidth:220 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>
-        Collected statistics {collectRows.length > 0 && <span style={{ color:"#ccc", fontWeight:600 }}>· {collectRows.length} rows</span>}
+      <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>
+        Collected statistics {collectRows.length > 0 && <span style={{ color:"var(--text-faint)", fontWeight:600 }}>· {collectRows.length} rows</span>}
       </div>
-      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
           <thead>
             <tr>
-              <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
+              <th style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
               {trackedStats.map(s => (
-                <th key={s.id} title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "#fef3c7" : "#f1f5f9", color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
+                <th key={s.id} title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "var(--derived-bg)" : "var(--stathdr-bg)", color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
                   {s.kind === "derived" && <span title="Derived column" style={{ marginRight:3 }}>ƒ</span>}
-                  <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "#b45309" : "#4338ca" }}>{labelFor(s)}</span>
-                  <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:4, verticalAlign:"middle" }}>×</button>
+                  {editingId === s.id ? (
+                    <input autoFocus value={draft}
+                      onChange={e => setDraft(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={e => { if (e.key === "Enter") commitRename(); else if (e.key === "Escape") setEditingId(null); }}
+                      placeholder={labelFor(s)}
+                      style={{ fontFamily:"monospace", fontSize:11, width:Math.max(70, draft.length * 7 + 16), border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", outline:"none", background:"var(--surface)", color:"var(--text)" }} />
+                  ) : (
+                    <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "var(--derived-text)" : "var(--accent-ink)" }}>{labelFor(s)}</span>
+                  )}
+                  {onRename && editingId !== s.id && (
+                    <button onClick={() => beginRename(s)} title="Rename column" style={{ ...btnX, fontSize:11, marginLeft:3, verticalAlign:"middle", color:"var(--text-3)" }}>✎</button>
+                  )}
+                  <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:2, verticalAlign:"middle" }}>×</button>
                 </th>
               ))}
             </tr>
@@ -1545,7 +1609,7 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
           <tbody>
             {collectRows.length === 0 ? (
               <tr>
-                <td colSpan={trackedStats.length + 1} style={{ padding:"12px 8px", color:"#bbb", textAlign:"center" }}>
+                <td colSpan={trackedStats.length + 1} style={{ padding:"12px 8px", color:"var(--text-faint)", textAlign:"center" }}>
                   No samples collected yet.
                 </td>
               </tr>
@@ -1553,10 +1617,10 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
               const sel = isSel(row._id);
               return (
               <tr key={row._id || i} data-rowid={row._id} onClick={selectable ? () => onToggleSelect(row._id) : undefined}
-                style={{ borderBottom:"1px solid #f5f5f5", cursor: selectable ? "pointer" : "default" }}>
-                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right", background: sel ? HL : undefined }}>{i + 1}</td>
+                style={{ borderBottom:"1px solid var(--border)", cursor: selectable ? "pointer" : "default" }}>
+                <td style={{ color:"var(--text-faint)", padding:"3px 6px", textAlign:"right", background: sel ? HL : undefined }}>{i + 1}</td>
                 {trackedStats.map(s => (
-                  <td key={s.id} style={{ padding:"3px 8px", color:"#555", whiteSpace:"nowrap", background: sel ? HL : undefined }}>{fmt(row[s.id])}</td>
+                  <td key={s.id} style={{ padding:"3px 8px", color:"var(--text-2)", whiteSpace:"nowrap", background: sel ? HL : undefined }}>{fmt(row[s.id])}</td>
                 ))}
               </tr>
               );
@@ -1622,7 +1686,7 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
           const countSpec = colOk ? { ...base, fn:"countVal" } : null;
           const propSpec = colOk ? { ...base, fn:"proportion" } : null;
           return (
-            <div key={c} style={{ flex:"1 1 0", minWidth:48, maxWidth:180, borderLeft: ci ? "1px solid #f0f0f0" : "none",
+            <div key={c} style={{ flex:"1 1 0", minWidth:48, maxWidth:180, borderLeft: ci ? "1px solid var(--border)" : "none",
               display:"flex", flexDirection:"column", alignItems:"center", padding:"0 6px", boxSizing:"border-box" }}>
               {hasLabel && (
                 <div style={{ fontSize:12, fontWeight:600, minHeight:16, display:"flex", gap:4 }}>
@@ -1642,15 +1706,15 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
                       cursor: selectable ? "pointer" : "default", boxShadow: sel ? "0 0 0 2px #1f2937" : "none" }} />;
                 })}
               </div>
-              <div style={{ borderTop:"1px solid #ccc", width:"100%", marginTop:2 }} />
-              <div style={{ fontSize:11, color:"#444", fontWeight:600, paddingTop:4, textAlign:"center",
+              <div style={{ borderTop:"1px solid var(--border-2)", width:"100%", marginTop:2 }} />
+              <div style={{ fontSize:11, color:"var(--text-2)", fontWeight:600, paddingTop:4, textAlign:"center",
                 overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{c}</div>
             </div>
           );
         })}
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:4 }}>
-        <span style={{ fontSize:11, color:"#666", fontWeight:700 }}>{nm(catVar)}</span>
+        <span style={{ fontSize:11, color:"var(--text-2)", fontWeight:700 }}>{nm(catVar)}</span>
         {allCats.length > 10 && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
             {expanded ? "Collapse to top 10" : `Show all ${allCats.length}`}
@@ -1726,10 +1790,10 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
       <div style={{ display:"flex", flexDirection:"column" }}>
         {/* Rows */}
         {yCats.map(yc => (
-          <div key={yc} style={{ display:"flex", alignItems:"stretch", borderBottom:"1px solid #eee" }}>
+          <div key={yc} style={{ display:"flex", alignItems:"stretch", borderBottom:"1px solid var(--border)" }}>
             {/* Row label */}
             <div style={{ width:LABEL_W, flexShrink:0, display:"flex", alignItems:"center",
-              justifyContent:"flex-end", paddingRight:10, fontSize:12, color:"#444", fontWeight:600,
+              justifyContent:"flex-end", paddingRight:10, fontSize:12, color:"var(--text-2)", fontWeight:600,
               overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
               {yc}
             </div>
@@ -1747,7 +1811,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
               const propSpec = cellOk ? { ...base, fn:"proportion" } : null;
               return (
                 <div key={xc} style={{ flex:"1 1 0", minWidth:CELL_MIN, maxWidth:CELL_MAX, height:CELL_H,
-                  borderLeft:"1px solid #eee", padding:"4px 6px", boxSizing:"border-box",
+                  borderLeft:"1px solid var(--border)", padding:"4px 6px", boxSizing:"border-box",
                   display:"flex", flexDirection:"column" }}>
                   {hasLabel && (
                     <div style={{ fontSize:12, fontWeight:600, display:"flex", gap:4, flexWrap:"wrap" }}>
@@ -1775,14 +1839,14 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
           <div style={{ width:LABEL_W, flexShrink:0 }} />
           {xCats.map(xc => (
             <div key={xc} style={{ flex:"1 1 0", minWidth:CELL_MIN, maxWidth:CELL_MAX, textAlign:"center", paddingTop:5,
-              fontSize:12, color:"#444", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{xc}</div>
+              fontSize:12, color:"var(--text-2)", fontWeight:600, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{xc}</div>
           ))}
         </div>
         {/* Axis titles */}
-        <div style={{ textAlign:"center", marginTop:4, fontSize:11, color:"#666", fontWeight:700,
+        <div style={{ textAlign:"center", marginTop:4, fontSize:11, color:"var(--text-2)", fontWeight:700,
           marginLeft:LABEL_W }}>{nm(xVar)}</div>
       </div>
-      <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:10, color:"#aaa", marginTop:4, marginLeft:LABEL_W - 10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:10, color:"var(--text-3)", marginTop:4, marginLeft:LABEL_W - 10 }}>
         <span>Rows = {nm(yVar)} · row-conditional proportion: P({nm(xVar)} | {nm(yVar)})</span>
         {collapsible && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
@@ -1817,7 +1881,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
 
   // Shared numeric scale across all groups for fair comparison (time-aware)
   const allNums = rows.map(r => toNum(r[numVar])).filter(v => !isNaN(v));
-  if (!allNums.length) return <div style={{ color:"#bbb", padding:20 }}>No numeric data.</div>;
+  if (!allNums.length) return <div style={{ color:"var(--text-faint)", padding:20 }}>No numeric data.</div>;
   const mn = Math.min(...allNums), mx = Math.max(...allNums);
   const range = mx - mn || 1, pad = range * 0.05, lo = mn - pad, hi = mx + pad;
   const fmt = isTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
@@ -1838,12 +1902,12 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
       <div style={{ width: width ? width : "100%" }}>
         <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
           {/* horizontal gridlines + y-axis ticks */}
-          {ticks.map((t, i) => <line key={"g"+i} x1={PL} y1={sy(t)} x2={W - PR} y2={sy(t)} stroke="#f5f5f5" strokeWidth={1} />)}
-          <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
+          {ticks.map((t, i) => <line key={"g"+i} x1={PL} y1={sy(t)} x2={W - PR} y2={sy(t)} stroke="var(--grid)" strokeWidth={1} />)}
+          <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
           {ticks.map((t, i) => (
             <g key={"yt"+i}>
-              <line x1={PL - 4} y1={sy(t)} x2={PL} y2={sy(t)} stroke="#bbb" />
-              <text x={PL - 7} y={sy(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#999">{fmt(t)}</text>
+              <line x1={PL - 4} y1={sy(t)} x2={PL} y2={sy(t)} stroke="var(--axis)" />
+              <text x={PL - 7} y={sy(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--text-3)">{fmt(t)}</text>
             </g>
           ))}
           {cats.map((cat, gi) => {
@@ -1869,9 +1933,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
             const sdMidX = xData - 5;               // ±SD runs vertically through the mean triangle
             return (
               <g key={cat}>
-                {gi > 0 && <line x1={x0} y1={PT} x2={x0} y2={PT + iH} stroke="#f0f0f0" strokeWidth={1} />}
+                {gi > 0 && <line x1={x0} y1={PT} x2={x0} y2={PT + iH} stroke="var(--grid)" strokeWidth={1} />}
                 {/* per-category baseline the mean tip touches */}
-                <line x1={xData} y1={PT} x2={xData} y2={PT + iH} stroke="#f3f4f6" strokeWidth={1} />
+                <line x1={xData} y1={PT} x2={xData} y2={PT + iH} stroke="var(--grid)" strokeWidth={1} />
                 {groupDots.map((d, i) => {
                   const sel = isSel(d.id);
                   return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? dotR + 1 : dotR}
@@ -1889,7 +1953,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
                     <rect x={bx - 6} y={sy(summary.q3)} width={12} height={Math.max(1, sy(summary.q1) - sy(summary.q3))} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={bx - 6} y1={sy(summary.median)} x2={bx + 6} y2={sy(summary.median)} stroke={color} strokeWidth={2} />
-                    {showValues && <TrackText x={bx - 9} y={sy(summary.median) + 3} anchor="end" color="#4338ca" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
+                    {showValues && <TrackText x={bx - 9} y={sy(summary.median) + 3} anchor="end" color="var(--accent-ink)" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
                   </g>
                 )}
                 {/* mean triangle — points right, tip on the data baseline; value just
@@ -1918,14 +1982,14 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                   );
                 })()}
                 {/* category label */}
-                <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={11} fill="#444" fontWeight={600}>{cat}</text>
-                <text x={center} y={PT + iH + 28} textAnchor="middle" fontSize={9} fill="#aaa">n={groupNums.length}</text>
+                <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{cat}</text>
+                <text x={center} y={PT + iH + 28} textAnchor="middle" fontSize={9} fill="var(--text-3)">n={groupNums.length}</text>
               </g>
             );
           })}
-          <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(catVar)}</text>
-          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
+          <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
+          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(catVar)}</text>
+          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
         </svg>
         {allCats.length > 10 && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
@@ -1953,7 +2017,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
     <div style={{ width: width ? width : "100%" }}>
       <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
         {/* vertical gridlines */}
-        {ticks.map((t, i) => <line key={"g"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={H - PB} stroke="#f5f5f5" strokeWidth={1} />)}
+        {ticks.map((t, i) => <line key={"g"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={H - PB} stroke="var(--grid)" strokeWidth={1} />)}
 
         {cats.map((cat, gi) => {
           const top = PT + gi * GROUP_H;
@@ -1993,14 +2057,14 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
           return (
             <g key={cat}>
               {/* group separator */}
-              {gi > 0 && <line x1={PL} y1={top} x2={W - PR} y2={top} stroke="#f0f0f0" strokeWidth={1} />}
+              {gi > 0 && <line x1={PL} y1={top} x2={W - PR} y2={top} stroke="var(--grid)" strokeWidth={1} />}
               {/* group label */}
               <text x={PL - 10} y={top + GROUP_H / 2 - 6} textAnchor="end" dominantBaseline="middle"
-                fontSize={11} fill="#444" fontWeight={600}>{cat}</text>
+                fontSize={11} fill="var(--text-2)" fontWeight={600}>{cat}</text>
               <text x={PL - 10} y={top + GROUP_H / 2 + 8} textAnchor="end" dominantBaseline="middle"
-                fontSize={9} fill="#aaa">n={groupNums.length}</text>
+                fontSize={9} fill="var(--text-3)">n={groupNums.length}</text>
               {/* baseline */}
-              <line x1={PL} y1={baseY + dotR + 1} x2={W - PR} y2={baseY + dotR + 1} stroke="#e0e0e0" strokeWidth={1} />
+              <line x1={PL} y1={baseY + dotR + 1} x2={W - PR} y2={baseY + dotR + 1} stroke="var(--border-2)" strokeWidth={1} />
               {/* dots — one per row; click toggles linked highlighting (D1) */}
               {groupDots.map((d, i) => {
                 const sel = isSel(d.id);
@@ -2045,7 +2109,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
                     <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
-                    {showValues && <TrackText x={sx(summary.median)} y={by + 15} anchor="middle" color="#4338ca" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
+                    {showValues && <TrackText x={sx(summary.median)} y={by + 15} anchor="middle" color="var(--accent-ink)" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
                   </g>
                 );
               })()}
@@ -2063,14 +2127,14 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
         })}
 
         {/* x axis */}
-        <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="#ccc" strokeWidth={1.5} />
+        <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="var(--axis)" strokeWidth={1.5} />
         {ticks.map((t, i) => (
           <g key={"t"+i}>
-            <line x1={sx(t)} y1={H - PB} x2={sx(t)} y2={H - PB + 4} stroke="#bbb" />
-            <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={10} fill="#999">{fmt(t)}</text>
+            <line x1={sx(t)} y1={H - PB} x2={sx(t)} y2={H - PB + 4} stroke="var(--axis)" />
+            <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={10} fill="var(--text-3)">{fmt(t)}</text>
           </g>
         ))}
-        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(numVar)} (by {nm(catVar)})</text>
+        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(numVar)} (by {nm(catVar)})</text>
         {/* Divider tool (Phase 6) — one shared cut line across every group band */}
         {divOn && divCuts && divCuts.length > 0 && (
           <DividerLines W={W} topY={PT} botY={H - PB} sx={sx}

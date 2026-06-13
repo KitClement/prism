@@ -37,6 +37,12 @@ export default function App() {
   const [codeLang, setCodeLang] = useState("off");
   // Color-blind palette for the code-section symbols (Task E): red→black, green→gray.
   const [cbMode, setCbMode] = useState(false);
+  // Dark mode. Initialized from the attribute main.jsx set (pre-paint, from localStorage);
+  // toggling repaints via CSS variables and persists the choice.
+  const [dark, setDark] = useState(() => { try { return document.documentElement.dataset.theme === "dark"; } catch { return false; } });
+  useEffect(() => {
+    try { document.documentElement.dataset.theme = dark ? "dark" : "light"; localStorage.setItem("prism-theme", dark ? "dark" : "light"); } catch {}
+  }, [dark]);
   // Hidden (password-veiled) sampler state (Task D). `hidden` marks a veiled sampler;
   // `revealed` is an in-session unlock; `hiddenData` keeps the {salt, pw-verifier} so a
   // Reveal can re-check the password without ever storing the plaintext. The config itself
@@ -110,6 +116,17 @@ export default function App() {
       return same ? prev : d;
     });
   }, []);
+  // The active summary overlays (boxplot / mean / SD) on the Collect plot, lifted up so the
+  // generated inference code computes those statistics over the sampling distribution. Deduped
+  // like the divider so an unchanged report doesn't loop re-renders. `{ statId, mean, sd, box }` | null.
+  const [overlayState, setOverlayState] = useState(null);
+  const onCollectOverlays = useCallback(o => {
+    setOverlayState(prev => {
+      const same = prev === o || (prev && o && prev.statId === o.statId &&
+        prev.mean === o.mean && prev.sd === o.sd && prev.box === o.box);
+      return same ? prev : o;
+    });
+  }, []);
   const toggleCollectId = id => {
     const adding = !collectSelectedIds.has(id);
     setCollectSelectedIds(prev => {
@@ -165,6 +182,9 @@ export default function App() {
   // Remove a column (by id) and cascade to any derived column that references it —
   // a derived statistic is meaningless once one of its operands is gone (Phase 5).
   const untrackStat = id => setTrackedStats(ts => dropDependents(ts, [id]));
+  // Rename a tracked column (any kind). An empty name clears the custom label, reverting to
+  // the formula / auto label. `colLabel` honors `.name` on every column kind (see expr.js).
+  const renameStat = (id, name) => setTrackedStats(ts => ts.map(s => s.id === id ? { ...s, name: name || undefined } : s));
 
   // Add a derived column { kind:"derived", tokens, inputs } and backfill its value
   // into every already-collected row at once (operands are existing columns, so no
@@ -199,7 +219,21 @@ export default function App() {
     const sig = JSON.stringify(tokens);
     if (stats.some(s => s.kind === "derived" && JSON.stringify(s.tokens) === sig)) return;
     const inputs = [...new Set(tokens.filter(t => t.k === "col").map(t => t.id))];
-    const derived = { id:uid(), kind:"derived", tokens, inputs };
+    // Auto-name the common case: a difference of two measures of the SAME statistic reads
+    // as diff_mean1 / diff_median1 / diff_prop1 (etc.), numbered so repeats stay distinct.
+    // Mixed-fn or constant-operand differences keep the formula label (no name).
+    let name;
+    if (opA.spec && opB.spec && opA.spec.fn && opA.spec.fn === opB.spec.fn) {
+      const tok = opA.spec.fn === "proportion" ? "prop" : opA.spec.fn;
+      const prefix = "diff_" + tok;
+      const re = new RegExp("^" + prefix + "(\\d+)$");
+      const next = stats.reduce((m, s) => {
+        const mt = s.kind === "derived" && s.name && re.exec(s.name.trim());
+        return mt ? Math.max(m, +mt[1]) : m;
+      }, 0) + 1;
+      name = prefix + next;
+    }
+    const derived = { id:uid(), kind:"derived", tokens, inputs, ...(name ? { name } : {}) };
     const nextStats = [...stats, derived];
     setTrackedStats(nextStats);
     setCollectRows(rows => {
@@ -571,7 +605,7 @@ export default function App() {
   const doShare = password => {
     const blob = encodeConfig({ pipeline, sampleSize, runMode, stopRule, codeLang }, password ? { password } : undefined);
     const url = shareURL(blob);
-    const announce = () => { setShareMsg(password ? "🔒 Hidden link copied!" : "🔗 Link copied!"); setTimeout(() => setShareMsg(""), 1900); };
+    const announce = () => { setShareMsg((password ? "🔒 " : "") + "Share link copied to clipboard"); setTimeout(() => setShareMsg(""), 2200); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(announce).catch(() => safePrompt("Copy this link:", url));
     } else {
@@ -592,12 +626,11 @@ export default function App() {
     setRevealed(true);
   };
 
-  // Share dialog: plain copy, or prompt for a password to produce a hidden link.
-  const shareDialog = () => {
-    const hide = safeConfirm("Share this sampler.\n\nOK = copy a normal link.\nCancel = hide it behind a password (the link still runs, but its contents are concealed).");
-    if (hide) { doShare(); return; }
+  // Locked share: prompt once for a password, then produce a hidden link (the plain Share
+  // button copies directly with no dialog). Empty/cancelled prompt → no link.
+  const shareLocked = () => {
     const pw = safePrompt("Set a password to hide the sampler (sharers will need it to view the contents):");
-    if (pw == null || pw === "") return; // cancelled or empty → no link
+    if (pw == null || pw === "") return;
     doShare(pw);
   };
 
@@ -614,12 +647,15 @@ export default function App() {
   // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
   // collect-plot); the generators read the same specs the UI uses (see lib/codegen.js).
   const code = useMemo(
-    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState, hidden: concealed }, codeLang)),
-    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState, concealed]
+    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState, overlays: overlayState, hidden: concealed }, codeLang)),
+    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState, overlayState, concealed]
   );
 
   return (
-    <div style={{ fontFamily:"'IBM Plex Sans',system-ui,sans-serif", background:"#f1f2f5", minHeight:"100vh", padding:14, boxSizing:"border-box" }}>
+    <div style={{ fontFamily:"'IBM Plex Sans',system-ui,sans-serif", background:"var(--bg)", minHeight:"100vh", padding:14, boxSizing:"border-box" }}>
+     {/* Content is capped and centered so the app doesn't sprawl on very wide monitors;
+         the gray background still fills the viewport. */}
+     <div style={{ maxWidth:1600, margin:"0 auto" }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14, flexWrap:"wrap" }}>
         <div style={{ display:"inline-flex", flexDirection:"column", gap:2, width:"fit-content" }}>
@@ -629,25 +665,30 @@ export default function App() {
               column) with height:auto keeping the aspect ratio — image matches the text below. */}
           <img src={cbMode ? prismLogoCb : prismLogo} alt="PRISM"
             style={{ width:0, minWidth:"100%", height:"auto", display:"block" }} />
-          <p style={{ margin:0, fontSize:11, color:"#999", whiteSpace:"nowrap" }}>Python &amp; R Integrated Simulation Machine</p>
+          <p style={{ margin:0, fontSize:11, color:"var(--text-3)", whiteSpace:"nowrap" }}>Python &amp; R Integrated Simulation Machine</p>
         </div>
         {/* Code-panel controls live at the top-right of the whole page; each section's code
             box then sits beside the tool it mirrors. */}
-        <div style={{ marginLeft:"auto" }}>
+        <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:14 }}>
+          <button onClick={() => setDark(d => !d)} title={dark ? "Switch to light mode" : "Switch to dark mode"}
+            style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px", fontSize:12, fontWeight:600,
+              background:"var(--surface)", color:"var(--text-2)", border:"1px solid var(--border-2)", borderRadius:7, cursor:"pointer" }}>
+            {dark ? "Light" : "Dark"}
+          </button>
           <CodeControls codeLang={codeLang} cbMode={cbMode}
             onSetLang={setCodeLang} onToggleCb={() => setCbMode(c => !c)} />
         </div>
       </div>
 
       {/* ── CSV / EDA STAGE ── */}
-      <div style={{ background:"#fff", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee" }}>
+      <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)" }}>
         <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom: edaOpen ? 12 : 0 }}>
           <button onClick={() => setEdaOpen(o => !o)}
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:700, color:"#2c3e50", display:"flex", alignItems:"center", gap:6 }}>
+            style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:700, color:"var(--text)", display:"flex", alignItems:"center", gap:6 }}>
             <span style={{ transform: edaOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
             Data &amp; Exploratory Analysis
           </button>
-          {dataset && <span style={{ fontSize:11, color:"#aaa" }}>{dataset.name} · {dataset.rows.length} rows · {dataset.headers.length} cols</span>}
+          {dataset && <span style={{ fontSize:11, color:"var(--text-3)" }}>{dataset.name} · {dataset.rows.length} rows · {dataset.headers.length} cols</span>}
           <label style={{ marginLeft:"auto", ...btnNav, fontSize:12, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:5 }}>
             Upload CSV
             <input type="file" accept=".csv,text/csv" style={{ display:"none" }}
@@ -662,12 +703,12 @@ export default function App() {
             <div>
               <EDAPlot rows={dataset.rows} headers={dataset.headers}
                 onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })} />
-              <div style={{ fontSize:10, color:"#bbb", marginTop:8 }}>
+              <div style={{ fontSize:10, color:"var(--text-faint)", marginTop:8 }}>
                 Build a Stacks or Mixer in the sampler below, then use its <strong>Fill from data</strong> control to load a column from this dataset.
               </div>
             </div>
           ) : (
-            <div style={{ color:"#bbb", textAlign:"center", padding:24, fontSize:13 }}>
+            <div style={{ color:"var(--text-faint)", textAlign:"center", padding:24, fontSize:13 }}>
               Upload a CSV to explore your data, compute statistics, and feed columns into the sampler.
             </div>
           )
@@ -675,24 +716,26 @@ export default function App() {
       </div>
 
       {/* Pipeline */}
-      <div style={{ background:"#fff", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee" }}>
+      <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)" }}>
        <CodeBeside sectionId="sampler" lines={concealed ? null : (code && code.sampler)} cbMode={cbMode}>
         <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center", flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sampler</span>
+          <span style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Sampler</span>
           {concealed ? (
             <>
               <span style={{ fontSize:12, color:"#7c3aed", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
               <button onClick={revealSampler}
-                style={{ padding:"4px 10px", background:"#f3e8ff", border:"1.5px solid #e3d0ff", borderRadius:7, fontSize:12, cursor:"pointer", color:"#7c3aed", fontWeight:600 }}>Reveal</button>
+                style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid #e3d0ff", borderRadius:7, fontSize:12, cursor:"pointer", color:"#7c3aed", fontWeight:600 }}>Reveal</button>
             </>
           ) : (
             <>
               {[["stacks", "Stacks"], ["mixer", "Mixer"], ["spinner", "Spinner"]].map(([t, l]) => (
                 <button key={t} onClick={() => addStage(t)} disabled={sampling}
-                  style={{ padding:"4px 10px", background:"#f7f8fa", border:"1.5px dashed #ddd", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"#bbb":"#555", opacity:sampling?0.5:1 }}>+ {l}</button>
+                  style={{ padding:"4px 10px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--text-2)", opacity:sampling?0.5:1 }}>+ {l}</button>
               ))}
-              <button onClick={shareDialog} disabled={sampling} title="Copy a link that regenerates this sampler"
-                style={{ padding:"4px 10px", background:"#eef0ff", border:"1.5px solid #d7dcff", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"#bbb":"#4f46e5", fontWeight:600, opacity:sampling?0.5:1 }}>🔗 Share</button>
+              <button onClick={() => doShare()} disabled={sampling} title="Copy a link that regenerates this sampler"
+                style={{ padding:"4px 10px", background:"var(--accent-soft)", border:"1.5px solid var(--accent-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--accent-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔗 Share</button>
+              <button onClick={shareLocked} disabled={sampling} title="Copy a password-protected link (contents concealed until the password is entered)"
+                style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid var(--purple-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--purple-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔒 Share Locked</button>
             </>
           )}
           {shareMsg && <span style={{ fontSize:12, color:"#10b981", fontWeight:700 }}>{shareMsg}</span>}
@@ -704,7 +747,7 @@ export default function App() {
               <input type="range" min={0} max={2} step={1} value={concealed ? 2 : animSpeed} disabled={concealed}
                 title={concealed ? "Hidden samplers run instantly until revealed" : undefined}
                 onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1", opacity:concealed?0.5:1, cursor:concealed?"not-allowed":"pointer" }} />
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#bbb", width:80 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"var(--text-faint)", width:80 }}>
                 <span>slow</span><span>fast</span><span>instant</span>
               </div>
             </div>
@@ -796,20 +839,20 @@ export default function App() {
       </div>
 
       {/* Sample Results */}
-      <div style={{ background:"#fff", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee", opacity:sampleData.length ? 1 : 0.4, transition:"opacity 0.3s" }}>
+      <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)", opacity:sampleData.length ? 1 : 0.4, transition:"opacity 0.3s" }}>
        <CodeBeside sectionId="single" lines={code && code.single} cbMode={cbMode}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
-          {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
+          <span style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Sample Results</span>
+          {sampleData.length > 0 && <span style={{ fontSize:11, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
         </div>
         <SampleResults sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
        </CodeBeside>
       </div>
 
       {/* Collect Statistics */}
-      <div style={{ background:"#fff", borderRadius:14, padding:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee", opacity:sampleData.length ? 1 : 0.35, pointerEvents:sampleData.length ? "auto" : "none", transition:"opacity 0.3s" }}>
+      <div style={{ background:"var(--surface)", borderRadius:14, padding:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)", opacity:sampleData.length ? 1 : 0.35, pointerEvents:sampleData.length ? "auto" : "none", transition:"opacity 0.3s" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Collect Statistics</span>
+          <span style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Collect Statistics</span>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <label style={ctrlLbl}>Collect
               <NumInput value={batchSize} min={1} max={100000} round={0}
@@ -836,7 +879,7 @@ export default function App() {
             builder (a table-authoring tool), then the sampling-distribution plot. */}
         <div style={{ marginBottom:14 }}>
           <CodeBeside sectionId="collect" lines={code && code.collect} cbMode={cbMode}>
-            <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} labelFor={labelFor} titleFor={exprFor}
+            <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} onRename={renameStat} labelFor={labelFor} titleFor={exprFor}
               selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} scrollTarget={collectScroll} />
           </CodeBeside>
         </div>
@@ -844,15 +887,15 @@ export default function App() {
         {/* Derived-statistic calculator — combine collected columns into a new column
             (e.g. a difference of two means, or an ANOVA-style total variation). */}
         {operandCols.length > 0 && (
-          <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:14 }}>
+          <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
             <button onClick={() => setDerivedOpen(o => !o)}
-              style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
+              style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
               <span style={{ transform: derivedOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
               Build a derived statistic
             </button>
             {derivedOpen && (
               <div style={{ marginTop:8 }}>
-                <div style={{ fontSize:11, color:"#aaa", marginBottom:8 }}>
+                <div style={{ fontSize:11, color:"var(--text-3)", marginBottom:8 }}>
                   Combine the statistics you've collected — click a column chip, then operators — to make a new column (e.g. <code>A − B</code> for a difference of means). It fills in for every collected row at once.
                 </div>
                 <DerivedBuilder columns={operandCols} onAdd={addDerivedStat} />
@@ -863,15 +906,15 @@ export default function App() {
 
         {/* Manual statistic builder — advanced, hidden behind a toggle. Adds a column
             to the same tracked-stat table above instead of a separate workflow. */}
-        <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:14 }}>
+        <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
           <button onClick={() => setManualOpen(o => !o)}
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
+            style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
             <span style={{ transform: manualOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
             Define a statistic manually
           </button>
           {manualOpen && (
             <div style={{ marginTop:8 }}>
-              <div style={{ fontSize:11, color:"#aaa", marginBottom:6 }}>
+              <div style={{ fontSize:11, color:"var(--text-3)", marginBottom:6 }}>
                 Build a statistic from the sampler's variables and add it as a column. Most statistics are easier to add by clicking their value on the Sample Results plot above — this is for cases that aren't shown there.
               </div>
               <div style={{ display:"flex", gap:8, alignItems:"flex-start", flexWrap:"wrap" }}>
@@ -890,11 +933,12 @@ export default function App() {
 
         {/* Sampling-distribution plot for a chosen tracked column. */}
         {trackedStats.length > 0 && collectRows.length > 0 && (
-          <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12 }}>
+          <div style={{ borderTop:"1px solid var(--border)", paddingTop:12 }}>
             <CodeBeside sectionId="inference" lines={code && code.inference} cbMode={cbMode}>
               <DistributionPlot columns={trackedStats.map(s => ({ id: s.id, label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
                 rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId}
-                onDivider={codeLang === "off" ? undefined : onCollectDivider} />
+                onDivider={codeLang === "off" ? undefined : onCollectDivider}
+                onOverlays={codeLang === "off" ? undefined : onCollectOverlays} />
             </CodeBeside>
           </div>
         )}
@@ -902,11 +946,12 @@ export default function App() {
         {/* Integrated program (Task E) — the whole simulation as one script, with the section
             symbol in the gutter (★ sampler / ● statistic / ▲ loop / ■ inference). */}
         {code && (
-          <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12, marginTop:4 }}>
-            <CodeIntegrated lines={code.integrated} cbMode={cbMode} />
+          <div style={{ borderTop:"1px solid var(--border)", paddingTop:12, marginTop:4 }}>
+            <CodeIntegrated lines={code.integrated} cbMode={cbMode} dark={dark} />
           </div>
         )}
       </div>
+     </div>
     </div>
   );
 }

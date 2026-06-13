@@ -29,7 +29,7 @@ function CopyButton({ text }) {
   };
   return (
     <button onClick={copy} title="Copy this code"
-      style={{ background:"#fff", border:"1px solid rgba(0,0,0,0.12)", color:"#444",
+      style={{ background:"var(--surface)", border:"1px solid rgba(0,0,0,0.12)", color:"var(--text-2)",
         borderRadius:5, fontSize:11, fontWeight:600, padding:"2px 8px", cursor:"pointer", whiteSpace:"nowrap",
         boxShadow:"0 1px 2px rgba(0,0,0,0.08)" }}>
       {done ? "✓ Copied" : "⧉ Copy"}
@@ -45,17 +45,17 @@ export function CodeBox({ sectionId, lines, cbMode }) {
   const color = sectionColor(section, cbMode);
   const text = lines.map(l => l.text).join("\n");
   return (
-    <div style={{ border:"1px solid #e7e7ee", borderRadius:10, overflow:"hidden", background:"#fff", display:"flex", flexDirection:"column" }}>
+    <div style={{ border:"1px solid var(--border)", borderRadius:10, overflow:"hidden", background:"var(--surface)", display:"flex", flexDirection:"column" }}>
       <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px",
-        background:`linear-gradient(90deg, #fff 0%, #fff 42%, ${color} 100%)` }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#2c3e50" }}>{section.title}</span>
+        background:`linear-gradient(90deg, var(--surface) 0%, var(--surface) 42%, ${color} 100%)` }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"var(--text)" }}>{section.title}</span>
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:10 }}>
           <Glyph symbol={section.symbol} color="#fff" size={26} />
           <CopyButton text={text} />
         </div>
       </div>
       <pre style={{ margin:0, padding:"8px 10px", fontFamily:MONO, fontSize:11.5, lineHeight:1.5,
-        color:"#24292e", background:"#fbfbfd", overflowX:"auto", borderTop:"1px solid #f0f0f4" }}>{text}</pre>
+        color:"var(--text)", background:"var(--surface-2)", overflowX:"auto", borderTop:"1px solid var(--border)" }}>{text}</pre>
     </div>
   );
 }
@@ -64,33 +64,40 @@ export function CodeBox({ sectionId, lines, cbMode }) {
 // line number would go, color-coded by origin. Consecutive same-section lines read as a block,
 // so the compact loop shows ★ (red) draw + ● (orange) statistic lines nested inside the ▲
 // (green) for-loop. Blank lines get no glyph.
-export function CodeIntegrated({ lines, cbMode }) {
+export function CodeIntegrated({ lines, cbMode, dark }) {
   const text = lines.map(l => l.text).join("\n");
   return (
-    <div style={{ border:"1px solid #e7e7ee", borderRadius:10, overflow:"hidden", background:"#fff" }}>
-      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 10px", background:"#f7f7fb", borderBottom:"1px solid #eee", flexWrap:"wrap" }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#2c3e50" }}>Integrated code</span>
+    <div style={{ border:"1px solid var(--border)", borderRadius:10, overflow:"hidden", background:"var(--surface)" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 10px", background:"var(--surface-2)", borderBottom:"1px solid var(--border)", flexWrap:"wrap" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"var(--text)" }}>Integrated code</span>
         <div style={{ display:"flex", gap:10, marginLeft:4, flexWrap:"wrap" }}>
           {CODE_SECTIONS.map(s => (
-            <span key={s.id} style={{ display:"flex", alignItems:"center", gap:3, fontSize:10.5, color:"#777" }}>
-              <Glyph symbol={s.symbol} color={sectionColor(s, cbMode)} size={11} /> {s.title}
+            <span key={s.id} style={{ display:"flex", alignItems:"center", gap:3, fontSize:10.5, color:"var(--text-3)" }}>
+              <Glyph symbol={s.symbol} color={sectionColor(s, cbMode, dark)} size={11} /> {s.title}
             </span>
           ))}
         </div>
         <div style={{ marginLeft:"auto" }}><CopyButton text={text} /></div>
       </div>
-      <div style={{ fontFamily:MONO, fontSize:11.5, lineHeight:1.55, background:"#fbfbfd", overflowX:"auto" }}>
+      <div style={{ fontFamily:MONO, fontSize:11.5, lineHeight:1.55, background:"var(--surface-2)", overflowX:"auto" }}>
         {lines.map((l, i) => {
           const sec = SECT[l.section] || CODE_SECTIONS[0];
-          const color = sectionColor(sec, cbMode);
           const blank = !l.text.trim();
+          // Color-blind: the sampler star and for-loop triangle both lift to light hues in dark
+          // mode and, with no text label in the gutter, become hard to tell apart. Give the star
+          // a high-contrast black-on-white cell so its shape reads unambiguously; every other
+          // section keeps its tinted cell. (The header key keeps the lifted-light star — its
+          // "Sampler" label disambiguates it there.)
+          const starCB = cbMode && sec.symbol === "star";
+          const color = starCB ? "#000" : sectionColor(sec, cbMode, dark);
+          const cellBg = blank ? "transparent" : (starCB ? "#fff" : color + "1f");
           return (
             <div key={i} style={{ display:"flex", alignItems:"stretch", minHeight:19 }}>
               <div style={{ width:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center",
-                background: blank ? "transparent" : color + "1f", borderRight:"1px solid #eef0f4" }}>
+                background: cellBg, borderRight:"1px solid var(--border)" }}>
                 {blank ? null : <Glyph symbol={sec.symbol} color={color} size={10} />}
               </div>
-              <pre style={{ margin:0, padding:"0 10px", color:"#24292e", whiteSpace:"pre" }}>{l.text || " "}</pre>
+              <pre style={{ margin:0, padding:"0 10px", color:"var(--text)", whiteSpace:"pre" }}>{l.text || " "}</pre>
             </div>
           );
         })}
@@ -122,8 +129,8 @@ export function CodeControls({ codeLang, cbMode, onSetLang, onToggleCb }) {
   const on = codeLang === "r" || codeLang === "python";
   const langBtn = (val, label) => (
     <button key={val} onClick={() => onSetLang(val)}
-      style={{ padding:"4px 12px", border:"1px solid " + (codeLang === val ? "#6366f1" : "#ddd"),
-        background: codeLang === val ? "#6366f1" : "#fff", color: codeLang === val ? "#fff" : "#666",
+      style={{ padding:"4px 12px", border:"1px solid " + (codeLang === val ? "#6366f1" : "var(--border-2)"),
+        background: codeLang === val ? "#6366f1" : "var(--surface)", color: codeLang === val ? "#fff" : "var(--text-2)",
         fontSize:12, fontWeight:600, cursor:"pointer",
         borderRadius: val === "off" ? "7px 0 0 7px" : val === "python" ? "0 7px 7px 0" : 0,
         marginLeft: val === "off" ? 0 : -1 }}>
@@ -136,12 +143,15 @@ export function CodeControls({ codeLang, cbMode, onSetLang, onToggleCb }) {
   return (
     <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", justifyContent:"flex-end" }}>
       {on && (
-        <label style={{ fontSize:11.5, color:"#666", display:"flex", alignItems:"center", gap:5, cursor:"pointer" }}>
-          <input type="checkbox" checked={cbMode} onChange={onToggleCb} />
+        <button onClick={onToggleCb} title="Toggle the color-blind palette"
+          aria-pressed={cbMode}
+          style={{ display:"inline-flex", alignItems:"center", padding:"4px 10px", fontSize:12, fontWeight:600,
+            background: cbMode ? "#6366f1" : "var(--surface)", color: cbMode ? "#fff" : "var(--text-2)",
+            border:"1px solid " + (cbMode ? "#6366f1" : "var(--border-2)"), borderRadius:7, cursor:"pointer" }}>
           Color-blind
-        </label>
+        </button>
       )}
-      <span style={{ fontSize:12, fontWeight:700, color:"#888" }}>{"</> "}Code</span>
+      <span style={{ fontSize:12, fontWeight:700, color:"var(--text-3)" }}>{"</> "}Code</span>
       <div style={{ display:"flex" }}>
         {langBtn("off", "Off")}{langBtn("r", "R")}{langBtn("python", "Python")}
       </div>

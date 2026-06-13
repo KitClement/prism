@@ -1,0 +1,101 @@
+/* Theme tokens. The app styles inline with hex literals; structural ("chrome") colors are
+   converted to these CSS variables so a single [data-theme] switch repaints the whole UI.
+   Data-meaningful colors (plot dot blue/orange, the category COLORS palette, the four code
+   section hues, on-accent white text) stay as literals — they read on either background.
+
+   Light values mirror the original hardcoded look exactly, so light mode is unchanged. */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --bg:         #f1f2f5;  /* page background                          */
+  --surface:    #ffffff;  /* cards / panels / badges-on-light         */
+  --surface-2:  #fafafa;  /* inputs, empty slots, code <pre> area     */
+  --surface-3:  #f4f5f7;  /* nav/plus buttons, subtle fills           */
+
+  /* borders */
+  --border:     #eeeeee;  /* card borders, dividers, light rules      */
+  --border-2:   #dddddd;  /* input / button borders                   */
+
+  /* text */
+  --text:       #2c3e50;  /* headings / primary                       */
+  --text-2:     #555555;  /* secondary labels                         */
+  --text-3:     #999999;  /* muted                                    */
+  --text-faint: #bbbbbb;  /* very faint / placeholders / # column     */
+
+  /* plot chrome */
+  --grid:       #f5f5f5;  /* gridlines                                */
+  --axis:       #cccccc;  /* axis lines                               */
+
+  /* tinted chrome (accent-soft buttons, table headers, highlights) */
+  --accent-soft:    #eef0ff;
+  --accent-soft-bd: #d7dcff;
+  --purple-soft:    #f3e8ff;
+  --purple-soft-bd: #e3d0ff;
+  --derived-bg:     #fef3c7;
+  --derived-text:   #b45309;
+  --stathdr-bg:     #f1f5f9;
+  --highlight:      #fde68a;
+
+  /* indigo/green "ink" text + axis-selection column tints (kept readable in dark) */
+  --accent-ink: #4338ca;  /* deep indigo text on chips / selected columns */
+  --purple-ink: #7c3aed;  /* deep violet text (locked-share button)       */
+  --green-ink:  #047857;  /* deep green text (y-column)                   */
+
+  /* ruler (teal) overlay: lines, text, and soft pill/label backgrounds */
+  --ruler-line: #0d9488;
+  --ruler-text: #0f766e;
+  --ruler-soft: #ccfbf1;
+  --xsel-head:  #c7d2fe;  /* selected x-column header fill                */
+  --ysel-head:  #a7f3d0;  /* selected y-column header fill                */
+  --xsel-cell:  #eef2ff;  /* selected x-column cell fill                  */
+  --ysel-cell:  #ecfdf5;  /* selected y-column cell fill                  */
+
+  --shadow-sm: rgba(0, 0, 0, 0.06);
+  --shadow-md: rgba(0, 0, 0, 0.10);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg:         #14161b;
+  --surface:    #1e2128;
+  --surface-2:  #262a31;
+  --surface-3:  #2d323b;
+
+  --border:     #333a44;
+  --border-2:   #3d4651;
+
+  --text:       #f0f2f5;
+  --text-2:     #cfd4dc;
+  --text-3:     #aab1bc;
+  --text-faint: #9097a2;
+
+  --grid:       #282d35;
+  --axis:       #424a55;
+
+  --accent-soft:    #262b45;
+  --accent-soft-bd: #3a4170;
+  --purple-soft:    #2e2348;
+  --purple-soft-bd: #4a3a73;
+  --derived-bg:     #3a3320;
+  --derived-text:   #e0a85a;
+  --stathdr-bg:     #2a3340;
+  --highlight:      #5c4d1f;
+
+  --accent-ink: #a5b4fc;
+  --purple-ink: #e0aaff;
+  --green-ink:  #6ee7b7;
+
+  --ruler-line: #2dd4bf;
+  --ruler-text: #5eead4;
+  --ruler-soft: #123b38;
+  --xsel-head:  #39406b;
+  --ysel-head:  #1f4d3a;
+  --xsel-cell:  #232a45;
+  --ysel-cell:  #1d3a2e;
+
+  --shadow-sm: rgba(0, 0, 0, 0.5);
+  --shadow-md: rgba(0, 0, 0, 0.6);
+}

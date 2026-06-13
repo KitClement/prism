@@ -136,8 +136,10 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
     const tgtNorm = ((target % 360) + 360) % 360;
     // Always spin CW; ensure at least minSpins full rotations
     const delta = (tgtNorm - curNorm + 360) % 360;
-    // speed: 0=slow, 1=fast, 2=instant (but instant handled above)
-    const minSpins = animState.speed === 0 ? 3 : 1.5;
+    // speed: 0=slow, 1=fast, 2=instant (but instant handled above). minSpins MUST be a whole
+    // number: totalDeg = minSpins*360 + delta lands on the target only when minSpins*360 is a
+    // multiple of 360. A fractional 1.5 added a stray 180° (arrow stopped on the opposite slice).
+    const minSpins = animState.speed === 0 ? 3 : 2;
     const totalDeg = minSpins * 360 + delta;
     const duration = animState.speed === 0 ? 1600 : 650;
 
@@ -251,7 +253,7 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
         <g transform={"rotate(" + (displayAngle + 90) + ")"} style={{ pointerEvents:"none" }}>
           <polygon points="0,-0.87 -0.055,-0.12 0.055,-0.12" fill="#1a1a2e" opacity="0.85" />
         </g>
-        <circle cx="0" cy="0" r="0.08" fill="#fff" stroke="#aaa" strokeWidth="0.03" />
+        <circle cx="0" cy="0" r="0.08" fill="#fff" stroke="var(--text-3)" strokeWidth="0.03" />
       </svg>
       <div style={{ display:"flex", flexDirection:"column", gap:3, marginTop:6 }}>
         {device.slices.map((sl, i) => (
@@ -265,7 +267,7 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
             </div>
             <PctInput pct={sl.pct}
               onCommit={p => onChange({ ...device, slices: redistribute(device.slices, i, p) })} />
-            <span style={{ fontSize:10, color:"#bbb" }}>%</span>
+            <span style={{ fontSize:10, color:"var(--text-faint)" }}>%</span>
             <button disabled={device.slices.length <= 1}
               onClick={() => onChange({ ...device, slices: removeSlice(device.slices, i) })} style={btnX}>×</button>
           </div>
@@ -277,7 +279,7 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
             style={{ ...btnPlus, flex:1 }}>Equalize</button>
         </div>
       </div>
-      <div style={{ fontSize:11, color:"#bbb", display:"flex", alignItems:"center", gap:5, marginTop:6 }}>
+      <div style={{ fontSize:11, color:"var(--text-faint)", display:"flex", alignItems:"center", gap:5, marginTop:6 }}>
       <input type="checkbox" checked={true} disabled={true} readOnly />
       <span>Always with replacement</span>
     </div>
@@ -435,7 +437,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
         // ── Absolutely-positioned card layer: cards fly home ↔ merged deck ──
         <div style={{ position:"relative", width:LAYER_W, height: BAR_MAX_H + 20, margin:"0 auto" }}>
           <div style={{ position:"absolute", top:-2, left:0, right:0, textAlign:"center",
-            fontSize:10, color:"#555", fontWeight:700 }}>
+            fontSize:10, color:"var(--text-2)", fontWeight:700 }}>
             {highlightTop ? "top card" : "shuffling…"}
           </div>
           {cards.map(c => {
@@ -466,7 +468,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
         //    into one interleaved (shuffled-order) combined deck ──
         <div style={{ position:"relative", width:LAYER_W, height: BAR_MAX_H + 20, margin:"0 auto" }}>
           <div style={{ position:"absolute", top:-2, left:0, right:0, textAlign:"center",
-            fontSize:10, color:"#555", fontWeight:700 }}>
+            fontSize:10, color:"var(--text-2)", fontWeight:700 }}>
             {highlightTop ? "top card" : "shuffling…"}
           </div>
           {stripeData.stripes.map((s, i) => {
@@ -491,7 +493,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
               }} />
             );
           })}
-          <div style={{ position:"absolute", bottom:-2, left:0, right:0, textAlign:"center", fontSize:9, color:"#aaa" }}>
+          <div style={{ position:"absolute", bottom:-2, left:0, right:0, textAlign:"center", fontSize:9, color:"var(--text-3)" }}>
             combined deck · {totalUnits} cards
           </div>
         </div>
@@ -502,7 +504,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
           const isHL = highlightIdx === i;
           return (
             <div key={it.id} style={{ display:"flex", flexDirection:"column", alignItems:"center", flex:1, minWidth:28 }}>
-              <span style={{ fontSize:10, color:"#555", fontWeight:700 }}>{ct}</span>
+              <span style={{ fontSize:10, color:"var(--text-2)", fontWeight:700 }}>{ct}</span>
               {useDiscrete ? (
                 <div onMouseDown={e => startDrag(e, i)}
                   style={{ width:"100%", display:"flex", flexDirection:"column-reverse", cursor:"ns-resize", gap:1 }}>
@@ -540,7 +542,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
         })}
       </div>
       )}
-      <div style={{ fontSize:10, color:"#bbb", textAlign:"center", marginBottom:6 }}>drag · total: {total}</div>
+      <div style={{ fontSize:10, color:"var(--text-faint)", textAlign:"center", marginBottom:6 }}>drag · total: {total}</div>
       <div style={{ display:"flex", flexDirection:"column", gap:3, maxHeight:110, overflowY:"auto" }}>
         {device.items.map((it, i) => (
           <div key={it.id} style={{ display:"flex", alignItems:"center", gap:3 }}>
@@ -669,11 +671,13 @@ function MixerDevice({ device, onChange, animState, dataset }) {
     } else if (!active && isBouncingRef.current) {
       isBouncingRef.current = false;
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
-      // Reset to organized grid after animation ends
+      // Reset ALL balls to the organized grid after animation ends. Removed balls render
+      // null while removedSet holds them (so snapping them home now is invisible), but this
+      // guarantees they return to their home slot rather than staying frozen at the notch
+      // once the end-of-run cleanup clears removedSet (otherwise they'd pile at top-center).
       const r = computeBallR(device.balls.length);
-      const removed = (animState && animState.removedSet) || new Set();
       const grid = getGridPositions(device.balls.length, r);
-      posRef.current = posRef.current.map((b, i) => removed.has(i) ? b : { ...b, ...grid[i], vx:0, vy:0 });
+      posRef.current = grid.map(g => ({ ...g, vx:0, vy:0 }));
       setPositions([...posRef.current]);
     }
   }, [animState && animState.bouncing, animState && animState.surfaceIdx]);
@@ -733,7 +737,7 @@ function MixerDevice({ device, onChange, animState, dataset }) {
           );
         })}
       </div>
-      <div style={{ fontSize:10, color:"#bbb", textAlign:"center", marginBottom:4 }}>
+      <div style={{ fontSize:10, color:"var(--text-faint)", textAlign:"center", marginBottom:4 }}>
         {device.balls.length} ball{device.balls.length !== 1 ? "s" : ""}
       </div>
 
@@ -747,7 +751,7 @@ function MixerDevice({ device, onChange, animState, dataset }) {
               <InlineEdit value={group.label}
                 onChange={newL => { const balls = device.balls.map(b => b.label === group.label ? { ...b, label:newL } : b); editClear({ ...device, balls }); }} />
             </div>
-            <span style={{ fontSize:10, color:"#888" }}>×{group.count}</span>
+            <span style={{ fontSize:10, color:"var(--text-3)" }}>×{group.count}</span>
             <button onClick={() => { const idx = [...device.balls.map((b, i) => b.label === group.label ? i : -1)].filter(i => i >= 0).at(-1); editClear({ ...device, balls:device.balls.filter((_, i) => i !== idx) }); }}
               style={{ ...btnArr, padding:"0 5px", fontSize:13 }}>−</button>
             <button onClick={() => editClear({ ...device, balls:[...device.balls, { id:uid(), label:group.label, color:group.color }] })}
@@ -808,9 +812,9 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
     : rawResult;
 
   return (
-    <div style={{ background:"#fff", borderRadius:12,
-      boxShadow:"0 2px 10px rgba(0,0,0,0.06)",
-      border:result ? "2px solid #6366f1" : "1.5px solid #e8e8e8",
+    <div style={{ background:"var(--surface)", borderRadius:12,
+      boxShadow:"0 2px 10px var(--shadow-sm)",
+      border:result ? "2px solid #6366f1" : "1.5px solid var(--border)",
       padding:12, display:"flex", flexDirection:"column", gap:7,
       flex:"1 1 180px", minWidth:170, maxWidth:240,
       transition:"border-color 0.2s",
@@ -821,7 +825,7 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
           background:"transparent", cursor:"not-allowed" }} />
       )}
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <span style={{ fontWeight:700, fontSize:13, color:"#2c3e50" }}>{label}</span>
+        <span style={{ fontWeight:700, fontSize:13, color:"var(--text)" }}>{label}</span>
         <div style={{ display:"flex", gap:2 }}>
           <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr}>←</button>
           <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr}>→</button>
@@ -829,7 +833,7 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
         </div>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-        <span style={{ fontSize:10, color:"#bbb" }}>var:</span>
+        <span style={{ fontSize:10, color:"var(--text-faint)" }}>var:</span>
         <input value={device.varName} disabled={locked}
           title={nameError ? "Device names must be unique and non-blank" : undefined}
           onChange={e => onChange({ ...device, varName:e.target.value.replace(/\s/g, "_") })}
@@ -847,7 +851,7 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
           </div>
         ) : (
           <div style={{ height:24, width:64, borderRadius:20,
-            border:"1.5px dashed #e0e0e0", background:"#fafafa" }} />
+            border:"1.5px dashed var(--border-2)", background:"var(--surface-2)" }} />
         )}
       </div>
       {device.type === "spinner" && (
@@ -892,7 +896,7 @@ function BranchDeviceBody({ device, onChange, animState, locked, dataset }) {
         {result ? (
           <div style={{ background:"#6366f1", color:"#fff", borderRadius:20, padding:"3px 16px", fontSize:14, fontWeight:700, boxShadow:"0 2px 8px rgba(99,102,241,0.35)" }}>{result}</div>
         ) : (
-          <div style={{ height:24, width:64, borderRadius:20, border:"1.5px dashed #e0e0e0", background:"#fafafa" }} />
+          <div style={{ height:24, width:64, borderRadius:20, border:"1.5px dashed var(--border-2)", background:"var(--surface-2)" }} />
         )}
       </div>
       {device.type === "spinner" && <SpinnerDevice device={device} onChange={edit} animState={animState} onSpinReady={() => setSpinnerReady(true)} />}
@@ -933,7 +937,17 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
 
   const setBranches = bs => onChange({ ...stage, branches: bs });
   const setBranch = (bid, nb) => setBranches(branches.map(b => b.id === bid ? nb : b));
-  const setBranchDevice = (bid, dev) => setBranch(bid, { ...branches.find(b => b.id === bid), device: dev });
+  // Update one branch's device. When a Fill-from-data just stamped a NEW `source.var` on the
+  // device, also adopt that CSV column name as the stage's column name — combined into ONE
+  // onChange so the branch + varName updates can't clobber each other (stale-closure race).
+  const setBranchDevice = (bid, dev) => {
+    const prev = branches.find(b => b.id === bid);
+    const branches2 = branches.map(b => b.id === bid ? { ...b, device: dev } : b);
+    const newVar = dev.source && dev.source.var;
+    const prevVar = prev && prev.device.source && prev.device.source.var;
+    const varName = (newVar && newVar !== prevVar) ? newVar.replace(/\s/g, "_") : stage.varName;
+    onChange({ ...stage, branches: branches2, varName });
+  };
 
   const addBranch = () => {
     const def = branches.find(b => b.condVar === null) || branches[0];
@@ -949,13 +963,13 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
   const changeBranchType = (bid, type) => { const b = branches.find(x => x.id === bid); if (b.device.type === type) return; setBranchDevice(bid, mkDeviceOfType(type)); };
 
   return (
-    <div style={{ background:"#fff", borderRadius:12, boxShadow:"0 2px 10px rgba(0,0,0,0.06)",
-      border: forked ? "1.5px solid #c4b5fd" : "1.5px solid #e8e8e8", padding:12,
+    <div style={{ background:"var(--surface)", borderRadius:12, boxShadow:"0 2px 10px var(--shadow-sm)",
+      border: forked ? "1.5px solid #c4b5fd" : "1.5px solid var(--border)", padding:12,
       display:"flex", flexDirection:"column", gap:7, flex:"1 1 200px", minWidth:184, maxWidth:260, position:"relative" }}>
       {locked && <div style={{ position:"absolute", inset:0, borderRadius:12, zIndex:10, background:"transparent", cursor:"not-allowed" }} />}
       {/* Stage header: column name + reorder/remove */}
       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
-        <span style={{ fontSize:10, color:"#bbb" }}>var:</span>
+        <span style={{ fontSize:10, color:"var(--text-faint)" }}>var:</span>
         <input value={stage.varName} disabled={locked}
           title={nameError ? "Column names must be unique and non-blank" : undefined}
           onChange={e => onChange({ ...stage, varName:e.target.value.replace(/\s/g, "_") })}
@@ -968,7 +982,7 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
       {branches.map(branch => {
         const isDefault = branch.condVar === null;
         return (
-          <div key={branch.id} style={{ borderTop: forked ? "1px dashed #ede9fe" : "none", paddingTop: forked ? 6 : 0 }}>
+          <div key={branch.id} style={{ borderTop: forked ? "1px dashed var(--border)" : "none", paddingTop: forked ? 6 : 0 }}>
             {forked && (
               <div style={{ display:"flex", alignItems:"center", gap:4, marginBottom:4 }}>
                 {isDefault ? (

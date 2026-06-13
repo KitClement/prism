@@ -151,6 +151,9 @@ const collectNote = cfg => (cfg.collectedCount > 0 ? "   # samples collected so 
 // its operands at inference time), or null (no divider / unresolvable column / off).
 const numLit = v => String(parseFloat(Number(v).toFixed(4)));
 const pctLabel = f => `${parseFloat((f * 100).toFixed(2))}%`;
+// A tracked column's display name → a valid R/Python identifier (non-word chars → "_",
+// leading digit prefixed). Falls back to "derived" when there's no usable name.
+const safeVarName = s => { const v = String(s || "").trim().replace(/[^A-Za-z0-9_]/g, "_").replace(/^(\d)/, "_$1"); return v || "derived"; };
 function dividerInfo(cfg, stats) {
   const d = cfg.divider;
   if (!d || !d.cuts || !d.cuts.length || d.statId == null) return null;
@@ -238,14 +241,56 @@ function dividerBody(div, lang, emittedOf, vecRef, arrayize) {
     colIds.forEach(id => azOnce(emittedOf(id)));
     const expr = derivedExprCode(div.derived.tokens, id => { const e = emittedOf(id); return e == null ? null : vecRef(e); }, lang);
     if (expr == null) return null;
-    setup.push((lang === "r" ? "derived <- " : "derived = ") + expr + "   # the plotted derived column");
-    target = "derived";
+    const vn = safeVarName(div.derived.name);   // the column's name → a valid identifier (else "derived")
+    setup.push((lang === "r" ? vn + " <- " : vn + " = ") + expr + "   # the plotted derived column");
+    target = vn;
   } else {
     azOnce(div.id);
     target = vecRef(div.id);
   }
   return [...setup, ...dividerExprs(target, div, lang)];
 }
+// The plot-overlay summaries (boxplot / mean / ±1 SD on the Collect plot) the host reports via
+// `cfg.overlays` ({ statId, mean, sd, box } | null), resolved to the matched enabled stat. Skipped
+// on a derived / un-enabled column (not emitted, like the divider). Independent of the divider.
+function overlayInfo(cfg, stats) {
+  const o = cfg.overlays;
+  if (!o || o.statId == null || !(o.mean || o.sd || o.box)) return null;
+  const match = stats.find(({ s }) => s.id === o.statId);
+  if (!match) return null;
+  return { id: match.id, mean: !!o.mean, sd: !!o.sd, box: !!o.box };
+}
+// Overlay lines over the target stat's collected vector `vecRef(id)`. fivenum (R) / .describe() (py)
+// give the five-number summary; SD is population (matches the tool and the `sd` statistic). np.mean /
+// np.std / pd.Series all accept a bare list, so the compact path needs no array conversion here.
+function overlayBody(ov, lang, vecRef) {
+  const v = vecRef(ov.id), R = lang === "r", out = [];
+  if (ov.mean) out.push((R ? `mean(${v})` : `np.mean(${v})`) + "   # center of the sampling distribution");
+  if (ov.sd)   out.push((R ? `sqrt(mean((${v} - mean(${v}))^2))` : `np.std(${v})`) + "   # spread (population SD)");
+  if (ov.box)  out.push((R ? `fivenum(${v})` : `pd.Series(${v}).describe().loc[['min', '25%', '50%', '75%', 'max']]`) + "   # five-number summary");
+  return out.length ? out : null;
+}
+// Assemble the whole inference section over the collected vectors: the divider's inference (if its
+// tool is on) plus the plot-overlay summaries (if any are on) — both can appear. `vecRef(name)`
+// resolves an emitted stat's collected vector in this path; `arrayize` (py compact) converts a list
+// to a numpy array for the divider's vectorized comparisons. Empty when nothing is enabled/emittable.
+function inferenceBody(cfg, stats, lang, vecRef, arrayize) {
+  const emittedById = {}; stats.forEach(({ s, id }) => emittedById[s.id] = id);
+  const emittedOf = id => (emittedById[id] != null ? emittedById[id] : null);
+  const out = [];
+  const div = dividerInfo(cfg, stats);
+  if (div) {
+    const body = dividerBody(div, lang, emittedOf, vecRef, arrayize);
+    if (body) { out.push("# Inference from the sampling distribution (divider)"); body.forEach(t => out.push(t)); }
+  }
+  const ov = overlayInfo(cfg, stats);
+  if (ov) {
+    const body = overlayBody(ov, lang, vecRef);
+    if (body) { out.push("# Summary of the sampling distribution (plot overlays)"); body.forEach(t => out.push(t)); }
+  }
+  return out;
+}
+const NO_INFERENCE = "# Turn on the Divider tool or a plot overlay (mean / SD / boxplot) on the Collect plot to generate inference code";
 
 // ─── Region predicate for countBetween / propBetween (mirrors computeStat's inR) ─
 // Elementwise on a vector/Series in both languages, so `&` (not R's `&&` / Python's `and`).
@@ -616,7 +661,6 @@ function genSplit(cfg, names, lang) {
   const stats = withIds(plainStats(cfg), names);
   const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
   const first = stats[0];
-  const emittedById = {}; stats.forEach(({ s, id }) => emittedById[s.id] = id);
   // `push(text)` tags the line with the array's own section; `push(text, sec)` overrides it — so a
   // draw / statistic line inside the For-loop can carry its true section (★ sampler / ● single) for
   // the integrated gutter, even though it lives in the green ▲ collect array.
@@ -684,14 +728,11 @@ function genSplit(cfg, names, lang) {
     }
 
     const inference = mk("inference");
-    const divR = dividerInfo(cfg, stats);
     if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-    else if (divR) {
-      const body = dividerBody(divR, "r", id => (emittedById[id] != null ? emittedById[id] : null), e => `dist$${e}`, null);
-      if (body) { inference.push("# Inference from the sampling distribution (divider)"); body.forEach(t => inference.push(t)); }
-      else inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
-    } else {
-      inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
+    else {
+      const lines = inferenceBody(cfg, stats, "r", e => `dist$${e}`, null);
+      if (lines.length) lines.forEach(t => inference.push(t));
+      else inference.push(NO_INFERENCE);
     }
     return { sampler, single, collect, inference };
   }
@@ -755,14 +796,11 @@ function genSplit(cfg, names, lang) {
   }
 
   const inference = mk("inference");
-  const divP = dividerInfo(cfg, stats);
   if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-  else if (divP) {
-    const body = dividerBody(divP, "py", id => (emittedById[id] != null ? emittedById[id] : null), e => `dist[${key(e)}]`, null);
-    if (body) { inference.push("# Inference from the sampling distribution (divider)"); body.forEach(t => inference.push(t)); }
-    else inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
-  } else {
-    inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
+  else {
+    const lines = inferenceBody(cfg, stats, "py", e => `dist[${key(e)}]`, null);
+    if (lines.length) lines.forEach(t => inference.push(t));
+    else inference.push(NO_INFERENCE);
   }
   return { sampler, single, collect, inference };
 }
@@ -781,19 +819,14 @@ function isSimple(cfg) {
 }
 
 // The inference lines for the compact path over the collected vectors, as [text, section]
-// pairs (shared by the distributed panel and the integrated view so they can't diverge).
+// pairs (shared by the distributed panel and the integrated view so they can't diverge). The
+// statistics are bare vectors (`mean_x`, …); for Python the divider converts them to numpy arrays
+// first (via `arrayize`) so its vectorized comparisons work.
 function compactInfLines(cfg, stats, lang) {
-  const noDiv = [["# Turn on the Divider tool on the Collect plot to generate inference code", "inference"]];
-  const first = stats[0], div = dividerInfo(cfg, stats);
-  if (!first) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
-  if (!div) return noDiv;
-  // Compact: the collected statistics are bare vectors (`mean_x`, …); for Python convert to numpy
-  // arrays first so the vectorized comparisons work. A derived divider is built from its operands.
-  const emittedById = {}; stats.forEach(({ s, id }) => emittedById[s.id] = id);
-  const body = dividerBody(div, lang, id => (emittedById[id] != null ? emittedById[id] : null),
-    e => e, lang === "py" ? e => [`${e} = np.array(${e})`] : null);
-  if (!body) return noDiv;
-  return [["# Inference from the sampling distribution (divider)", "inference"], ...body.map(t => [t, "inference"])];
+  if (!stats[0]) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
+  const lines = inferenceBody(cfg, stats, lang, e => e, lang === "py" ? e => [`${e} = np.array(${e})`] : null);
+  if (!lines.length) return [[NO_INFERENCE, "inference"]];
+  return lines.map(t => [t, "inference"]);
 }
 
 // One runnable program with per-line `section` tags driving the color-coded gutter. In the

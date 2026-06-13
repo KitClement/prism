@@ -79,5 +79,9 @@ export function stackDots(xs, R, h, gap = 1) {
   const tallest = Math.max(1, ...Object.values(counts));
   const dotSpacing = Math.min(R * 2 + gap, (h - R) / tallest);
   const stks = {};
-  return xs.map(x => { const k = bin(x); stks[k] = (stks[k] || 0) + 1; return h - (stks[k] - 1) * dotSpacing - R; });
+  const out = xs.map(x => { const k = bin(x); stks[k] = (stks[k] || 0) + 1; return h - (stks[k] - 1) * dotSpacing - R; });
+  // Expose the stacking geometry (non-breaking — most callers ignore it) so a plot can draw a
+  // Frequency y-axis whose integer ticks line up with the dot rows.
+  out.dotSpacing = dotSpacing; out.tallest = tallest;
+  return out;
 }

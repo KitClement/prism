@@ -23,19 +23,19 @@ function InlineEdit({ value, onChange, style = {} }) {
       onChange={e => setVal(e.target.value)}
       onBlur={() => { setEditing(false); onChange(val); }}
       onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") { setEditing(false); onChange(val); } }}
-      style={{ border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", fontSize:"inherit", outline:"none", width:"100%", background:"#fff", ...style }} />
+      style={{ border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", fontSize:"inherit", outline:"none", width:"100%", background:"var(--surface)", color:"var(--text)", ...style }} />
   );
   return (
     <span onClick={() => setEditing(true)}
-      style={{ cursor:"text", borderBottom:"1px dashed #ccc", minWidth:20, display:"inline-block", ...style }}>
-      {value || <span style={{ color:"#bbb" }}>…</span>}
+      style={{ cursor:"text", borderBottom:"1px dashed var(--border-2)", minWidth:20, display:"inline-block", ...style }}>
+      {value || <span style={{ color:"var(--text-faint)" }}>…</span>}
     </span>
   );
 }
 
 function ReplacementToggle({ device, onChange }) {
   return (
-    <label style={{ fontSize:11, color:"#555", display:"flex", alignItems:"center", gap:5, marginTop:6, cursor:"pointer" }}>
+    <label style={{ fontSize:11, color:"var(--text-2)", display:"flex", alignItems:"center", gap:5, marginTop:6, cursor:"pointer" }}>
       <input type="checkbox" checked={device.withReplacement !== false}
         onChange={e => onChange({ ...device, withReplacement: e.target.checked })} />
       Sample with replacement
@@ -51,7 +51,7 @@ function FillFromData({ dataset, onFill }) {
   const headers = (dataset && dataset.headers) || [];
   if (!headers.length) return (
     <button disabled title="Upload a CSV in Data & Exploratory Analysis first"
-      style={{ ...btnPlus, color:"#bbb", borderColor:"#e5e5e5", background:"#fafafa", cursor:"not-allowed" }}>
+      style={{ ...btnPlus, color:"var(--text-faint)", borderColor:"var(--border)", background:"var(--surface-2)", cursor:"not-allowed" }}>
       Fill from data
     </button>
   );
@@ -63,7 +63,7 @@ function FillFromData({ dataset, onFill }) {
         onFill(vals, h, dataset.name);
         e.target.value = "";
       }}
-      style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff", cursor:"pointer" }}>
+      style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)", cursor:"pointer" }}>
       <option value="">Fill from data…</option>
       {headers.map(h => <option key={h} value={h}>{h}</option>)}
     </select>
@@ -94,7 +94,7 @@ function RangeInput({ onApply, onClose }) {
     onApply(items);
   };
   return (
-    <div style={{ marginTop:6, padding:8, background:"#f5f3ff", borderRadius:8, border:"1px solid #c4b5fd" }}>
+    <div style={{ marginTop:6, padding:8, background:"var(--purple-soft)", borderRadius:8, border:"1px solid #c4b5fd" }}>
       <div style={{ fontSize:11, color:"#7c3aed", marginBottom:4 }}>
         <code>a to f</code> or <code>1 to 10</code> or comma-separated
       </div>
@@ -135,7 +135,7 @@ function NumInput({ value, onChange, round, style, ...rest }) {
 
 function ChkLabel({ checked, onChange, label }) {
   return (
-    <label style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer", color:"#555" }}>
+    <label style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer", color:"var(--text-2)" }}>
       <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
       {label}
     </label>
