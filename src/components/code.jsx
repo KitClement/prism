@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { CODE_SECTIONS, sectionColor, SHAPE_PATH } from "../lib/styles";
 
 // Parallel R/Python code panels (Task E). Each panel is placed beside the tool it mirrors
@@ -64,13 +64,98 @@ function CopyButton({ text }) {
   );
 }
 
+// ── Code-box change cue ────────────────────────────────────────────────────────
+// When a parameter changes the generated code, briefly highlight just the part that changed.
+// `generateCode` lines carry no stable id, so we diff old vs new line text on each regenerate.
+
+// The changed substring of `b` (new) relative to `o` (old): strip the common prefix + suffix,
+// the middle is what changed. `null` if identical; `"whole"` when the change is a pure
+// deletion within the line or a wholesale rewrite (highlight the entire line then).
+function substrRange(o, b) {
+  if (o === b) return null;
+  const max = Math.min(o.length, b.length);
+  let p = 0; while (p < max && o[p] === b[p]) p++;
+  let s = 0; while (s < max - p && o[o.length - 1 - s] === b[b.length - 1 - s]) s++;
+  const start = p, end = b.length - s;
+  return start < end ? { start, end } : "whole";
+}
+
+// LCS-align the two line arrays, then map each new line that is modified/added to its highlight
+// range. Returns a Map<newIndex, {start,end}|"whole">, or null to signal "don't flash" (no
+// change, or a structural/language change so big that lighting it up would be noise).
+function diffLines(oldLines, newLines) {
+  const a = oldLines.map(l => l.text), b = newLines.map(l => l.text);
+  const n = a.length, m = b.length;
+  if (!m) return null;
+  // LCS length table (suffix form) so we can walk forward and classify each line.
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const dels = [], adds = [];          // old-only indices, new-only indices (both in order)
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) dels.push(i++);
+    else adds.push(j++);
+  }
+  while (i < n) dels.push(i++);
+  while (j < m) adds.push(j++);
+  // Structural / language switch (e.g. R↔Python, isSimple flip): most lines differ → suppress.
+  if (!adds.length || adds.length > m * 0.5) return null;
+  // Pair each added line with a deleted line in document order → an in-place edit (one del +
+  // one add) becomes a substring diff; leftover adds with no del are brand-new → whole line.
+  const map = new Map();
+  adds.forEach((nj, k) => map.set(nj, k < dels.length ? substrRange(a[dels[k]], b[nj]) : "whole"));
+  return map;
+}
+
+// Render one code line, wrapping the changed substring (if any) in a flashing span. The span
+// is keyed by `v` (a version counter) so the CSS animation replays when the same line changes
+// again before the previous flash has faded.
+function CodeLine({ text, range, v }) {
+  const flash = inner => <span key={v} className="code-flash">{inner}</span>;
+  const body = !range ? (text || " ")
+    : range === "whole" ? flash(text || " ")
+    : <>{text.slice(0, range.start)}{flash(text.slice(range.start, range.end))}{text.slice(range.end)}</>;
+  return <pre style={{ margin:0, padding:"0 10px", whiteSpace:"pre", minHeight:18 }}>{body}</pre>;
+}
+
 // One section panel: a header banner that fades from white (left, where the title sits) into
 // the section color (right), with the section's shape as a large white watermark on the
-// colored end — then the code in a monospace block.
+// colored end — then the code, one element per line so the change cue can highlight a span.
 export function CodeBox({ sectionId, lines, cbMode }) {
   const section = SECT[sectionId];
   const color = sectionColor(section, cbMode);
   const text = lines.map(l => l.text).join("\n");
+  // Diff against the previously-rendered lines to flash what changed. `prev` survives across
+  // regenerations because CodeBeside keeps this panel mounted (it only unmounts when code is
+  // toggled off entirely), so a first mount (prev null) correctly shows no flash.
+  const prev = useRef(null);
+  const scrollRef = useRef(null);
+  const [flash, setFlash] = useState({ map: null, v: 0 });
+  useEffect(() => {
+    const old = prev.current;
+    prev.current = lines;
+    if (!old) return;
+    const map = diffLines(old, lines);
+    if (!map || !map.size) return;
+    setFlash(f => ({ map, v: f.v + 1 }));
+    const t = setTimeout(() => setFlash(f => ({ map: null, v: f.v })), 1500);
+    return () => clearTimeout(t);
+  }, [text]);
+  // When the change is off-screen to the right (the code box scrolls horizontally), reveal it —
+  // but scroll ONLY this box, never the page (no scrollIntoView, which would bubble to the
+  // window). Runs after the flash spans render (keyed on flash.v).
+  useEffect(() => {
+    if (!flash.map || !flash.map.size) return;
+    const c = scrollRef.current; if (!c) return;
+    const span = c.querySelector(".code-flash"); if (!span) return;
+    const cRect = c.getBoundingClientRect(), sRect = span.getBoundingClientRect();
+    const relLeft = sRect.left - cRect.left + c.scrollLeft, relRight = relLeft + sRect.width, pad = 24;
+    if (relLeft < c.scrollLeft + pad) c.scrollTo({ left: Math.max(0, relLeft - pad), behavior: "smooth" });
+    else if (relRight > c.scrollLeft + c.clientWidth - pad) c.scrollTo({ left: relRight - c.clientWidth + pad, behavior: "smooth" });
+  }, [flash.v]);
   return (
     <div style={{ border:"1px solid var(--border)", borderRadius:10, overflow:"hidden", background:"var(--surface)", display:"flex", flexDirection:"column" }}>
       <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px",
@@ -83,8 +168,10 @@ export function CodeBox({ sectionId, lines, cbMode }) {
           <Glyph symbol={section.symbol} color="#fff" size={26} />
         </div>
       </div>
-      <pre style={{ margin:0, padding:"8px 10px", fontFamily:MONO, fontSize:11.5, lineHeight:1.5,
-        color:"var(--text)", background:"var(--surface-2)", overflowX:"auto", borderTop:"1px solid var(--border)" }}>{text}</pre>
+      <div ref={scrollRef} style={{ padding:"8px 0", fontFamily:MONO, fontSize:11.5, lineHeight:1.5,
+        color:"var(--text)", background:"var(--surface-2)", overflowX:"auto", borderTop:"1px solid var(--border)" }}>
+        {lines.map((l, i) => <CodeLine key={i} text={l.text} range={flash.map ? flash.map.get(i) : null} v={flash.v} />)}
+      </div>
     </div>
   );
 }

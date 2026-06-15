@@ -54,6 +54,8 @@
 
   --shadow-sm: rgba(0, 0, 0, 0.06);
   --shadow-md: rgba(0, 0, 0, 0.10);
+
+  --code-flash: rgba(250, 204, 21, 0.55);  /* transient "this changed" highlight in code boxes */
 }
 
 :root[data-theme="dark"] {
@@ -98,7 +100,15 @@
 
   --shadow-sm: rgba(0, 0, 0, 0.5);
   --shadow-md: rgba(0, 0, 0, 0.6);
+
+  --code-flash: rgba(202, 138, 4, 0.55);   /* muted amber — reads against the dark code surface */
 }
+
+/* Transient highlight on the changed substring of a regenerated code line (Task: code-box
+   change cue). Fades from the flash color to transparent; the span is keyed by a version
+   counter in CodeBox so the animation replays each time the same line changes again. */
+@keyframes codeLineFlash { from { background: var(--code-flash); } to { background: transparent; } }
+.code-flash { animation: codeLineFlash 1.4s ease-out; border-radius: 3px; }
 
 /* ── Accessibility (WCAG 2.1 AA) ───────────────────────────────────────────────
    The app styles controls inline (many with `outline:none`); a single global focus

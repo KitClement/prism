@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
+import { toCanvas } from "html-to-image";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { colorAt, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
 import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
@@ -425,6 +426,77 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
   );
 }
 
+// Trim a rasterized canvas to its drawn content: scan from each edge inward, dropping rows /
+// columns that are entirely the background color, then keep a small padding. Removes the plot's
+// (or sampler's) surrounding whitespace so the pasted image is cropped to the actual content.
+// Reads pixels from the html-to-image canvas (same-origin data-URL source → not tainted).
+function cropCanvas(canvas, pad = 8) {
+  const w = canvas.width, h = canvas.height;
+  if (!w || !h) return canvas;
+  const ctx = canvas.getContext("2d");
+  let data;
+  try { data = ctx.getImageData(0, 0, w, h).data; } catch { return canvas; }
+  const br = data[0], bg = data[1], bb = data[2];   // background = top-left pixel
+  const isBg = (x, y) => { const i = (y * w + x) * 4;
+    return Math.abs(data[i] - br) < 6 && Math.abs(data[i + 1] - bg) < 6 && Math.abs(data[i + 2] - bb) < 6; };
+  const rowBg = y => { for (let x = 0; x < w; x++) if (!isBg(x, y)) return false; return true; };
+  const colBg = x => { for (let y = 0; y < h; y++) if (!isBg(x, y)) return false; return true; };
+  let top = 0, bottom = h - 1, left = 0, right = w - 1;
+  while (top < bottom && rowBg(top)) top++;
+  while (bottom > top && rowBg(bottom)) bottom--;
+  while (left < right && colBg(left)) left++;
+  while (right > left && colBg(right)) right--;
+  top = Math.max(0, top - pad); left = Math.max(0, left - pad);
+  bottom = Math.min(h - 1, bottom + pad); right = Math.min(w - 1, right + pad);
+  const cw = right - left + 1, ch = bottom - top + 1;
+  if (cw <= 0 || ch <= 0 || (cw === w && ch === h)) return canvas;
+  const out = document.createElement("canvas");
+  out.width = cw; out.height = ch;
+  out.getContext("2d").drawImage(canvas, left, top, cw, ch, 0, 0, cw, ch);
+  return out;
+}
+
+// Copy a node as a PNG to the clipboard (for pasting into an assignment). Works on every plot
+// mode and the sampler — numeric plots are SVG, categorical ones / the sampler are HTML, and
+// html-to-image rasterizes both, inlining computed styles so CSS-var theming + dark mode come
+// through. The result is cropped to its drawn content (cropCanvas) to drop surrounding
+// whitespace. Clipboard-image write needs a secure context (localhost / https) + the click
+// gesture; if unsupported we surface an error rather than throwing. Nodes tagged
+// `data-no-capture` (always the button itself; optionally caller-marked controls) are excluded.
+export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", title = "Copy this plot as an image to the clipboard", style }) {
+  const [msg, setMsg] = useState("");      // transient status: "ok" | "err" | ""
+  const copy = async () => {
+    const node = targetRef.current;
+    if (!node) return;
+    const fail = () => { setMsg("err"); setTimeout(() => setMsg(""), 2200); };
+    if (!navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === "undefined") { fail(); return; }
+    try {
+      // Match the on-screen theme so the PNG isn't transparent when pasted into Word.
+      const bgc = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff";
+      const filter = n => !(n && n.dataset && n.dataset.noCapture === "1");
+      const canvas = await toCanvas(node, { pixelRatio: 2, backgroundColor: bgc, skipFonts: true, cacheBust: true, filter, ...options });
+      const blob = await new Promise(res => cropCanvas(canvas).toBlob(res, "image/png"));
+      if (!blob) { fail(); return; }
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      setMsg("ok"); setTimeout(() => setMsg(""), 2200);
+    } catch { fail(); }
+  };
+  // The wrapper is tagged data-no-capture so the button never appears in an image of a region
+  // that contains it (e.g. the sampler).
+  return (
+    <span data-no-capture="1" style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:6, ...style }}>
+      <span role="status" aria-live="polite" style={{ fontSize:11, fontWeight:700, whiteSpace:"nowrap",
+        color: msg === "err" ? "var(--text-faint)" : "var(--green-ink)" }}>
+        {msg === "ok" ? "✓ Copied image" : msg === "err" ? "Copy unavailable" : ""}
+      </span>
+      <button onClick={copy} title={title}
+        style={{ ...btnNav, display:"inline-flex", alignItems:"center", gap:4, whiteSpace:"nowrap" }}>
+        {label}
+      </button>
+    </span>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PLOT — the shared, interactive plot primitive (controls + plot body, no table).
 // Used by both EDA and Sample Results. X/Y selection is *controlled* by the parent
@@ -478,6 +550,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const [catSel, setCatSel] = useState([]);
 
   const plotRef = useRef(null);
+  const bodyRef = useRef(null);            // wraps just the plot body (no controls) for image copy
   const measuredW = useContainerWidth(plotRef, 280, 760);
   const plotW = width || measuredW;
 
@@ -843,6 +916,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
+        <CopyImageButton targetRef={bodyRef} />
       </div>
 
       {/* Stat toggles — adapt to the variable types */}
@@ -952,7 +1026,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         </div>
       )}
 
-      {/* Plot — rendering depends on variable types */}
+      {/* Plot — rendering depends on variable types. Wrapped in bodyRef so the Copy-image
+          button rasterizes just the plot (not the controls above). */}
+      <div ref={bodyRef}>
       {(() => {
         // MODE 1: both categorical → grid of cells with stacked dots + count/%
         if (bivariate && !xNumeric && !yNumeric) {
@@ -1119,6 +1195,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
           </svg>
         );
       })()}
+      </div>
     </div>
   );
 }

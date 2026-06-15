@@ -9,7 +9,7 @@ import { StageCard } from "./components/devices";
 import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
 import { generateCode } from "./lib/codegen";
 import { NumInput } from "./components/ui";
-import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
+import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable, CopyImageButton } from "./components/plots";
 import prismLogo from "./assets/prism-logo.svg";
 import prismLogoCb from "./assets/prism-logo-cb.svg";
 
@@ -25,6 +25,7 @@ export default function App() {
   const [dataset, setDataset] = useState(null); // { headers, rows, name }
   const [edaOpen, setEdaOpen] = useState(true);
   const csvInputRef = useRef(null);              // keyboard-reachable Upload CSV trigger (a11y)
+  const samplerRef = useRef(null);               // capture region for the sampler "Copy image" button
   const [liveMsg, setLiveMsg] = useState("");    // polite screen-reader announcements (a11y)
 
   const [pipeline, setPipeline] = useState(() => [mkStage(mkStacks(1))]);
@@ -744,32 +745,35 @@ export default function App() {
       {/* Pipeline */}
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)" }}>
        <CodeBeside sectionId="sampler" lines={concealed ? null : (code && code.sampler)} cbMode={cbMode}>
+        <div ref={samplerRef}>
         <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center", flexWrap:"wrap" }}>
           <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Sampler</h2>
           {concealed ? (
             <>
               <span style={{ fontSize:12, color:"#7c3aed", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
-              <button onClick={revealSampler}
+              <button data-no-capture="1" onClick={revealSampler}
                 style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid #e3d0ff", borderRadius:7, fontSize:12, cursor:"pointer", color:"#7c3aed", fontWeight:600 }}>Reveal</button>
             </>
           ) : (
             <>
               {[["stacks", "Stacks"], ["mixer", "Mixer"], ["spinner", "Spinner"]].map(([t, l]) => (
-                <button key={t} onClick={() => addStage(t)} disabled={sampling}
+                <button data-no-capture="1" key={t} onClick={() => addStage(t)} disabled={sampling}
                   style={{ padding:"4px 10px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--text-2)", opacity:sampling?0.5:1 }}>+ {l}</button>
               ))}
-              <button onClick={() => doShare()} disabled={sampling} title="Copy a link that regenerates this sampler"
+              <button data-no-capture="1" onClick={() => doShare()} disabled={sampling} title="Copy a link that regenerates this sampler"
                 style={{ padding:"4px 10px", background:"var(--accent-soft)", border:"1.5px solid var(--accent-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--accent-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔗 Share</button>
-              <button onClick={shareLocked} disabled={sampling} title="Copy a password-protected link (contents concealed until the password is entered)"
+              <button data-no-capture="1" onClick={shareLocked} disabled={sampling} title="Copy a password-protected link (contents concealed until the password is entered)"
                 style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid var(--purple-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--purple-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔒 Share Locked</button>
+              <CopyImageButton targetRef={samplerRef} style={{ marginLeft:0 }} label="⧉ Copy image"
+                title="Copy an image of the sampler (devices + run settings) to the clipboard" />
             </>
           )}
-          {shareMsg && <span style={{ fontSize:12, color:"#10b981", fontWeight:700 }}>{shareMsg}</span>}
-          {sampling && <span style={{ fontSize:12, color:"#6366f1", fontWeight:600 }}>drawing {sampleData.length}{runMode === "until" ? "…" : "/" + sampleSize + "…"}</span>}
+          {shareMsg && <span data-no-capture="1" style={{ fontSize:12, color:"#10b981", fontWeight:700 }}>{shareMsg}</span>}
+          {sampling && <span data-no-capture="1" style={{ fontSize:12, color:"#6366f1", fontWeight:600 }}>drawing {sampleData.length}{runMode === "until" ? "…" : "/" + sampleSize + "…"}</span>}
           {/* Sampler run controls — these drive the pipeline below, so they live in
               its header rather than the app-level top bar (B3). */}
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
+            <div data-no-capture="1" style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
               <input type="range" min={0} max={2} step={1} value={concealed ? 2 : animSpeed} disabled={concealed}
                 aria-label="Animation speed" aria-valuetext={["Slow", "Fast", "Instant"][concealed ? 2 : animSpeed]}
                 title={concealed ? "Hidden samplers run instantly until revealed" : undefined}
@@ -820,18 +824,18 @@ export default function App() {
                 </label>
               </>
             )}
-            <button onClick={doSample} disabled={hasNameError && !sampling}
+            <button data-no-capture="1" onClick={doSample} disabled={hasNameError && !sampling}
               title={hasNameError && !sampling ? "Rename — device names must be unique and non-blank" : undefined}
               style={{ padding:"8px 18px", background:sampling ? "#ef4444" : (hasNameError ? "#c7c9d1" : "#6366f1"), color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:(hasNameError && !sampling) ? "not-allowed" : "pointer", minWidth:120 }}>
               {sampling ? "⏹ Stop" : "▶ Draw Sample"}
             </button>
             {hasNameError && !sampling && (
-              <span style={{ fontSize:11, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
+              <span data-no-capture="1" style={{ fontSize:11, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
                 Rename — device names must be unique and non-blank
               </span>
             )}
             {sampleData.length > 0 && !sampling && (
-              <button onClick={() => {
+              <button data-no-capture="1" onClick={() => {
                 // Draw rows are keyed by device id; resolve each to its display name so the
                 // exported CSV header stays human-readable.
                 const rows = sampleData.map(r => { const o = { _sample: r._sample }; varIds.forEach(id => { o[nameOf(id)] = r[id]; }); return o; });
@@ -861,6 +865,7 @@ export default function App() {
               {i < pipeline.length - 1 && <div style={{ alignSelf:"center", color:"#ccc", fontSize:20, flexShrink:0 }}>→</div>}
             </div>
           ))}
+        </div>
         </div>
        </CodeBeside>
       </div>
