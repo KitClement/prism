@@ -473,6 +473,10 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
     if (!node) return;
     const fail = () => { setMsg("err"); setTimeout(() => setMsg(""), 2200); };
     if (!navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === "undefined") { fail(); return; }
+    // Marker class for capture-only layout overrides (e.g. left-aligning the sampler's run
+    // controls so a one-device sampler crops narrow instead of spanning the panel width).
+    // html-to-image inlines computed styles, so the class-driven CSS is honored in the PNG.
+    node.classList.add("capturing-image");
     try {
       // Match the on-screen theme so the PNG isn't transparent when pasted into Word.
       const bgc = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff";
@@ -483,6 +487,7 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
       await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
       setMsg("ok"); setTimeout(() => setMsg(""), 2200);
     } catch { fail(); }
+    finally { node.classList.remove("capturing-image"); }
   };
   // The wrapper is tagged data-no-capture so the button never appears in an image of a region
   // that contains it (e.g. the sampler).

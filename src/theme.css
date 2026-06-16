@@ -111,6 +111,16 @@
 @keyframes codeLineFlash { 0%, 55% { background: var(--code-flash); } 100% { background: transparent; } }
 .code-flash { animation: codeLineFlash 4s ease-out; border-radius: 3px; }
 
+/* Capture-only layout: while CopyImageButton rasterizes a region (it adds `capturing-image`
+   to the node for the duration), left-align any element marked `data-capture-left` instead of
+   letting its `margin-left:auto` push it to the far right. This keeps the sampler's run controls
+   next to the "Sampler" heading so a one-device sampler crops to a narrow image. We also pin the
+   controls to a single line (no wrap / no shrink): the PNG is rasterized with fallback fonts,
+   which are wider than the on-screen font and would otherwise wrap the "n =" field below. */
+.capturing-image [data-capture-left] { margin-left: 0 !important; flex-wrap: nowrap !important; }
+.capturing-image [data-capture-left] > * { flex-shrink: 0 !important; }
+.capturing-image [data-capture-left] label { white-space: nowrap !important; }
+
 /* ── Accessibility (WCAG 2.1 AA) ───────────────────────────────────────────────
    The app styles controls inline (many with `outline:none`); a single global focus
    model keeps keyboard focus visible everywhere without per-component work. Mouse

@@ -772,7 +772,7 @@ export default function App() {
           {sampling && <span data-no-capture="1" style={{ fontSize:12, color:"#6366f1", fontWeight:600 }}>drawing {sampleData.length}{runMode === "until" ? "…" : "/" + sampleSize + "…"}</span>}
           {/* Sampler run controls — these drive the pipeline below, so they live in
               its header rather than the app-level top bar (B3). */}
-          <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          <div data-capture-left style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <div data-no-capture="1" style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
               <input type="range" min={0} max={2} step={1} value={concealed ? 2 : animSpeed} disabled={concealed}
                 aria-label="Animation speed" aria-valuetext={["Slow", "Fast", "Instant"][concealed ? 2 : animSpeed]}
