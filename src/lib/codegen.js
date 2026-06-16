@@ -21,7 +21,7 @@
 // one entry per *enabled* tracked statistic (nothing until the student enables one), and the
 // collect loop's N is the number of samples collected so far (`collectedCount`). Python uses
 // pandas/numpy (statsmodels for regression); R is base R. Scope: WITH replacement (a
-// without-replacement device is flagged in a comment); population SD; type-7 quantiles. Derived
+// without-replacement device is flagged in a comment); sample SD; type-7 quantiles. Derived
 // columns aren't emitted.
 
 // ─── Literals & identifiers ───────────────────────────────────────────────────
@@ -271,7 +271,7 @@ function overlayInfo(cfg, stats) {
   return null;
 }
 // Overlay lines over the target stat's collected vector. fivenum (R) / .describe() (py) give the
-// five-number summary; SD is population (matches the tool and the `sd` statistic). A plain stat's
+// five-number summary; SD is the sample SD (matches the tool and the `sd` statistic). A plain stat's
 // bare list is accepted by np.mean / np.std / pd.Series directly; a derived column is built from its
 // operands first via `resolveTarget` (which arrayizes them in the py compact path so arithmetic works).
 function overlayBody(ov, lang, emittedOf, vecRef, arrayize) {
@@ -279,7 +279,7 @@ function overlayBody(ov, lang, emittedOf, vecRef, arrayize) {
   if (!r) return null;
   const v = r.target, R = lang === "r", out = [];
   if (ov.mean) out.push((R ? `mean(${v})` : `np.mean(${v})`) + "   # center of the sampling distribution");
-  if (ov.sd)   out.push((R ? `sqrt(mean((${v} - mean(${v}))^2))` : `np.std(${v})`) + "   # spread (population SD)");
+  if (ov.sd)   out.push((R ? `sd(${v})` : `np.std(${v}, ddof=1)`) + "   # spread (sample SD)");
   if (ov.box)  out.push((R ? `fivenum(${v})` : `pd.Series(${v}).describe().loc[['min', '25%', '50%', '75%', 'max']]`) + "   # five-number summary");
   return out.length ? [...r.setup, ...out] : null;
 }
@@ -340,7 +340,7 @@ function drawVec(col, dev, lang) {
   const src = devSource(dev);
   if (src) { const rep = dev.withReplacement !== false; return lang === "r"
     ? `${col} <- sample(${srcCol(src, "df", "r")}, n${rep ? ", replace = TRUE" : ""})`
-    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=${rep ? "True" : "False"})`; }
+    : `${col} = ${srcCol(src, "pop", "py")}.sample(n, replace=${rep ? "True" : "False"})`; }
   const { labels, weights, uniform, replace } = outcomeSpec(dev);
   const pool = isPool(dev), allOnes = weights.every(w => w === 1);
   if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}[${key(col)}].sample(n, replace=True)`;
@@ -358,50 +358,35 @@ function drawVec(col, dev, lang) {
   const w = uniform ? "" : `, weights=[${weights.join(", ")}]`;   // spinner: weighted, always WR
   return `${col} = pop_${col}[${key(col)}].sample(n, replace=True${w})`;
 }
-// Python compact draws every device into ONE sample DataFrame `df` (one column per device,
-// mirroring the read_csv / split-path `df`). `drawCellPy` is the per-device draw EXPRESSION
-// (no assignment) that becomes a column value; `.values` strips the sampled index so columns
-// align by position (different devices return different random indices — without this, a
-// multi-column DataFrame would misalign into NaN). `dfLinePy` wraps them into the `df = …` line;
-// `dfCol` references a device's column for the inline statistics. Shared by genCompact + genIntegrated.
-const dfCol = col => `df[${key(col)}]`;
-function drawCellPy(col, dev) {
-  const src = devSource(dev);
-  if (src) return `${srcCol(src, "pop", "py")}.sample(n, replace=${dev.withReplacement !== false ? "True" : "False"}).values`;
-  const { labels, weights, uniform, replace } = outcomeSpec(dev);
-  if (!labels.length) return `pop_${col}[${key(col)}].sample(n, replace=True).values`;
-  if (isPool(dev)) return `pop_${col}[${key(col)}].sample(n, replace=${replace ? "True" : "False"}).values`;
-  const w = uniform ? "" : `, weights=[${weights.join(", ")}]`;   // spinner: weighted, always WR
-  return `pop_${col}[${key(col)}].sample(n, replace=True${w}).values`;
+// Python compact: each device is drawn as its own vector (one line per device, via `drawVec`),
+// then those vectors are assembled into one per-sample DataFrame `sample` so every statistic is
+// computed with familiar pandas/df syntax (reusing the split path's `pyStatAssign`). `.values`
+// strips each draw's random index so the columns align by position (without it a multi-column
+// DataFrame misaligns into NaN). `statDfLinePy` builds the post-loop sampling-distribution `df`
+// from the collected stat lists. Shared by genCompact + genIntegrated.
+function sampleFrameLinePy(cfg, names) {
+  const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}.values`);
+  return `sample = pd.DataFrame({${cells.join(", ")}})`;
 }
-function dfLinePy(cfg, names) {
-  const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${drawCellPy(names[st.id], defDevice(st))}`);
-  return `df = pd.DataFrame({${cells.join(", ")}})`;
-}
-// The column expression a compact statistic reads: the device's column, subset to a group when the
-// stat is conditional (`condVar`). Columns are row-aligned in the compact path (Python Series off
-// `df`; R a bare length-n vector), so a group stat is a straight subset of one column by another.
-function compactCol(s, names, lang) {
-  if (lang === "r") {
-    const v = names[s.variable];
-    return s.condVar ? `${v}[${names[s.condVar]} == ${lit(s.condVal)}]` : v;
-  }
-  if (s.condVar) return `df[df[${key(names[s.condVar])}] == ${lit(s.condVal)}][${key(names[s.variable])}]`;
-  return dfCol(names[s.variable]);
+const statDfLinePy = stats => `df = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`;
+// The column expression an R compact statistic reads: the device's bare length-n vector, subset
+// to a group when the stat is conditional (`condVar`). (Python compact reads off the `sample`
+// frame via `pyStatAssign`, so this is R-only now.)
+function compactCol(s, names) {
+  const v = names[s.variable];
+  return s.condVar ? `${v}[${names[s.condVar]} == ${lit(s.condVal)}]` : v;
 }
 // True when any compact statistic needs statsmodels (Python regression import).
 const compactNeedsSm = stats => stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
-// One compact statistic as a value expression. Regression (slope/intercept) reads two row-aligned
-// columns: R fits `lm(y ~ x)` directly on the drawn vectors (no data frame needed); Python fits
-// statsmodels OLS over the sample `df`. Everything else is `vStat` over one (optionally group-subset)
-// column. Matches rStatExpr/pyStatExpr's regression so the compact and split paths agree.
-function compactStatExpr(s, names, lang) {
+// One R compact statistic as a value expression. Regression (slope/intercept) fits `lm(y ~ x)`
+// directly on the drawn vectors (no data frame needed); everything else is `vStat` over one
+// (optionally group-subset) vector. (Python compact uses the `sample`-frame path; see genCompact.)
+function compactStatExpr(s, names) {
   if (s.fn === "slope" || s.fn === "intercept") {
     const v = names[s.variable], v2 = names[s.variable2];
-    if (lang === "r") return `unname(coef(lm(${v2} ~ ${v}))[${s.fn === "slope" ? 2 : 1}])`;
-    return `sm.OLS(${dfCol(v2)}, sm.add_constant(${dfCol(v)})).fit().params.iloc[${s.fn === "slope" ? 1 : 0}]`;
+    return `unname(coef(lm(${v2} ~ ${v}))[${s.fn === "slope" ? 2 : 1}])`;
   }
-  return vStat(s, compactCol(s, names, lang), lang);
+  return vStat(s, compactCol(s, names), "r");
 }
 // The inline statistic expression over the drawn column `v` (an R vector / a pandas Series).
 function vStat(s, v, lang) {
@@ -409,7 +394,7 @@ function vStat(s, v, lang) {
     switch (s.fn) {
       case "mean": return `mean(${v})`;
       case "median": return `median(${v})`;
-      case "sd": return `sqrt(mean((${v} - mean(${v}))^2))`;
+      case "sd": return `sd(${v})`;
       case "min": return `min(${v})`;
       case "max": return `max(${v})`;
       case "q1": return `as.numeric(quantile(${v}, 0.25, type = 7))`;
@@ -425,7 +410,7 @@ function vStat(s, v, lang) {
   switch (s.fn) {
     case "mean": return `${v}.mean()`;
     case "median": return `${v}.median()`;
-    case "sd": return `${v}.std(ddof=0)`;
+    case "sd": return `${v}.std()`;
     case "min": return `${v}.min()`;
     case "max": return `${v}.max()`;
     case "q1": return `${v}.quantile(0.25)`;
@@ -453,7 +438,7 @@ function genCompact(cfg, names, lang) {
 
     const single = mk("single");
     if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-    else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} <- ${compactStatExpr(s, names, "r")}`)); }
+    else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} <- ${compactStatExpr(s, names)}`)); }
 
     const collect = mk("collect");
     if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -462,7 +447,7 @@ function genCompact(cfg, names, lang) {
       stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
       collect.push("for (i in 1:N) {");
       cfg.pipeline.forEach(st => collect.push("  " + drawVec(names[st.id], defDevice(st), "r")));
-      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${compactStatExpr(s, names, "r")}`));
+      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${compactStatExpr(s, names)}`));
       collect.push("}");
     }
 
@@ -471,21 +456,23 @@ function genCompact(cfg, names, lang) {
     return { sampler, single, collect, inference };
   }
 
-  // Python (pandas / numpy) — every device is one column of a single sample DataFrame `df`
+  // Python (pandas / numpy) — each device is drawn as its own vector, then assembled into the
+  // per-sample DataFrame `sample`; every statistic is computed off `sample` with df syntax.
   const sampler = mk("sampler");
   sampler.push("import pandas as pd");
   sampler.push("import numpy as np");
-  if (compactNeedsSm(stats)) sampler.push("import statsmodels.api as sm");
+  if (compactNeedsSm(stats)) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
-  sampler.push("# Sampler — draw one sample of n (one column per device)");
+  sampler.push("# Sampler — draw one sample of n (one vector per device)");
   if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push(`n = ${cfg.sampleSize}`);
   cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) sampler.push(pd); });
-  sampler.push(dfLinePy(cfg, names));
+  cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py")));
+  sampler.push(sampleFrameLinePy(cfg, names));
 
   const single = mk("single");
   if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} = ${compactStatExpr(s, names, "py")}`)); }
+  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "", e => `${id} = ${e}`).forEach(t => single.push(t))); }
 
   const collect = mk("collect");
   if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -493,8 +480,10 @@ function genCompact(cfg, names, lang) {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
-    collect.push("    " + dfLinePy(cfg, names));
-    stats.forEach(({ s, id }) => collect.push(`    ${id}.append(${compactStatExpr(s, names, "py")})`));
+    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py")));
+    collect.push("    " + sampleFrameLinePy(cfg, names));
+    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t)));
+    collect.push(statDfLinePy(stats));
   }
 
   const inference = mk("inference");
@@ -610,7 +599,7 @@ function rStatExpr(s, v, v2, D) {
     case "countVal": return `sum(${x} == ${lit(s.target)})`;
     case "proportion": return `mean(${x} == ${lit(s.target)})`;
     case "mean": return `mean(${x})`;
-    case "sd": return `sqrt(mean((${x} - mean(${x}))^2))`;
+    case "sd": return `sd(${x})`;
     case "median": return `median(${x})`;
     case "min": return `min(${x})`;
     case "max": return `max(${x})`;
@@ -630,14 +619,14 @@ function pyStatExpr(s, v, v2, D) {
     case "countVal": return `(${c} == ${lit(s.target)}).sum()`;
     case "proportion": return `(${c} == ${lit(s.target)}).mean()`;
     case "mean": return `${c}.mean()`;
-    case "sd": return `${c}.std(ddof=0)`;
+    case "sd": return `${c}.std()`;
     case "median": return `${c}.median()`;
     case "min": return `${c}.min()`;
     case "max": return `${c}.max()`;
     case "q1": return `${c}.quantile(0.25)`;
     case "q3": return `${c}.quantile(0.75)`;
-    case "slope": return `sm.OLS(${D}[${key(v2)}], sm.add_constant(${D}[${key(v)}])).fit().params.iloc[1]`;
-    case "intercept": return `sm.OLS(${D}[${key(v2)}], sm.add_constant(${D}[${key(v)}])).fit().params.iloc[0]`;
+    case "slope": return `smf.ols(${key(`${v2} ~ ${v}`)}, data=${D}).fit().params[${key(v)}]`;
+    case "intercept": return `smf.ols(${key(`${v2} ~ ${v}`)}, data=${D}).fit().params["Intercept"]`;
     case "countBetween": return `(${regionExpr(c, s, "py")}).sum()`;
     case "propBetween": return `(${regionExpr(c, s, "py")}).mean()`;
     default: return "float('nan')";
@@ -757,7 +746,7 @@ function genSplit(cfg, names, lang) {
   sampler.push("import random");
   sampler.push("import pandas as pd");
   sampler.push("import numpy as np");
-  if (needsSm) sampler.push("import statsmodels.api as sm");
+  if (needsSm) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
   sampler.push("# Sampler — draw one row through the pipeline");
   if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
@@ -833,13 +822,14 @@ function isSimple(cfg) {
   return true;
 }
 
-// The inference lines for the compact path over the collected vectors, as [text, section]
-// pairs (shared by the distributed panel and the integrated view so they can't diverge). The
-// statistics are bare vectors (`mean_x`, …); for Python the divider converts them to numpy arrays
-// first (via `arrayize`) so its vectorized comparisons work.
+// The inference lines for the compact path over the collected statistics, as [text, section]
+// pairs (shared by the distributed panel and the integrated view so they can't diverge). Python
+// reads the post-loop sampling-distribution DataFrame `df` (a column per stat, already a Series,
+// so no array conversion); R reads the bare collected vectors (`mean_x`, …).
 function compactInfLines(cfg, stats, lang) {
   if (!stats[0]) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
-  const lines = inferenceBody(cfg, stats, lang, e => e, lang === "py" ? e => [`${e} = np.array(${e})`] : null);
+  const vecRef = lang === "py" ? e => `df[${key(e)}]` : e => e;
+  const lines = inferenceBody(cfg, stats, lang, vecRef, null);
   if (!lines.length) return [[NO_INFERENCE, "inference"]];
   return lines.map(t => [t, "inference"]);
 }
@@ -852,7 +842,7 @@ function genIntegrated(cfg, names, lang) {
   const L = [], push = (text, section) => L.push({ text, section });
   if (isSimple(cfg)) {
     const ind = lang === "r" ? "  " : "    ";
-    if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.api as sm", "sampler"); push("", "sampler"); }
+    if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
     if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
@@ -861,13 +851,14 @@ function genIntegrated(cfg, names, lang) {
     push(lang === "r" ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
     stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
     push(lang === "r" ? "for (i in 1:N) {" : "for i in range(N):", "collect");
-    if (lang === "r") cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), "r"), "sampler"));
-    else push(ind + dfLinePy(cfg, names), "sampler");
+    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang), "sampler"));
+    if (lang === "py") push(ind + sampleFrameLinePy(cfg, names), "sampler");
     stats.forEach(({ s, id }) => {
-      const e = compactStatExpr(s, names, lang);
-      push(ind + (lang === "r" ? `${id}[i] <- ${e}` : `${id}.append(${e})`), "single");
+      if (lang === "r") push(ind + `${id}[i] <- ${compactStatExpr(s, names)}`, "single");
+      else pyStatAssign(s, id, names, "sample", ind, e => `${id}.append(${e})`).forEach(t => push(t, "single"));
     });
     if (lang === "r") push("}", "collect");
+    else push(statDfLinePy(stats), "collect");
     push("", "inference");
     compactInfLines(cfg, stats, lang).forEach(([t, sec]) => push(t, sec));
     return L;

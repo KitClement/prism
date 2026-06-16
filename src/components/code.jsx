@@ -11,6 +11,13 @@ import { CODE_SECTIONS, sectionColor, SHAPE_PATH } from "../lib/styles";
 const MONO = "'IBM Plex Mono','SFMono-Regular',Consolas,monospace";
 const SECT = Object.fromEntries(CODE_SECTIONS.map(s => [s.id, s]));
 
+// Change-cue timing. A burst of GUI updates (e.g. dragging the divider) regenerates the code
+// many times a second; FLASH_SETTLE_MS is the quiet period we wait after the LAST change before
+// flashing, so the whole burst collapses into one net diff. FLASH_PERSIST_MS is how long the
+// highlight then holds — it MUST match the `.code-flash` animation duration in theme.css.
+const FLASH_SETTLE_MS = 800;
+const FLASH_PERSIST_MS = 4000;
+
 // A section's shape as a solid-filled SVG glyph.
 function Glyph({ symbol, color, size = 14 }) {
   return (
@@ -128,22 +135,35 @@ export function CodeBox({ sectionId, lines, cbMode }) {
   const section = SECT[sectionId];
   const color = sectionColor(section, cbMode);
   const text = lines.map(l => l.text).join("\n");
-  // Diff against the previously-rendered lines to flash what changed. `prev` survives across
-  // regenerations because CodeBeside keeps this panel mounted (it only unmounts when code is
-  // toggled off entirely), so a first mount (prev null) correctly shows no flash.
-  const prev = useRef(null);
+  // Diff against the previously-SETTLED lines to flash what changed, debounced so a burst of
+  // edits flashes once it goes quiet. `prev` (the diff baseline) survives across regenerations
+  // because CodeBeside keeps this panel mounted (it only unmounts when code is toggled off
+  // entirely), so a first mount (prev null) correctly shows no flash.
+  const prev = useRef(null);      // last settled lines — the diff baseline
+  const latest = useRef(lines);   // most recent lines, awaiting settle
+  const settleTimer = useRef(null);
+  const clearTimer = useRef(null);
   const scrollRef = useRef(null);
   const [flash, setFlash] = useState({ map: null, v: 0 });
   useEffect(() => {
-    const old = prev.current;
-    prev.current = lines;
-    if (!old) return;
-    const map = diffLines(old, lines);
-    if (!map || !map.size) return;
-    setFlash(f => ({ map, v: f.v + 1 }));
-    const t = setTimeout(() => setFlash(f => ({ map: null, v: f.v })), 1500);
-    return () => clearTimeout(t);
+    latest.current = lines;
+    if (prev.current === null) { prev.current = lines; return; } // first mount, no flash
+    // Restart the quiet-period timer on every change; only the last one fires.
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(() => {
+      const map = diffLines(prev.current, latest.current);
+      prev.current = latest.current;
+      if (!map || !map.size) return;
+      setFlash(f => ({ map, v: f.v + 1 }));
+      if (clearTimer.current) clearTimeout(clearTimer.current);
+      clearTimer.current = setTimeout(() => setFlash(f => ({ map: null, v: f.v })), FLASH_PERSIST_MS);
+    }, FLASH_SETTLE_MS);
   }, [text]);
+  // Clear both timers on unmount.
+  useEffect(() => () => {
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    if (clearTimer.current) clearTimeout(clearTimer.current);
+  }, []);
   // When the change is off-screen to the right (the code box scrolls horizontally), reveal it —
   // but scroll ONLY this box, never the page (no scrollIntoView, which would bubble to the
   // window). Runs after the flash spans render (keyed on flash.v).

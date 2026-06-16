@@ -87,10 +87,31 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
 // `onChange`. Pointer events with capture; clientX is mapped to svg-attribute pixels
 // via `W / rect.width` so it stays correct under the plot's `maxWidth:100%` scaling.
 //   cuts: [v] (single) | [lo, hi] (range) — values in data units, in array order.
-function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCandidates, shade, fmt, dir = "none" }) {
+// Translucent region shading for the divider, rendered as its own layer so callers can
+// paint it BEHIND the dots (the dots stay visible + clickable). Single → split the two
+// sides; range → highlight the middle band between the two lines. `dir` ("left"/"right"/
+// "none") focuses one tail for a one-sided cut.
+function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none" }) {
+  const xL = sx(xlo), xR = sx(xhi);
+  const shades = [];
+  if (cuts.length === 1) {
+    const xv = sx(cuts[0]);
+    if (dir === "left") shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.14} />);
+    else if (dir === "right") shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.14} />);
+    else {
+      shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.07} />);
+      shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.07} />);
+    }
+  } else if (cuts.length === 2) {
+    const a = sx(Math.min(cuts[0], cuts[1])), b = sx(Math.max(cuts[0], cuts[1]));
+    shades.push(<rect key="mid" x={a} y={topY} width={Math.max(0, b - a)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+  }
+  return <g style={{ pointerEvents: "none" }}>{shades}</g>;
+}
+
+function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCandidates, fmt, dir = "none" }) {
   const [dragI, setDragI] = useState(-1);
   const pxPerUnit = Math.abs(sx(xhi) - sx(xlo)) / (Math.abs(xhi - xlo) || 1);
-  const xL = sx(xlo), xR = sx(xhi);
 
   // Suppress text selection across the page for the duration of a drag (the cut spans
   // other text elements — axis labels, read-outs — so a local user-select isn't enough).
@@ -119,23 +140,6 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
   };
   const onUp = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {} setSelecting(false); setDragI(-1); };
 
-  // Region shading (behind, translucent so dots show through). Single → split the two
-  // sides; range → highlight the middle band between the two lines.
-  const shades = [];
-  if (shade && cuts.length === 1) {
-    const xv = sx(cuts[0]);
-    // Two-sided: shade both halves faintly. Directional: shade only the focused tail (the
-    // arrow points into it), the side whose proportion is the p-value / critical value.
-    if (dir === "left") shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.14} />);
-    else if (dir === "right") shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.14} />);
-    else {
-      shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.07} />);
-      shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.07} />);
-    }
-  } else if (shade && cuts.length === 2) {
-    const a = sx(Math.min(cuts[0], cuts[1])), b = sx(Math.max(cuts[0], cuts[1]));
-    shades.push(<rect key="mid" x={a} y={topY} width={Math.max(0, b - a)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
-  }
   // Direction arrow for a one-sided single divider: a short horizontal arrow at mid-height
   // pointing into the shaded tail (blue ◂ left, orange ▸ right).
   let arrow = null;
@@ -153,7 +157,6 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
 
   return (
     <g>
-      {shades}
       {arrow}
       {cuts.map((v, i) => {
         const x = sx(v);
@@ -1093,6 +1096,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(xVar)}</text>
             {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
             {freqAxis && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>Frequency</text>}
+            {/* divider shading — painted BEHIND the dots so dots stay visible + clickable */}
+            {showDivider && <DividerShades topY={PT} botY={PT + iH} sx={sx} xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} dir={divRange ? "none" : divDir} />}
             {/* dots — one per row; click toggles linked highlighting (D1) */}
             {dots.map((d, i) => {
               const sel = isSel(d.id);
@@ -1171,7 +1176,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 <DividerLines W={W} topY={PT} botY={PT + iH} sx={sx}
                   inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
                   xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} onChange={onDivDrag}
-                  snapCandidates={divDomain.snap} shade fmt={divDomain.fmt} dir={divRange ? "none" : divDir} />
+                  snapCandidates={divDomain.snap} fmt={divDomain.fmt} dir={divRange ? "none" : divDir} />
                 {/* Directional single divider shows only the focused tail's proportion (always),
                     plus the Count read-out when its checkbox is on; otherwise the usual regions. */}
                 <RegionLabels regions={divDirected && focusRegion ? [focusRegion] : divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}

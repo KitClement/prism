@@ -105,10 +105,11 @@
 }
 
 /* Transient highlight on the changed substring of a regenerated code line (Task: code-box
-   change cue). Fades from the flash color to transparent; the span is keyed by a version
-   counter in CodeBox so the animation replays each time the same line changes again. */
-@keyframes codeLineFlash { from { background: var(--code-flash); } to { background: transparent; } }
-.code-flash { animation: codeLineFlash 1.4s ease-out; border-radius: 3px; }
+   change cue). Holds the flash color, then fades to transparent; the span is keyed by a version
+   counter in CodeBox so the animation replays each time the same line changes again. The 4s
+   duration must match FLASH_PERSIST_MS in code.jsx. */
+@keyframes codeLineFlash { 0%, 55% { background: var(--code-flash); } 100% { background: transparent; } }
+.code-flash { animation: codeLineFlash 4s ease-out; border-radius: 3px; }
 
 /* ── Accessibility (WCAG 2.1 AA) ───────────────────────────────────────────────
    The app styles controls inline (many with `outline:none`); a single global focus

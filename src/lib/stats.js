@@ -15,7 +15,7 @@ function numericSummary(nums) {
   const s = [...nums].sort((a, b) => a - b);
   const n = s.length;
   const mean = s.reduce((a, b) => a + b, 0) / n;
-  const variance = s.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+  const variance = n > 1 ? s.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) : NaN;
   const sd = Math.sqrt(variance);
   const q1 = quantile(s, 0.25), median = quantile(s, 0.5), q3 = quantile(s, 0.75);
   // Tukey whiskers: extend to the most extreme datum within 1.5·IQR of the box.
@@ -61,10 +61,10 @@ function computeStat(stat, rows) {
     case "countVal":   return vals.filter(v => String(v) === String(stat.target)).length;
     case "proportion": return vals.length ? vals.filter(v => String(v) === String(stat.target)).length / vals.length : NaN;
     case "mean":       return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : NaN;
-    case "sd": {       // population SD, matching numericSummary (variance over n)
-      if (!nums.length) return NaN;
+    case "sd": {       // sample SD, matching numericSummary (variance over n-1)
+      if (nums.length < 2) return NaN;
       const m = nums.reduce((a, b) => a + b, 0) / nums.length;
-      return Math.sqrt(nums.reduce((a, b) => a + (b - m) ** 2, 0) / nums.length);
+      return Math.sqrt(nums.reduce((a, b) => a + (b - m) ** 2, 0) / (nums.length - 1));
     }
     case "median":     return nums.length ? quantile(sorted(), 0.5) : NaN;
     case "min":        return nums.length ? Math.min(...nums) : NaN;

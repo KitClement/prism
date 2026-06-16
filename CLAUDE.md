@@ -228,7 +228,7 @@ These were the source of real bugs during development. Preserve them.
 7. **Generated code reads the live specs, never a parallel copy.** `lib/codegen.js` mirrors
    the *same* sources the UI computes from (stage outcomes, the `computeStat` fn semantics,
    `stopReached`) so the R/Python can't drift from the tool. Scope: **with replacement**
-   (a without-replacement device is flagged in a comment, not reproduced); population SD;
+   (a without-replacement device is flagged in a comment, not reproduced); sample SD;
    type-7 quantiles (R `type=7`; pandas `.quantile()`/`np.quantile` are type-7 by default) to
    match `quantile()`; one column per **enabled** tracked stat — nothing until one is enabled,
    derived columns aren't emitted, and inference targets the first enabled stat. The **compact**
