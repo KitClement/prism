@@ -23,7 +23,6 @@ const safeConfirm = msg => { try { return window.confirm(msg); } catch { return 
 export default function App() {
   // CSV / EDA dataset
   const [dataset, setDataset] = useState(null); // { headers, rows, name }
-  const [edaOpen, setEdaOpen] = useState(true);
   const csvInputRef = useRef(null);              // keyboard-reachable Upload CSV trigger (a11y)
   const samplerRef = useRef(null);               // capture region for the sampler "Copy image" button
   const [liveMsg, setLiveMsg] = useState("");    // polite screen-reader announcements (a11y)
@@ -689,7 +688,7 @@ export default function App() {
             <img src={cbMode ? prismLogoCb : prismLogo} alt="PRISM"
               style={{ width:0, minWidth:"100%", height:"auto", display:"block" }} />
           </h1>
-          <p style={{ margin:0, fontSize:11, color:"var(--text-3)", whiteSpace:"nowrap" }}>Python &amp; R Integrated Simulation Machine</p>
+          <p style={{ margin:0, fontSize:12, color:"var(--text-3)", whiteSpace:"nowrap" }}>Python &amp; R Integrated Simulation Machine</p>
         </div>
         {/* Code-panel controls live at the top-right of the whole page; each section's code
             box then sits beside the tool it mirrors. */}
@@ -706,15 +705,9 @@ export default function App() {
 
       {/* ── CSV / EDA STAGE ── */}
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)" }}>
-        <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom: edaOpen ? 12 : 0 }}>
-          <h2 style={{ margin:0 }}>
-            <button onClick={() => setEdaOpen(o => !o)} aria-expanded={edaOpen}
-              style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:700, color:"var(--text)", display:"flex", alignItems:"center", gap:6 }}>
-              <span style={{ transform: edaOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
-              Data &amp; Exploratory Analysis
-            </button>
-          </h2>
-          {dataset && <span style={{ fontSize:11, color:"var(--text-3)" }}>{dataset.name} · {dataset.rows.length} rows · {dataset.headers.length} cols</span>}
+        <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom:12 }}>
+          <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Data &amp; Exploratory Analysis</h2>
+          {dataset && <span style={{ fontSize:12, color:"var(--text-3)" }}>{dataset.name} · {dataset.rows.length} rows · {dataset.headers.length} cols</span>}
           {/* Upload CSV — a real <button> drives a hidden file input via ref so the picker is
               keyboard-reachable (a bare <label> wrapping display:none is not focusable). */}
           <input ref={csvInputRef} type="file" accept=".csv,text/csv" className="sr-only" tabIndex={-1}
@@ -725,20 +718,18 @@ export default function App() {
           {dataset && <button onClick={() => setDataset(null)} style={{ ...btnNav, fontSize:12 }}>✕ Clear</button>}
         </div>
 
-        {edaOpen && (
-          dataset ? (
-            <div>
-              <EDAPlot rows={dataset.rows} headers={dataset.headers}
-                onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })} />
-              <div style={{ fontSize:10, color:"var(--text-faint)", marginTop:8 }}>
-                Build a Stacks or Mixer in the sampler below, then use its <strong>Fill from data</strong> control to load a column from this dataset.
-              </div>
+        {dataset ? (
+          <div>
+            <EDAPlot rows={dataset.rows} headers={dataset.headers}
+              onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })} />
+            <div style={{ fontSize:12, color:"var(--text-faint)", marginTop:8 }}>
+              Build a Stacks or Mixer in the sampler below, then use its <strong>Fill from data</strong> control to load a column from this dataset.
             </div>
-          ) : (
-            <div style={{ color:"var(--text-faint)", textAlign:"center", padding:24, fontSize:13 }}>
-              Upload a CSV to explore your data, compute statistics, and feed columns into the sampler.
-            </div>
-          )
+          </div>
+        ) : (
+          <div style={{ color:"var(--text-faint)", textAlign:"center", padding:24, fontSize:13 }}>
+            Upload a CSV to explore your data, compute statistics, and feed columns into the sampler.
+          </div>
         )}
       </div>
 
@@ -747,7 +738,7 @@ export default function App() {
        <CodeBeside sectionId="sampler" lines={concealed ? null : (code && code.sampler)} cbMode={cbMode}>
         <div ref={samplerRef}>
         <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center", flexWrap:"wrap" }}>
-          <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Sampler</h2>
+          <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Sampler</h2>
           {concealed ? (
             <>
               <span style={{ fontSize:12, color:"#7c3aed", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
@@ -758,7 +749,7 @@ export default function App() {
             <>
               {[["stacks", "Stacks"], ["mixer", "Mixer"], ["spinner", "Spinner"]].map(([t, l]) => (
                 <button data-no-capture="1" key={t} onClick={() => addStage(t)} disabled={sampling}
-                  style={{ padding:"4px 10px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--text-2)", opacity:sampling?0.5:1 }}>+ {l}</button>
+                  style={{ padding:"4px 10px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:7, fontSize:13, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--text-2)", opacity:sampling?0.5:1 }}>+ {l}</button>
               ))}
               <button data-no-capture="1" onClick={() => doShare()} disabled={sampling} title="Copy a link that regenerates this sampler"
                 style={{ padding:"4px 10px", background:"var(--accent-soft)", border:"1.5px solid var(--accent-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--accent-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔗 Share</button>
@@ -777,8 +768,8 @@ export default function App() {
               <input type="range" min={0} max={2} step={1} value={concealed ? 2 : animSpeed} disabled={concealed}
                 aria-label="Animation speed" aria-valuetext={["Slow", "Fast", "Instant"][concealed ? 2 : animSpeed]}
                 title={concealed ? "Hidden samplers run instantly until revealed" : undefined}
-                onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1", opacity:concealed?0.5:1, cursor:concealed?"not-allowed":"pointer" }} />
-              <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"var(--text-faint)", width:80 }}>
+                onChange={e => setAnimSpeed(+e.target.value)} style={{ width:96, accentColor:"#6366f1", opacity:concealed?0.5:1, cursor:concealed?"not-allowed":"pointer" }} />
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:12, color:"var(--text-faint)", width:96 }}>
                 <span>slow</span><span>fast</span><span>instant</span>
               </div>
             </div>
@@ -830,7 +821,7 @@ export default function App() {
               {sampling ? "⏹ Stop" : "▶ Draw Sample"}
             </button>
             {hasNameError && !sampling && (
-              <span data-no-capture="1" style={{ fontSize:11, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
+              <span data-no-capture="1" style={{ fontSize:12, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
                 Rename — device names must be unique and non-blank
               </span>
             )}
@@ -855,7 +846,7 @@ export default function App() {
                   display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, flexShrink:0 }}>
                   <div style={{ fontSize:34 }}>🔒</div>
                   <div style={{ fontSize:13, fontWeight:700, color:"#7c3aed" }}>{nameOf(stage.id)}</div>
-                  <div style={{ fontSize:10, color:"#a78bda" }}>hidden device</div>
+                  <div style={{ fontSize:12, color:"#a78bda" }}>hidden device</div>
                 </div>
               ) : (
                 <StageCard stage={stage} index={i} total={pipeline.length} upstreamStages={pipeline.slice(0, i)}
@@ -874,8 +865,8 @@ export default function App() {
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)", opacity:sampleData.length ? 1 : 0.4, transition:"opacity 0.3s" }}>
        <CodeBeside sectionId="single" lines={code && code.single} cbMode={cbMode}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Sample Results</h2>
-          {sampleData.length > 0 && <span style={{ fontSize:11, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
+          <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Sample Results</h2>
+          {sampleData.length > 0 && <span style={{ fontSize:12, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
         </div>
         <SampleResults sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
        </CodeBeside>
@@ -884,7 +875,7 @@ export default function App() {
       {/* Collect Statistics */}
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)", opacity:sampleData.length ? 1 : 0.35, pointerEvents:sampleData.length ? "auto" : "none", transition:"opacity 0.3s" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Collect Statistics</h2>
+          <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Collect Statistics</h2>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <label style={ctrlLbl}>Collect
               <NumInput value={batchSize} min={1} max={100000} round={0}
@@ -921,13 +912,13 @@ export default function App() {
         {operandCols.length > 0 && (
           <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
             <button onClick={() => setDerivedOpen(o => !o)} aria-expanded={derivedOpen}
-              style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
+              style={{ background:"none", border:"none", cursor:"pointer", fontSize:12, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
               <span style={{ transform: derivedOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
               Build a derived statistic
             </button>
             {derivedOpen && (
               <div style={{ marginTop:8 }}>
-                <div style={{ fontSize:11, color:"var(--text-3)", marginBottom:8 }}>
+                <div style={{ fontSize:12, color:"var(--text-3)", marginBottom:8 }}>
                   Combine the statistics you've collected — click a column chip, then operators — to make a new column (e.g. <code>A − B</code> for a difference of means). It fills in for every collected row at once.
                 </div>
                 <DerivedBuilder columns={operandCols} onAdd={addDerivedStat} />
@@ -940,13 +931,13 @@ export default function App() {
             to the same tracked-stat table above instead of a separate workflow. */}
         <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
           <button onClick={() => setManualOpen(o => !o)} aria-expanded={manualOpen}
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
+            style={{ background:"none", border:"none", cursor:"pointer", fontSize:12, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
             <span style={{ transform: manualOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
             Define a statistic manually
           </button>
           {manualOpen && (
             <div style={{ marginTop:8 }}>
-              <div style={{ fontSize:11, color:"var(--text-3)", marginBottom:6 }}>
+              <div style={{ fontSize:12, color:"var(--text-3)", marginBottom:6 }}>
                 Build a statistic from the sampler's variables and add it as a column. Most statistics are easier to add by clicking their value on the Sample Results plot above — this is for cases that aren't shown there.
               </div>
               <div style={{ display:"flex", gap:8, alignItems:"flex-start", flexWrap:"wrap" }}>

@@ -3,9 +3,9 @@
 
 const iSm = { padding:"3px 6px", border:"1px solid var(--border-2)", borderRadius:5, fontSize:12, background:"var(--surface-2)", color:"var(--text)" };
 const btnX = { background:"none", border:"none", color:"var(--text-faint)", cursor:"pointer", fontSize:15, padding:"0 2px", lineHeight:1 };
-const btnPlus = { padding:"3px 9px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:5, fontSize:11, cursor:"pointer", color:"var(--text-2)" };
-const btnArr = { background:"none", border:"1px solid var(--border)", borderRadius:4, fontSize:11, cursor:"pointer", color:"var(--text-3)", padding:"1px 4px" };
-const btnNav = { padding:"3px 8px", background:"var(--surface-3)", border:"1px solid var(--border-2)", borderRadius:5, fontSize:11, cursor:"pointer", color:"var(--text-2)" };
+const btnPlus = { padding:"3px 9px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:5, fontSize:12, cursor:"pointer", color:"var(--text-2)" };
+const btnArr = { background:"none", border:"1px solid var(--border)", borderRadius:4, fontSize:12, cursor:"pointer", color:"var(--text-3)", padding:"1px 4px" };
+const btnNav = { padding:"3px 8px", background:"var(--surface-3)", border:"1px solid var(--border-2)", borderRadius:5, fontSize:12, cursor:"pointer", color:"var(--text-2)" };
 const ctrlLbl = { fontSize:12, color:"var(--text-2)", display:"flex", alignItems:"center" };
 
 // Code-panel sections (Task E). Four runnable sections + an integrated program, each

@@ -167,7 +167,7 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="transparent" strokeWidth={14} />
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="#6366f1" strokeWidth={dragI === i ? 2.5 : 1.5} strokeDasharray="4 3" />
             {/* the cut value, directly above the grab handle */}
-            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill="var(--accent-ink)">{fmt(v)}</text>}
+            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={12} fontWeight={700} fill="var(--accent-ink)">{fmt(v)}</text>}
             {/* grab handle at the top of the line */}
             <rect x={x - 5} y={topY - 9} width={10} height={9} rx={2} fill="#6366f1" stroke="#fff" strokeWidth={1} />
           </g>
@@ -210,9 +210,9 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
         // right in parentheses (each still individually click-to-track).
         return (
           <g key={r.key}>
-            {showCount && <TrackText x={both ? cx - 3 : cx} y={y} anchor={both ? "end" : "middle"} color="var(--text-2)" fontSize={9}
+            {showCount && <TrackText x={both ? cx - 3 : cx} y={y} anchor={both ? "end" : "middle"} color="var(--text-2)" fontSize={12}
               label={String(r.n)} spec={regionSpec(r, "countBetween", base)} {...trackProps} />}
-            {showPct && <TrackText x={both ? cx + 3 : cx} y={y} anchor={both ? "start" : "middle"} color="var(--text-2)" fontSize={9}
+            {showPct && <TrackText x={both ? cx + 3 : cx} y={y} anchor={both ? "start" : "middle"} color="var(--text-2)" fontSize={12}
               label={"(" + (total ? fmtP(r.p) : "—") + ")"} spec={regionSpec(r, "propBetween", base)} {...trackProps} />}
           </g>
         );
@@ -304,14 +304,14 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
             <line x1={x} y1={lineY - 5} x2={x} y2={lineY + 5} stroke="var(--ruler-line)" strokeWidth={2} />
             {/* handle + letter */}
             <rect x={x - 6} y={lineY - 9} width={12} height={9} rx={2} fill="var(--ruler-line)" stroke="#fff" strokeWidth={1} />
-            <text x={x} y={lineY - 1.5} textAnchor="middle" fontSize={7} fontWeight={800} fill="#fff">{i === 0 ? "A" : "B"}</text>
+            <text x={x} y={lineY - 1.5} textAnchor="middle" fontSize={11} fontWeight={800} fill="#fff">{i === 0 ? "A" : "B"}</text>
             {/* what this endpoint landed on (measure name or constant value) */}
-            <text x={x} y={lineY + 16} textAnchor="middle" fontSize={8} fontWeight={600} fill="var(--ruler-text)">{opLabel(p)}</text>
+            <text x={x} y={lineY + 16} textAnchor="middle" fontSize={11} fontWeight={600} fill="var(--ruler-text)">{opLabel(p)}</text>
           </g>
         );
       })}
       {/* signed-distance read-out at the bar midpoint */}
-      <text x={midX} y={lineY - 7} textAnchor="middle" fontSize={9} fontWeight={800} fill="var(--ruler-text)">
+      <text x={midX} y={lineY - 7} textAnchor="middle" fontSize={12} fontWeight={800} fill="var(--ruler-text)">
         A − B = {fmtNum(diff)}
       </text>
       {/* ＋ track affordance (Sample Results only) */}
@@ -322,7 +322,7 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
           <g style={{ cursor:"pointer" }} onClick={e => { e.stopPropagation(); onTrackDiff(a, b); }}>
             <title>Track A − B as a derived column in Collect Statistics</title>
             <rect x={midX - w / 2} y={ty - 9} width={w} height={13} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
-            <text x={midX} y={ty} textAnchor="middle" fontSize={8} fontWeight={800} fill="var(--ruler-text)">{label}</text>
+            <text x={midX} y={ty} textAnchor="middle" fontSize={11} fontWeight={800} fill="var(--ruler-text)">{label}</text>
           </g>
         );
       })()}
@@ -371,7 +371,7 @@ function ResidualOverlay({ scatterPts, ls, sx, toPy, xlo, xhi, W, area, sel, onS
           <circle cx={p.px} cy={footY} r={3} fill="#fff" stroke="var(--ruler-line)" strokeWidth={1.6} />
           <circle cx={p.px} cy={p.py} r={6} fill="none" stroke="var(--ruler-line)" strokeWidth={2} />
           <rect x={p.px + 7} y={midY - 8} width={lbl.length * 5 + 8} height={14} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
-          <text x={p.px + 11} y={midY + 2} fontSize={9} fontWeight={800} fill="var(--ruler-text)">{lbl}</text>
+          <text x={p.px + 11} y={midY + 2} fontSize={12} fontWeight={800} fill="var(--ruler-text)">{lbl}</text>
         </g>
       )}
     </g>
@@ -417,11 +417,11 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
       <circle cx={g.bx} cy={g.by} r={4} fill="var(--ruler-line)" />
       <g transform={"translate(" + mx + "," + my + ")"}>
         <rect x={-lw / 2} y={trackable ? -23 : -10} width={lw} height={trackable ? 35 : 18} rx={5} fill="var(--surface)" stroke="#5eead4" strokeWidth={1.5} />
-        <text x={0} y={trackable ? -10 : 3} textAnchor="middle" fontSize={11} fontWeight={800} fill="var(--ruler-text)">{diffLabel}</text>
+        <text x={0} y={trackable ? -10 : 3} textAnchor="middle" fontSize={13} fontWeight={800} fill="var(--ruler-text)">{diffLabel}</text>
         {trackable && (
           <g style={{ cursor:"pointer", pointerEvents:"auto" }} onClick={e => { e.stopPropagation(); onTrack(); }}>
             <rect x={-pw / 2} y={2} width={pw} height={14} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
-            <text x={0} y={12} textAnchor="middle" fontSize={9} fontWeight={800} fill="var(--ruler-text)">{pill}</text>
+            <text x={0} y={12} textAnchor="middle" fontSize={12} fontWeight={800} fill="var(--ruler-text)">{pill}</text>
           </g>
         )}
       </g>
@@ -493,7 +493,7 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
   // that contains it (e.g. the sampler).
   return (
     <span data-no-capture="1" style={{ marginLeft:"auto", display:"inline-flex", alignItems:"center", gap:6, ...style }}>
-      <span role="status" aria-live="polite" style={{ fontSize:11, fontWeight:700, whiteSpace:"nowrap",
+      <span role="status" aria-live="polite" style={{ fontSize:12, fontWeight:700, whiteSpace:"nowrap",
         color: msg === "err" ? "var(--text-faint)" : "var(--green-ink)" }}>
         {msg === "ok" ? "✓ Copied image" : msg === "err" ? "Copy unavailable" : ""}
       </span>
@@ -525,9 +525,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const [showMean, setShowMean] = useState(false);
   const [showSD, setShowSD] = useState(false);
   const [showLS, setShowLS] = useState(false);
-  const [showValues, setShowValues] = useState(false);
-  // Categorical cell labels
-  const [showCount, setShowCount] = useState(true);
+  // Categorical cell labels (counts off by default; opt-in via "# Count")
+  const [showCount, setShowCount] = useState(false);
   const [showPct, setShowPct] = useState(false);
   // Collapse high-cardinality categorical axes (>10 categories)
   const [expandCats, setExpandCats] = useState(false);
@@ -646,6 +645,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   }
 
   const sx = v => PL + xS.scale(v);
+  // ── Show values ──
+  // Numeric overlay values appear automatically whenever any stat overlay is on (and are
+  // always on in the click-to-track Sample Results context). There is no separate toggle.
+  const trackable = !!onTrackStat;
+  const showVals = trackable || showMean || showSD || showBox || showLS;
   // Univariate numeric overlays hug the axis: the mean triangle's tip sits on the
   // x-axis, the ±SD bar is directly beneath it (adjacent to the mean), and the
   // boxplot is separated below. Tick labels sit below the strip.
@@ -658,12 +662,20 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const hasUniOverlay = !bivariate && xSummary && (showBox || showMean || showSD);
   let overlayBottom = axisY;
   if (hasUniOverlay) {
-    if (showMean) overlayBottom = Math.max(overlayBottom, showValues ? meanValY : meanBaseY);
+    if (showMean) overlayBottom = Math.max(overlayBottom, showVals ? meanValY : meanBaseY);
     if (showSD) overlayBottom = Math.max(overlayBottom, sdBarY + 4);
-    if (showBox) overlayBottom = Math.max(overlayBottom, showValues ? medianValY : boxCy + 9);
+    if (showBox) overlayBottom = Math.max(overlayBottom, showVals ? medianValY : boxCy + 9);
   }
   const tickLblY = hasUniOverlay ? overlayBottom + 14 : axisY + 16;
-  const H = tickLblY + 18; // tick labels + axis title
+  // Angle the X tick labels when adjacent numeric labels would collide (e.g. very large
+  // values): estimate each label's width (~6.7px/char at 12px) and compare to the tick gap.
+  // Rotated -35° (anchored at the tick), they fan down-left, so reserve extra footer height.
+  const xTickW = (xNumeric || xTime)
+    ? xS.ticks.reduce((m, t) => Math.max(m, String(xS.fmt(t)).length), 0) * 6.7 : 0;
+  const xTickGap = xS.ticks.length > 1 ? Math.abs(sx(xS.ticks[1]) - sx(xS.ticks[0])) : iW;
+  const angleXTicks = xTickW > xTickGap * 0.92;
+  const xTickExtra = angleXTicks ? Math.ceil(xTickW * 0.57) : 0; // ≈ width·sin(35°)
+  const H = tickLblY + 18 + xTickExtra; // tick labels (+ angled overhang) + axis title
 
   // Which toggle groups apply to the current variable selection
   const showStatToggles = (xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric));
@@ -673,10 +685,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // ── Click-to-track ──
   // When a parent supplies onTrackStat (Sample Results), the numbers drawn on the
   // plot become clickable: clicking one toggles tracking that statistic in Collect
-  // Statistics. Numeric overlay values are forced visible here (so there is always
-  // a number to click), which makes the separate "Show values" toggle redundant.
-  const trackable = !!onTrackStat;
-  const showVals = showValues || trackable;
+  // Statistics. `trackable`/`showVals` are derived above (overlay values are always
+  // visible in this context, so a number is always present to click).
   const trackProps = { trackable, trackedKeys, onTrackStat, nameOf };
 
   // ── Linked highlighting (Phase D1) ──
@@ -939,9 +949,6 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         {bivariate && xNumeric && yNumeric && (
           <ChkLabel checked={showLS} onChange={setShowLS} label="LS Line" />
         )}
-        {!trackable && (showStatToggles || (bivariate && xNumeric && yNumeric)) && (
-          <ChkLabel checked={showValues} onChange={setShowValues} label="Show values" />
-        )}
         {showCatToggles && (
           <>
             <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
@@ -965,7 +972,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 <button key={val} onClick={() => { setDivDir(val); setDivBy("value"); }}
                   style={{ padding:"3px 9px", border:"none", borderLeft: val === "none" ? "none" : "1px solid var(--border)",
                     background: divDir === val ? "#6366f1" : "var(--surface)", color: divDir === val ? "#fff" : "var(--text-2)",
-                    fontSize:11, fontWeight:600, cursor:"pointer" }}>{lab}</button>
+                    fontSize:12, fontWeight:600, cursor:"pointer" }}>{lab}</button>
               ))}
             </div>
           )}
@@ -999,7 +1006,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               <NumInput step="any" value={p.value} round={4}
                 onChange={n => setRulerPt(i, n)} style={{ ...iSm, width:72, marginLeft:4 }} />
               {p.spec && <span title="anchored — follows this measure as the data changes"
-                style={{ marginLeft:4, padding:"1px 5px", borderRadius:4, background:"var(--ruler-soft)", color:"var(--ruler-text)", fontWeight:700, fontSize:11 }}>◎ {p.label}</span>}
+                style={{ marginLeft:4, padding:"1px 5px", borderRadius:4, background:"var(--ruler-soft)", color:"var(--ruler-text)", fontWeight:700, fontSize:12 }}>◎ {p.label}</span>}
             </label>
           ))}
           <span style={{ color:"var(--ruler-text)", fontWeight:700 }}>A − B = {parseFloat((effPts[0].value - effPts[1].value).toFixed(4))}</span>
@@ -1029,7 +1036,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
 
       {/* Click-to-track hint (suppressed while the cat-difference ruler claims clicks) */}
       {trackable && !showCatRuler && (
-        <div style={{ fontSize:11, color:"var(--text-faint)", marginBottom:8 }}>
+        <div style={{ fontSize:12, color:"var(--text-faint)", marginBottom:8 }}>
           Click a number on the plot to collect that statistic (click again to stop).
         </div>
       )}
@@ -1077,14 +1084,15 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             {xS.ticks.map((t, i) => (
               <g key={"xt"+i}>
                 <line x1={sx(t)} y1={PT + iH} x2={sx(t)} y2={PT + iH + 4} stroke="var(--axis)" />
-                <text x={sx(t)} y={tickLblY} textAnchor="middle" fontSize={10} fill="var(--text-3)">{xS.fmt(t)}</text>
+                <text x={sx(t)} y={tickLblY} textAnchor={angleXTicks ? "end" : "middle"} fontSize={12} fill="var(--text-3)"
+                  transform={angleXTicks ? "rotate(-35," + sx(t) + "," + tickLblY + ")" : undefined}>{xS.fmt(t)}</text>
               </g>
             ))}
             {/* y ticks */}
             {yS && yS.ticks.map((t, i) => (
               <g key={"yt"+i}>
                 <line x1={PL - 4} y1={PT + iH - yS.scale(t)} x2={PL} y2={PT + iH - yS.scale(t)} stroke="var(--axis)" />
-                <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--text-3)">{yS.fmt(t)}</text>
+                <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={12} fill="var(--text-3)">{yS.fmt(t)}</text>
               </g>
             ))}
             {/* frequency y ticks (univariate numeric) — aligned to the stacked dot rows */}
@@ -1093,14 +1101,14 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               return (
                 <g key={"ft"+i}>
                   <line x1={PL - 4} y1={y} x2={PL} y2={y} stroke="var(--axis)" />
-                  <text x={PL - 7} y={y} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--text-3)">{f}</text>
+                  <text x={PL - 7} y={y} textAnchor="end" dominantBaseline="middle" fontSize={12} fill="var(--text-3)">{f}</text>
                 </g>
               );
             })}
             {/* axis labels */}
-            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(xVar)}</text>
-            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
-            {freqAxis && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>Frequency</text>}
+            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{nm(xVar)}</text>
+            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
+            {freqAxis && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>Frequency</text>}
             {/* divider shading — painted BEHIND the dots so dots stay visible + clickable */}
             {showDivider && <DividerShades topY={PT} botY={PT + iH} sx={sx} xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} dir={divRange ? "none" : divDir} />}
             {/* dots — one per row; click toggles linked highlighting (D1) */}
@@ -1123,15 +1131,15 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                   {trackable ? (
                     // Slope and intercept are individually clickable to track.
                     <g>
-                      <TrackText x={PL + iW - 4} y={PT + 12} anchor="end" color="#ef4444" fontSize={10}
+                      <TrackText x={PL + iW - 4} y={PT + 12} anchor="end" color="#ef4444" fontSize={12}
                         label={"slope " + parseFloat(ls.slope.toFixed(3))}
                         spec={{ fn:"slope", variable:xVar, variable2:yVar }} {...trackProps} />
-                      <TrackText x={PL + iW - 4} y={PT + 28} anchor="end" color="#ef4444" fontSize={10}
+                      <TrackText x={PL + iW - 4} y={PT + 28} anchor="end" color="#ef4444" fontSize={12}
                         label={"intercept " + parseFloat(ls.intercept.toFixed(3))}
                         spec={{ fn:"intercept", variable:xVar, variable2:yVar }} {...trackProps} />
                     </g>
-                  ) : showValues && (
-                    <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={10} fill="#ef4444" fontWeight={700}>
+                  ) : showVals && (
+                    <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={12} fill="#ef4444" fontWeight={700}>
                       ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
                     </text>
                   )}
@@ -1147,7 +1155,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                   <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
                   <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
                   <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                  {showVals && <TrackText x={labelX} y={sdBarY + 3} anchor="start" color="#d97706" fontSize={9}
+                  {showVals && <TrackText x={labelX} y={sdBarY + 3} anchor="start" color="#d97706" fontSize={12}
                     label={"±1 SD = " + parseFloat(xSummary.sd.toFixed(2))} spec={{ fn:"sd", variable:xVar }} {...trackProps} />}
                 </g>
               );
@@ -1158,7 +1166,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               return (
                 <g>
                   <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
-                  {showVals && <TrackText x={mx} y={meanValY} anchor="middle" color="#059669" fontSize={9}
+                  {showVals && <TrackText x={mx} y={meanValY} anchor="middle" color="#059669" fontSize={12}
                     label={fmtX(xSummary.mean)} spec={{ fn:"mean", variable:xVar }} {...trackProps} />}
                 </g>
               );
@@ -1171,7 +1179,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
                 <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
                 <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
-                {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="var(--accent-ink)" fontSize={9}
+                {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="var(--accent-ink)" fontSize={12}
                   label={fmtX(xSummary.median)} spec={{ fn:"median", variable:xVar }} {...trackProps} />}
               </g>
             )}
@@ -1182,10 +1190,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                   inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
                   xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} onChange={onDivDrag}
                   snapCandidates={divDomain.snap} fmt={divDomain.fmt} dir={divRange ? "none" : divDir} />
-                {/* Directional single divider shows only the focused tail's proportion (always),
-                    plus the Count read-out when its checkbox is on; otherwise the usual regions. */}
+                {/* Directional single divider shows only the focused tail; its Count / Proportion
+                    read-outs follow their checkboxes (no auto-on), matching the usual regions. */}
                 <RegionLabels regions={divDirected && focusRegion ? [focusRegion] : divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}
-                  y={PT + 9} showCount={divShowCount} showPct={divShowPct || divDirected} total={divDomain.values.length}
+                  y={PT + 9} showCount={divShowCount} showPct={divShowPct} total={divDomain.values.length}
                   base={{ variable: xVar }} trackProps={trackProps} />
               </>
             )}
@@ -1237,7 +1245,7 @@ function StatDefiner({ stat, varNames, nameOf, sampleData, onChange, onRemove })
         <Sel label="| filter" value={stat.condVar || "none"} onChange={v => onChange({ ...stat, condVar:v === "none" ? "" : v, condVal:"" })} options={["none", ...varNames]} labels={["(none)", ...varNames.map(nm)]} />
         {stat.condVar && <Sel label="=" value={stat.condVal || ""} onChange={v => onChange({ ...stat, condVal:v })} options={["", ...condVals]} labels={["—", ...condVals]} />}
       </div>
-      <div style={{ marginTop:5, fontSize:11, color:"#6366f1", fontFamily:"monospace" }}>→ {statLabel(stat, nameOf)}</div>
+      <div style={{ marginTop:5, fontSize:12, color:"#6366f1", fontFamily:"monospace" }}>→ {statLabel(stat, nameOf)}</div>
     </div>
   );
 }
@@ -1303,7 +1311,7 @@ function DerivedBuilder({ columns, onAdd }) {
           <button key={c.id} onClick={() => insertAtCaret(aliasOf[c.id])} title={"Insert " + aliasOf[c.id] + " = " + c.label + " (" + fmt(c.value) + " on this sample)"}
             style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)", display:"inline-flex", gap:5, alignItems:"center" }}>
             <strong>{aliasOf[c.id]}</strong>
-            <span style={{ fontFamily:"monospace", fontSize:10, color:"#6366f1", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
+            <span style={{ fontFamily:"monospace", fontSize:12, color:"#6366f1", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
           </button>
         ))}
         <span style={{ width:1, height:18, background:"var(--border)", margin:"2px 1px" }} />
@@ -1325,14 +1333,14 @@ function DerivedBuilder({ columns, onAdd }) {
           style={{ ...iSm, flex:"1 1 260px", minWidth:220, fontFamily:"monospace", fontSize:13, padding:"7px 10px",
             border: msg ? "1px solid #fca5a5" : "1px solid var(--border-2)" }} />
         {valid && (
-          <span style={{ fontSize:11, color:"var(--text-2)" }}>
+          <span style={{ fontSize:12, color:"var(--text-2)" }}>
             on this sample → <strong style={{ color: isFinite(preview) ? "#10b981" : "var(--derived-text)", fontFamily:"monospace" }}>{fmt(preview)}</strong>
           </span>
         )}
       </div>
-      {msg && <div style={{ fontSize:11, color:"#ef4444", marginTop:4 }}>{msg}</div>}
+      {msg && <div style={{ fontSize:12, color:"#ef4444", marginTop:4 }}>{msg}</div>}
       <div style={{ marginTop:8, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        <label style={{ ...ctrlLbl, fontSize:11 }}>Name
+        <label style={{ ...ctrlLbl, fontSize:12 }}>Name
           <input value={name} onChange={e => setName(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") add(); }}
             placeholder="optional — defaults to the formula"
@@ -1342,7 +1350,7 @@ function DerivedBuilder({ columns, onAdd }) {
           style={{ padding:"7px 16px", background:"#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:valid ? "pointer" : "not-allowed", opacity:valid ? 1 : 0.5 }}>
           ＋ Add derived column
         </button>
-        <span style={{ fontSize:11, color:"var(--text-faint)" }}>Backfills every collected row instantly — no re-sampling.</span>
+        <span style={{ fontSize:12, color:"var(--text-faint)" }}>Backfills every collected row instantly — no re-sampling.</span>
       </div>
     </div>
   );
@@ -1365,10 +1373,16 @@ function scrollRowIntoView(container, id) {
   if (!row) return;
   const cRect = container.getBoundingClientRect();
   const rRect = row.getBoundingClientRect();
+  const bTop = parseFloat(getComputedStyle(container).borderTopWidth) || 0;
   const head = container.querySelector("thead");
   const headH = head ? head.offsetHeight : 0;
-  if (rRect.top < cRect.top + headH) container.scrollTop -= (cRect.top + headH - rRect.top);
-  else if (rRect.bottom > cRect.bottom) container.scrollTop += (rRect.bottom - cRect.bottom);
+  // Visible band excludes the sticky header (top) and a horizontal scrollbar, if any
+  // (bottom) — clientHeight omits the scrollbar, so a wide table's bottom bar no longer
+  // covers the row we just revealed.
+  const visTop = cRect.top + bTop + headH;
+  const visBottom = cRect.top + bTop + container.clientHeight;
+  if (rRect.top < visTop) container.scrollTop -= (visTop - rRect.top);
+  else if (rRect.bottom > visBottom) container.scrollTop += (rRect.bottom - visBottom);
 }
 
 function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider, onOverlays }) {
@@ -1518,9 +1532,9 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
       {/* LEFT: data table (chronological, auto-scrolling) */}
       <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
-        <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Draws</div>
+        <div style={{ fontSize:12, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Draws</div>
         <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
-          <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+          <table style={{ borderCollapse:"collapse", fontSize:12, width:"100%" }}>
             <caption className="sr-only">Raw draws — one row per draw, one column per sampler variable.</caption>
             <thead>
               <tr>
@@ -1556,14 +1570,39 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
 // DATA TABLE — scrollable view of the raw rows; X/Y columns highlighted
 // ══════════════════════════════════════════════════════════════════════════════
 
+const WIN_ROWS = 500, WIN_COLS = 25; // initial render window; grows as you scroll (RStudio-style)
+
 function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, selectedIds, onToggleSelect, scrollTarget }) {
-  // Render every row so each plot dot has a reachable table row for linked
-  // highlighting (D1). Datasets here are EDA-sized; if a pathologically large CSV
-  // ever lags, add windowed rendering (no virtualization library).
+  // Windowed rendering (no virtualization library): a large CSV would otherwise paint every
+  // row × column at once and stall. Render only the first WIN_ROWS × WIN_COLS, appending a
+  // page as the user scrolls toward an edge. Edit/select helpers still operate on the full
+  // arrays (by _id / header name), so windowing is display-only.
   const selectable = !!onToggleSelect;
   const scrollRef = useRef(null);
-  // Reveal the row whose dot was just clicked (no-op when it's already in view).
-  useEffect(() => { scrollRowIntoView(scrollRef.current, scrollTarget && scrollTarget.id); }, [scrollTarget]);
+  const [visRows, setVisRows] = useState(WIN_ROWS);
+  const [visCols, setVisCols] = useState(WIN_COLS);
+  // Reset the window when a new dataset loads (header signature changes); clamp so editing —
+  // which rebuilds the same-length arrays each keystroke — never collapses the view.
+  useEffect(() => { setVisRows(WIN_ROWS); setVisCols(WIN_COLS); }, [headers.join("")]);
+  // Grow the window as the scroll position nears the bottom / right edge.
+  const onScroll = e => {
+    const el = e.currentTarget;
+    if (visRows < rows.length && el.scrollHeight - el.scrollTop - el.clientHeight < 200)
+      setVisRows(v => Math.min(rows.length, v + WIN_ROWS));
+    if (visCols < headers.length && el.scrollWidth - el.scrollLeft - el.clientWidth < 200)
+      setVisCols(c => Math.min(headers.length, c + WIN_COLS));
+  };
+  // Reveal the row whose dot was just clicked. If it's past the current window, expand to
+  // include it first, then scroll once the row has actually rendered (next animation frame).
+  useEffect(() => {
+    if (!scrollTarget) return;
+    const idx = rows.findIndex(r => r._id === scrollTarget.id);
+    if (idx >= 0 && idx >= visRows) setVisRows(Math.min(rows.length, idx + 1));
+    const raf = requestAnimationFrame(() => scrollRowIntoView(scrollRef.current, scrollTarget.id));
+    return () => cancelAnimationFrame(raf);
+  }, [scrollTarget]);
+  const visHeaders = headers.slice(0, visCols);
+  const visRowList = rows.slice(0, visRows);
   const isSel = id => !!(selectedIds && selectedIds.has(id));
   const HL = "var(--highlight)"; // selected-row highlight (amber); overrides column tint
   const cellBg = (h, sel) => sel ? HL : (h === xVar ? "var(--xsel-cell)" : (h === yVar ? "var(--ysel-cell)" : "transparent"));
@@ -1587,14 +1626,14 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
 
   return (
     <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
-      <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
-        <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+      <div style={{ fontSize:12, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
+      <div ref={scrollRef} onScroll={onScroll} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
+        <table style={{ borderCollapse:"collapse", fontSize:12, width:"100%" }}>
           <caption className="sr-only">Dataset rows — one row per case, one column per variable.</caption>
           <thead>
             <tr>
               <th scope="col" style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
-              {headers.map(h => (
+              {visHeaders.map(h => (
                 <th key={h} scope="col" style={{ position:"sticky", top:0, background:headBg(h), color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
                   {editable ? (
                     <span style={{ display:"inline-flex", alignItems:"center", gap:2 }}>
@@ -1612,7 +1651,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => {
+            {visRowList.map((r, i) => {
               const sel = isSel(r._id);
               return (
               <tr key={r._id || i} data-rowid={r._id} aria-selected={selectable ? sel : undefined} style={{ borderBottom:"1px solid var(--border)" }}>
@@ -1624,7 +1663,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
                   {editable && <button title="Delete row" onClick={e => { e.stopPropagation(); delRow(r._id); }} style={{ ...btnX, fontSize:12, marginRight:2 }}>×</button>}
                   {i + 1}
                 </td>
-                {headers.map(h => (
+                {visHeaders.map(h => (
                   <td key={h} style={{ padding:"3px 8px", color:"var(--text-2)", background:cellBg(h, sel), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
                     {editable ? <InlineEdit value={r[h] ?? ""} onChange={v => editCell(r._id, h, v)} /> : r[h]}
                   </td>
@@ -1636,6 +1675,12 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
           </tbody>
         </table>
       </div>
+      {(visRowList.length < rows.length || visHeaders.length < headers.length) && (
+        <div style={{ fontSize:12, color:"var(--text-faint)", marginTop:4 }}>
+          Showing {visRowList.length}/{rows.length} rows
+          {headers.length > visHeaders.length ? `, ${visHeaders.length}/${headers.length} cols` : ""} — scroll to load more
+        </div>
+      )}
       {editable && (
         <div style={{ marginTop:6 }}>
           <button onClick={addRow} style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)" }}>＋ row</button>
@@ -1667,8 +1712,8 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
   if (!trackedStats.length) {
     return (
       <div style={{ flex:"1 1 280px", minWidth:220, color:"var(--text-faint)", fontSize:13, padding:"16px 8px", lineHeight:1.5 }}>
-        No tracked statistics yet. In <strong>Sample Results</strong> above, enable an overlay
-        (or click a two-way table cell) and press <strong style={{ color:"#6366f1" }}>＋ track</strong> to add a column here.
+        No tracked statistics yet. In <strong>Sample Results</strong> above, enable a statistic
+        (e.g. count, mean) on your plot above and click on that value to add a column here.
       </div>
     );
   }
@@ -1677,11 +1722,11 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
   const fmt = v => (typeof v === "number" ? (isFinite(v) ? parseFloat(v.toFixed(4)) : "—") : v);
   return (
     <div style={{ flex:"1 1 280px", minWidth:220 }}>
-      <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>
+      <div style={{ fontSize:12, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>
         Collected statistics {collectRows.length > 0 && <span style={{ color:"var(--text-faint)", fontWeight:600 }}>· {collectRows.length} rows</span>}
       </div>
       <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
-        <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+        <table style={{ borderCollapse:"collapse", fontSize:12, width:"100%" }}>
           <caption className="sr-only">Collected statistics — one row per repetition, one column per tracked statistic.</caption>
           <thead>
             <tr>
@@ -1695,12 +1740,12 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
                       onBlur={commitRename}
                       onKeyDown={e => { if (e.key === "Enter") commitRename(); else if (e.key === "Escape") setEditingId(null); }}
                       placeholder={labelFor(s)}
-                      style={{ fontFamily:"monospace", fontSize:11, width:Math.max(70, draft.length * 7 + 16), border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", background:"var(--surface)", color:"var(--text)" }} />
+                      style={{ fontFamily:"monospace", fontSize:12, width:Math.max(70, draft.length * 7 + 16), border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", background:"var(--surface)", color:"var(--text)" }} />
                   ) : (
                     <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "var(--derived-text)" : "var(--accent-ink)" }}>{labelFor(s)}</span>
                   )}
                   {onRename && editingId !== s.id && (
-                    <button onClick={() => beginRename(s)} title="Rename column" style={{ ...btnX, fontSize:11, marginLeft:3, verticalAlign:"middle", color:"var(--text-3)" }}>✎</button>
+                    <button onClick={() => beginRename(s)} title="Rename column" style={{ ...btnX, fontSize:12, marginLeft:3, verticalAlign:"middle", color:"var(--text-3)" }}>✎</button>
                   )}
                   <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:2, verticalAlign:"middle" }}>×</button>
                 </th>
@@ -1808,16 +1853,16 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
                 })}
               </div>
               <div style={{ borderTop:"1px solid var(--border-2)", width:"100%", marginTop:2 }} />
-              <div style={{ fontSize:11, color:"var(--text-2)", fontWeight:600, paddingTop:4, textAlign:"center",
+              <div style={{ fontSize:12, color:"var(--text-2)", fontWeight:600, paddingTop:4, textAlign:"center",
                 overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:"100%" }}>{c}</div>
             </div>
           );
         })}
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:4 }}>
-        <span style={{ fontSize:11, color:"var(--text-2)", fontWeight:700 }}>{nm(catVar)}</span>
+        <span style={{ fontSize:12, color:"var(--text-2)", fontWeight:700 }}>{nm(catVar)}</span>
         {allCats.length > 10 && (
-          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
+          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:12 }}>
             {expanded ? "Collapse to top 10" : `Show all ${allCats.length}`}
           </button>
         )}
@@ -1944,13 +1989,13 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
           ))}
         </div>
         {/* Axis titles */}
-        <div style={{ textAlign:"center", marginTop:4, fontSize:11, color:"var(--text-2)", fontWeight:700,
+        <div style={{ textAlign:"center", marginTop:4, fontSize:12, color:"var(--text-2)", fontWeight:700,
           marginLeft:LABEL_W }}>{nm(xVar)}</div>
       </div>
-      <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:10, color:"var(--text-3)", marginTop:4, marginLeft:LABEL_W - 10 }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:12, color:"var(--text-3)", marginTop:4, marginLeft:LABEL_W - 10 }}>
         <span>Rows = {nm(yVar)} · row-conditional proportion: P({nm(xVar)} | {nm(yVar)})</span>
         {collapsible && (
-          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
+          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:12 }}>
             {expanded ? "Collapse to top 10" : "Show all categories"}
           </button>
         )}
@@ -2010,7 +2055,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
           {ticks.map((t, i) => (
             <g key={"yt"+i}>
               <line x1={PL - 4} y1={sy(t)} x2={PL} y2={sy(t)} stroke="var(--axis)" />
-              <text x={PL - 7} y={sy(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="var(--text-3)">{fmt(t)}</text>
+              <text x={PL - 7} y={sy(t)} textAnchor="end" dominantBaseline="middle" fontSize={12} fill="var(--text-3)">{fmt(t)}</text>
             </g>
           ))}
           {cats.map((cat, gi) => {
@@ -2056,7 +2101,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
                     <rect x={bx - 6} y={sy(summary.q3)} width={12} height={Math.max(1, sy(summary.q1) - sy(summary.q3))} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={bx - 6} y1={sy(summary.median)} x2={bx + 6} y2={sy(summary.median)} stroke={color} strokeWidth={2} />
-                    {showValues && <TrackText x={bx - 9} y={sy(summary.median) + 3} anchor="end" color="var(--accent-ink)" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
+                    {showValues && <TrackText x={bx - 9} y={sy(summary.median) + 3} anchor="end" color="var(--accent-ink)" fontSize={12} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
                   </g>
                 )}
                 {/* mean triangle — points right, tip on the data baseline; value just
@@ -2067,7 +2112,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <g>
                       <polygon points={xData + "," + my + " " + (xData - 10) + "," + (my - 5) + " " + (xData - 10) + "," + (my + 5)}
                         fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                      {showValues && <TrackText x={xData - 13} y={my + 3} anchor="end" color="#059669" fontSize={9} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
+                      {showValues && <TrackText x={xData - 13} y={my + 3} anchor="end" color="#059669" fontSize={12} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
                     </g>
                   );
                 })()}
@@ -2080,22 +2125,22 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                       <line x1={sdMidX} y1={topY} x2={sdMidX} y2={botY} stroke="#f59e0b" strokeWidth={2} />
                       <line x1={sdMidX - 3} y1={topY} x2={sdMidX + 3} y2={topY} stroke="#f59e0b" strokeWidth={2} />
                       <line x1={sdMidX - 3} y1={botY} x2={sdMidX + 3} y2={botY} stroke="#f59e0b" strokeWidth={2} />
-                      {showValues && <TrackText x={sdMidX} y={labelY} anchor="middle" color="#d97706" fontSize={8} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
+                      {showValues && <TrackText x={sdMidX} y={labelY} anchor="middle" color="#d97706" fontSize={11} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
                     </g>
                   );
                 })()}
                 {/* category label */}
-                <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{cat}</text>
-                <text x={center} y={PT + iH + 28} textAnchor="middle" fontSize={9} fill="var(--text-3)">n={groupNums.length}</text>
+                <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{cat}</text>
+                <text x={center} y={PT + iH + 28} textAnchor="middle" fontSize={12} fill="var(--text-3)">n={groupNums.length}</text>
               </g>
             );
           })}
           <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
-          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(catVar)}</text>
-          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
+          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{nm(catVar)}</text>
+          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
         </svg>
         {allCats.length > 10 && (
-          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
+          <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:12, marginTop:4 }}>
             {expanded ? "Collapse to top 10 groups" : `Show all ${allCats.length} groups`}
           </button>
         )}
@@ -2165,9 +2210,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
               {gi > 0 && <line x1={PL} y1={top} x2={W - PR} y2={top} stroke="var(--grid)" strokeWidth={1} />}
               {/* group label */}
               <text x={PL - 10} y={top + GROUP_H / 2 - 6} textAnchor="end" dominantBaseline="middle"
-                fontSize={11} fill="var(--text-2)" fontWeight={600}>{cat}</text>
+                fontSize={13} fill="var(--text-2)" fontWeight={600}>{cat}</text>
               <text x={PL - 10} y={top + GROUP_H / 2 + 8} textAnchor="end" dominantBaseline="middle"
-                fontSize={9} fill="var(--text-3)">n={groupNums.length}</text>
+                fontSize={12} fill="var(--text-3)">n={groupNums.length}</text>
               {/* baseline */}
               <line x1={PL} y1={baseY + dotR + 1} x2={W - PR} y2={baseY + dotR + 1} stroke="var(--border-2)" strokeWidth={1} />
               {/* dots — one per row; click toggles linked highlighting (D1) */}
@@ -2190,7 +2235,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <line x1={loX} y1={y} x2={hiX} y2={y} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={loX} y1={y - 3} x2={loX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={hiX} y1={y - 3} x2={hiX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
-                    {showValues && <TrackText x={labelX} y={y + 3} anchor="start" color="#d97706" fontSize={8} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
+                    {showValues && <TrackText x={labelX} y={y + 3} anchor="start" color="#d97706" fontSize={11} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
                   </g>
                 );
               })()}
@@ -2200,7 +2245,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 return (
                   <g>
                     <polygon points={mx + "," + gb + " " + (mx - 5) + "," + (gb + 10) + " " + (mx + 5) + "," + (gb + 10)} fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                    {showValues && <TrackText x={mx} y={gb + 20} anchor="middle" color="#059669" fontSize={9} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
+                    {showValues && <TrackText x={mx} y={gb + 20} anchor="middle" color="#059669" fontSize={12} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
                   </g>
                 );
               })()}
@@ -2214,7 +2259,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
                     <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
-                    {showValues && <TrackText x={sx(summary.median)} y={by + 15} anchor="middle" color="var(--accent-ink)" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
+                    {showValues && <TrackText x={sx(summary.median)} y={by + 15} anchor="middle" color="var(--accent-ink)" fontSize={12} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
                   </g>
                 );
               })()}
@@ -2236,10 +2281,10 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
         {ticks.map((t, i) => (
           <g key={"t"+i}>
             <line x1={sx(t)} y1={H - PB} x2={sx(t)} y2={H - PB + 4} stroke="var(--axis)" />
-            <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={10} fill="var(--text-3)">{fmt(t)}</text>
+            <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={12} fill="var(--text-3)">{fmt(t)}</text>
           </g>
         ))}
-        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="var(--text-2)" fontWeight={600}>{nm(numVar)} (by {nm(catVar)})</text>
+        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{nm(numVar)} (by {nm(catVar)})</text>
         {/* Divider tool (Phase 6) — one shared cut line across every group band */}
         {divOn && divCuts && divCuts.length > 0 && (
           <DividerLines W={W} topY={PT} botY={H - PB} sx={sx}
@@ -2255,7 +2300,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
         )}
       </svg>
       {allCats.length > 10 && (
-        <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
+        <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:12, marginTop:4 }}>
           {expanded ? "Collapse to top 10 groups" : `Show all ${allCats.length} groups`}
         </button>
       )}
