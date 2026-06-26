@@ -378,6 +378,15 @@ function compactCol(s, names) {
 }
 // True when any compact statistic needs statsmodels (Python regression import).
 const compactNeedsSm = stats => stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+// True when the Python compact path needs the per-sample `sample` DataFrame: only regression
+// (smf.ols wants a frame). Plain + group stats compute off the bare device Series, mirroring R.
+const compactNeedsFrame = compactNeedsSm;
+// True when the Python compact path references numpy — only `np.repeat` in popDefPy (a pool
+// device with unequal counts). Without it the bare-Series stats are pure pandas, so the
+// `import numpy as np` line would be dead; gate it on this.
+const compactNeedsNp = cfg => (cfg.pipeline || []).some(st => {
+  const d = defDevice(st); return isPool(d) && !outcomeSpec(d).weights.every(w => w === 1);
+});
 // One R compact statistic as a value expression. Regression (slope/intercept) fits `lm(y ~ x)`
 // directly on the drawn vectors (no data frame needed); everything else is `vStat` over one
 // (optionally group-subset) vector. (Python compact uses the `sample`-frame path; see genCompact.)
@@ -387,6 +396,19 @@ function compactStatExpr(s, names) {
     return `unname(coef(lm(${v2} ~ ${v}))[${s.fn === "slope" ? 2 : 1}])`;
   }
   return vStat(s, compactCol(s, names), "r");
+}
+// Python compact, mirroring `compactStatExpr`: assignment line(s) for one statistic off the bare
+// device Series. Plain → `vStat(series)`; group (condVar) → a positional boolean mask
+// (`series[(group == val).values]`) so the cross-device subset aligns by position without a frame
+// (the numpy bool array indexes positionally, sidestepping each `.sample()`'s mismatched index);
+// regression → `smf.ols` over the `sample` frame (built only when regression is present). `target`
+// wraps the value into its assignment (`id = …` single / `id.append(…)` collect loop).
+function compactStatLinesPy(s, id, names, target) {
+  if (s.fn === "slope" || s.fn === "intercept")
+    return [target(pyStatExpr(s, names[s.variable], names[s.variable2], "sample"))];
+  const v = names[s.variable];
+  const col = s.condVar ? `${v}[(${names[s.condVar]} == ${lit(s.condVal)}).values]` : v;
+  return [target(vStat(s, col, "py"))];
 }
 // The inline statistic expression over the drawn column `v` (an R vector / a pandas Series).
 function vStat(s, v, lang) {
@@ -458,9 +480,10 @@ function genCompact(cfg, names, lang) {
 
   // Python (pandas / numpy) — each device is drawn as its own vector, then assembled into the
   // per-sample DataFrame `sample`; every statistic is computed off `sample` with df syntax.
+  const needsFrame = compactNeedsFrame(stats);
   const sampler = mk("sampler");
   sampler.push("import pandas as pd");
-  sampler.push("import numpy as np");
+  if (compactNeedsNp(cfg)) sampler.push("import numpy as np");
   if (compactNeedsSm(stats)) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
   sampler.push("# Sampler — draw one sample of n (one vector per device)");
@@ -468,11 +491,11 @@ function genCompact(cfg, names, lang) {
   sampler.push(`n = ${cfg.sampleSize}`);
   cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) sampler.push(pd); });
   cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py")));
-  sampler.push(sampleFrameLinePy(cfg, names));
+  if (needsFrame) sampler.push(sampleFrameLinePy(cfg, names));
 
   const single = mk("single");
   if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "", e => `${id} = ${e}`).forEach(t => single.push(t))); }
+  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => compactStatLinesPy(s, id, names, e => `${id} = ${e}`).forEach(t => single.push(t))); }
 
   const collect = mk("collect");
   if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -481,8 +504,8 @@ function genCompact(cfg, names, lang) {
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
     cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py")));
-    collect.push("    " + sampleFrameLinePy(cfg, names));
-    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t)));
+    if (needsFrame) collect.push("    " + sampleFrameLinePy(cfg, names));
+    stats.forEach(({ s, id }) => compactStatLinesPy(s, id, names, e => `${id}.append(${e})`).forEach(t => collect.push("    " + t)));
     collect.push(statDfLinePy(stats));
   }
 
@@ -842,7 +865,8 @@ function genIntegrated(cfg, names, lang) {
   const L = [], push = (text, section) => L.push({ text, section });
   if (isSimple(cfg)) {
     const ind = lang === "r" ? "  " : "    ";
-    if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
+    const needsFrame = compactNeedsFrame(stats);
+    if (lang === "py") { push("import pandas as pd", "sampler"); if (compactNeedsNp(cfg)) push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
     if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
@@ -852,10 +876,10 @@ function genIntegrated(cfg, names, lang) {
     stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
     push(lang === "r" ? "for (i in 1:N) {" : "for i in range(N):", "collect");
     cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang), "sampler"));
-    if (lang === "py") push(ind + sampleFrameLinePy(cfg, names), "sampler");
+    if (lang === "py" && needsFrame) push(ind + sampleFrameLinePy(cfg, names), "sampler");
     stats.forEach(({ s, id }) => {
       if (lang === "r") push(ind + `${id}[i] <- ${compactStatExpr(s, names)}`, "single");
-      else pyStatAssign(s, id, names, "sample", ind, e => `${id}.append(${e})`).forEach(t => push(t, "single"));
+      else compactStatLinesPy(s, id, names, e => `${id}.append(${e})`).forEach(t => push(ind + t, "single"));
     });
     if (lang === "r") push("}", "collect");
     else push(statDfLinePy(stats), "collect");
