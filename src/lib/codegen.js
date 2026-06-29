@@ -10,7 +10,7 @@
 //
 // TWO shapes of output, picked by `isSimple`:
 //   • COMPACT (the common teaching case): no fork, fixed n, and every enabled statistic reads a
-//     single column. Each device is drawn as ONE vector (`sample(c(...), n)` / `pop.sample(n)`)
+//     single column. Each device is drawn as ONE vector (`sample(c(...), n)` / `df[...].sample(n)`)
 //     and each statistic is inlined — no helper functions, even with several devices.
 //   • SPLIT (forks, run-until, or multi-column stats like slope / group means): keeps the
 //     per-row `draw_one` / `draw_sample` decomposition those genuinely require (per-row drawing
@@ -83,8 +83,9 @@ const isPool = dev => dev && (dev.type === "stacks" || dev.type === "mixer");
 // then reads the file (read.csv / pd.read_csv) and samples that column instead of inlining a
 // literal vector. Only Fill-from-data sets `source`; any manual edit clears it (see devices.jsx).
 const devSource = dev => (dev && dev.source && dev.source.var) ? dev.source : null;
-// Reference to a sourced column on a read-in data frame `frame`. (The compact path reads into
-// `df`; the split path reads into `pop`, since `df` there is the drawn sample.)
+// Reference to a sourced column on a read-in data frame `frame`. Python reads the population into
+// `df` in both paths (the drawn sample is `sample`); R reads into `df` (compact) / `pop` (split,
+// where its drawn sample is `df`).
 function srcCol(src, frame, lang) {
   if (lang === "r") return /^[A-Za-z.][A-Za-z0-9._]*$/.test(src.var) ? `${frame}$${src.var}` : `${frame}[[${JSON.stringify(src.var)}]]`;
   return `${frame}[${JSON.stringify(src.var)}]`;
@@ -227,8 +228,8 @@ function derivedExprCode(tokens, refOf, lang) {
 }
 // The inference body lines for a divider: optional setup (py list→array conversions, or a derived-
 // column definition built from its operands) then `dividerExprs` over the target vector. `vecRef(e)`
-// gives an emitted stat's collected-vector reference in this path (bare name compact; dist$x /
-// dist['x'] split); `emittedOf(id)` maps a tracked stat-id to its emitted name (or null);
+// gives an emitted stat's collected-vector reference in this path (R: bare name compact / dist$x
+// split; Python: samp_dist['x']); `emittedOf(id)` maps a tracked stat-id to its emitted name (or null);
 // `arrayize(e)` (py compact only) turns a collected list into a numpy array. Returns string[] of
 // lines, or null when the divider sits on something we can't emit (derived with a missing operand).
 // Resolve a divider/overlay spec ({ id } | { derived }) to its target vector reference plus any
@@ -340,7 +341,7 @@ function drawVec(col, dev, lang) {
   const src = devSource(dev);
   if (src) { const rep = dev.withReplacement !== false; return lang === "r"
     ? `${col} <- sample(${srcCol(src, "df", "r")}, n${rep ? ", replace = TRUE" : ""})`
-    : `${col} = ${srcCol(src, "pop", "py")}.sample(n, replace=${rep ? "True" : "False"})`; }
+    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=${rep ? "True" : "False"})`; }
   const { labels, weights, uniform, replace } = outcomeSpec(dev);
   const pool = isPool(dev), allOnes = weights.every(w => w === 1);
   if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}[${key(col)}].sample(n, replace=True)`;
@@ -362,13 +363,13 @@ function drawVec(col, dev, lang) {
 // then those vectors are assembled into one per-sample DataFrame `sample` so every statistic is
 // computed with familiar pandas/df syntax (reusing the split path's `pyStatAssign`). `.values`
 // strips each draw's random index so the columns align by position (without it a multi-column
-// DataFrame misaligns into NaN). `statDfLinePy` builds the post-loop sampling-distribution `df`
-// from the collected stat lists. Shared by genCompact + genIntegrated.
+// DataFrame misaligns into NaN). `statDfLinePy` builds the post-loop sampling-distribution
+// `samp_dist` from the collected stat lists. Shared by genCompact + genIntegrated.
 function sampleFrameLinePy(cfg, names) {
   const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}.values`);
   return `sample = pd.DataFrame({${cells.join(", ")}})`;
 }
-const statDfLinePy = stats => `df = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`;
+const statDfLinePy = stats => `samp_dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`;
 // The column expression an R compact statistic reads: the device's bare length-n vector, subset
 // to a group when the stat is conditional (`condVar`). (Python compact reads off the `sample`
 // frame via `pyStatAssign`, so this is R-only now.)
@@ -487,7 +488,7 @@ function genCompact(cfg, names, lang) {
   if (compactNeedsSm(stats)) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
   sampler.push("# Sampler — draw one sample of n (one vector per device)");
-  if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
+  if (anySource(cfg)) sampler.push(`df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push(`n = ${cfg.sampleSize}`);
   cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) sampler.push(pd); });
   cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py")));
@@ -562,7 +563,7 @@ function deviceDraw(dev, lang, pools) {
     return `(${pk}.pop(random.randrange(len(${pk}))) if ${pk} else "")`;
   }
   const src = devSource(dev);
-  if (src) return lang === "r" ? `sample(${srcCol(src, "pop", "r")}, 1)` : `${srcCol(src, "pop", "py")}.sample(1).iloc[0]`;
+  if (src) return lang === "r" ? `sample(${srcCol(src, "pop", "r")}, 1)` : `${srcCol(src, "df", "py")}.sample(1).iloc[0]`;
   const { labels, weights } = outcomeSpec(dev);
   if (!labels.length) return lang === "r" ? "NA" : "None";
   if (labels.length === 1) return lit(labels[0]);
@@ -683,7 +684,7 @@ function genSplit(cfg, names, lang) {
   // from its expanded counts. Every WoR device is now pool-backed, so there's no with-replacement
   // caveat anymore (sourced WoR used to be flagged-but-approximated).
   const tmplR = p => `${p.name}_template <- ` + (p.source ? srcCol(p.source, "pop", "r") : (p.weights.every(w => w === 1) ? vec(p.labels, "r") : `rep(${vec(p.labels, "r")}, c(${p.weights.join(", ")}))`));
-  const tmplPy = p => `${p.name}_template = list(` + (p.source ? srcCol(p.source, "pop", "py") : (p.weights.every(w => w === 1) ? vec(p.labels, "py") : `np.repeat(${vec(p.labels, "py")}, [${p.weights.join(", ")}])`)) + ")";
+  const tmplPy = p => `${p.name}_template = list(` + (p.source ? srcCol(p.source, "df", "py") : (p.weights.every(w => w === 1) ? vec(p.labels, "py") : `np.repeat(${vec(p.labels, "py")}, [${p.weights.join(", ")}])`)) + ")";
   const poolInitPy = `pools = {${pools.map(p => `${key(p.name)}: list(${p.name}_template)`).join(", ")}}`;
   const stats = withIds(plainStats(cfg), names);
   const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
@@ -772,7 +773,7 @@ function genSplit(cfg, names, lang) {
   if (needsSm) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
   sampler.push("# Sampler — draw one row through the pipeline");
-  if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
+  if (anySource(cfg)) sampler.push(`df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   if (hasPools) {
     sampler.push("# Without-replacement pools — reset per sample, then drawn with removal");
     if (until) sampler.push("# (a pool can empty before the stop rule holds; the safety cap bounds the draws)");
@@ -807,8 +808,8 @@ function genSplit(cfg, names, lang) {
   if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
   else {
     single.push("# Draw one sample, then one value per enabled statistic");
-    single.push(`df = draw_sample(${cap})`);
-    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "df", "", e => `${id} = ${e}`).forEach(t => single.push(t)));
+    single.push(`sample = draw_sample(${cap})`);
+    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "", e => `${id} = ${e}`).forEach(t => single.push(t)));
   }
 
   const collect = mk("collect");
@@ -817,15 +818,15 @@ function genSplit(cfg, names, lang) {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
-    collect.push(`    df = draw_sample(${cap})`, "sampler");
-    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "df", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t, "single")));
-    collect.push(`dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`);
+    collect.push(`    sample = draw_sample(${cap})`, "sampler");
+    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t, "single")));
+    collect.push(`samp_dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`);
   }
 
   const inference = mk("inference");
   if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
   else {
-    const lines = inferenceBody(cfg, stats, "py", e => `dist[${key(e)}]`, null);
+    const lines = inferenceBody(cfg, stats, "py", e => `samp_dist[${key(e)}]`, null);
     if (lines.length) lines.forEach(t => inference.push(t));
     else inference.push(NO_INFERENCE);
   }
@@ -847,11 +848,11 @@ function isSimple(cfg) {
 
 // The inference lines for the compact path over the collected statistics, as [text, section]
 // pairs (shared by the distributed panel and the integrated view so they can't diverge). Python
-// reads the post-loop sampling-distribution DataFrame `df` (a column per stat, already a Series,
-// so no array conversion); R reads the bare collected vectors (`mean_x`, …).
+// reads the post-loop sampling-distribution DataFrame `samp_dist` (a column per stat, already a
+// Series, so no array conversion); R reads the bare collected vectors (`mean_x`, …).
 function compactInfLines(cfg, stats, lang) {
   if (!stats[0]) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
-  const vecRef = lang === "py" ? e => `df[${key(e)}]` : e => e;
+  const vecRef = lang === "py" ? e => `samp_dist[${key(e)}]` : e => e;
   const lines = inferenceBody(cfg, stats, lang, vecRef, null);
   if (!lines.length) return [[NO_INFERENCE, "inference"]];
   return lines.map(t => [t, "inference"]);
@@ -868,7 +869,7 @@ function genIntegrated(cfg, names, lang) {
     const needsFrame = compactNeedsFrame(stats);
     if (lang === "py") { push("import pandas as pd", "sampler"); if (compactNeedsNp(cfg)) push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
-    if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
+    if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
     if (lang === "py") cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) push(pd, "sampler"); });
     if (!stats.length) { push("# Enable a statistic (click a value on the plot) to collect a distribution", "collect"); return L; }
