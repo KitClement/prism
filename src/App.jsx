@@ -3,7 +3,7 @@ import { iSm, btnNav, ctrlLbl } from "./lib/styles";
 import { uid, parseCSV, setColorBlindPalette } from "./lib/util";
 import { computeStat, statLabel, statKey, NUMERIC_FNS } from "./lib/stats";
 import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
-import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
+import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample, isRowSampleStage, pipelineColumns } from "./lib/sampling";
 import { encodeConfig, decodeConfig, checkHiddenPassword, shareURL } from "./lib/share";
 import { StageCard } from "./components/devices";
 import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
@@ -264,11 +264,12 @@ export default function App() {
   const batchCancelRef = useRef(false);
 
   // ── Invalidation helpers ──────────────────────────────────────────────────
-  // Which pipeline devices a tracked stat references — by stable device id, the same
-  // key a spec's variable/variable2/condVar fields now hold (so a sampler change can
-  // tell whether it invalidates a column).
-  const statDependsOn = (s, devId) =>
-    s.variable === devId || s.variable2 === devId || s.condVar === devId;
+  // Which pipeline stage a tracked stat references — by stable stage id. A spec's
+  // variable/variable2/condVar hold a COLUMN id, which for a row-sample stage is
+  // `${stage.id}::${headerIndex}`, so a match is the stage id itself OR a column it owns.
+  const refMatchesStage = (ref, stageId) => ref === stageId || (typeof ref === "string" && ref.startsWith(stageId + "::"));
+  const statDependsOn = (s, stageId) =>
+    refMatchesStage(s.variable, stageId) || refMatchesStage(s.variable2, stageId) || refMatchesStage(s.condVar, stageId);
   // A tracked stat stays valid only if every device it references still exists.
   // `ids` is the set of live device ids. Derived columns reference statistic columns
   // (not pipeline devices) so they are governed by `dropDependents`/`dropInvalid`.
@@ -361,29 +362,36 @@ export default function App() {
   const [manualStat, setManualStat] = useState({ fn:"mean", variable:"", target:"", condVar:"", condVal:"", variable2:"" });
   const addManualStat = () => { if (manualStat.variable) addTrackedStat(manualStat); };
 
-  // Devices (and drawn rows / stat specs) are identified by stable id; varName is
-  // display-only. `varIds` are the plot/table "headers"; `nameOf(id)` resolves the
-  // current display name (falling back to the id itself for any stray key).
-  const varIds = pipeline.map(d => d.id);
-  const nameMap = useMemo(() => Object.fromEntries(pipeline.map(d => [d.id, d.varName])), [pipeline]);
+  // Output COLUMNS of the pipeline — one per normal stage, MANY for a row-sample stage (one
+  // per CSV variable). This is the single source of truth for the plot/table "headers". A normal
+  // column's id is its stage id; a row-sample column's id is `${stage.id}::${headerIndex}`.
+  const columns = useMemo(() => pipelineColumns(pipeline), [pipeline]);
+  // `varIds` are the plot/table headers; `nameOf(id)` resolves the current display name
+  // (a stage's varName, or a row-sample column's CSV header), falling back to the id itself.
+  const varIds = columns.map(c => c.id);
+  const nameMap = useMemo(() => Object.fromEntries(columns.map(c => [c.id, c.name])), [columns]);
   const nameOf = useCallback(id => (id in nameMap ? nameMap[id] : id), [nameMap]);
-  // Authoritative num/cat kind for each sampler variable, derived from the device's
-  // DECLARED outcomes (not the drawn rows), so a plot's type can't silently flip when a
-  // rare non-numeric outcome first appears. Keyed by device id. Sampler plots use this;
-  // EDA keeps colKind.
+  // Authoritative num/cat kind for each sampler column, keyed by column id. A normal column's
+  // kind comes from the device's DECLARED outcomes (so a plot's type can't flip when a rare
+  // non-numeric outcome first appears); a row-sample column uses colKind over its snapshot.
   const varKinds = useMemo(
-    () => Object.fromEntries(pipeline.map(d => [d.id, stageVarKind(d)])),
-    [pipeline]
+    () => Object.fromEntries(columns.map(c => [c.id, c.kind])),
+    [columns]
   );
+  // Whether the pipeline is a row-resampling (case) sampler. Gates add-device, run-until, and
+  // sharing (the embedded snapshot would bloat/break share links).
+  const hasRowSample = useMemo(() => pipeline.some(isRowSampleStage), [pipeline]);
   // A2 guard: a device name is invalid if it is blank/whitespace-only or exactly matches
   // another device's name. Invalid names flag red and block "Draw Sample". (Id-keying
   // already keeps same-named columns distinct; this is the user-facing warning so a
   // malformed, ambiguous sample isn't drawn in the first place.)
   const invalidNameIds = useMemo(() => {
-    const trimmed = pipeline.map(d => (d.varName || "").trim());
+    // Row-sample stages name their columns from CSV headers (not the editable varName), so they
+    // are exempt from the unique/non-blank device-name rule.
+    const trimmed = pipeline.map(d => isRowSampleStage(d) ? null : (d.varName || "").trim());
     const counts = {};
     trimmed.forEach(n => { if (n) counts[n] = (counts[n] || 0) + 1; });
-    return new Set(pipeline.filter((d, i) => trimmed[i] === "" || counts[trimmed[i]] > 1).map(d => d.id));
+    return new Set(pipeline.filter((d, i) => trimmed[i] !== null && (trimmed[i] === "" || counts[trimmed[i]] > 1)).map(d => d.id));
   }, [pipeline]);
   const hasNameError = invalidNameIds.size > 0;
   // Label any tracked column (plain stat → statLabel; derived → its expression
@@ -439,14 +447,16 @@ export default function App() {
     const old = pipeline[i];
     const structural = samplingShape(old) !== samplingShape(st);
     const dependent = trackedStats.some(s => statDependsOn(s, old.id));
-    // Stage ids never change on an edit, so the live-id set is just the current pipeline.
-    const liveIds = pipeline.map(s => s.id);
+    // Post-edit pipeline + its live COLUMN ids (a row-sample stage owns many columns; an edit
+    // can also change which columns exist — e.g. reverting to a normal mixer).
+    const postPipeline = pipeline.map((s, j) => j === i ? st : s);
+    const liveIds = pipelineColumns(postPipeline).map(c => c.id);
     // Outcome edits can flip a variable's kind (numeric ↔ categorical) — even a pure
     // relabel ("5" → "x") that samplingShape ignores. Apply outcome-relabel propagation
     // first, then find numeric-only stats (mean/SD/…) orphaned because their variable is
     // no longer numeric, so they're dropped rather than silently computing over text.
     const renamed = propagateRenames(trackedStats, old, st);
-    const newKinds = Object.fromEntries(pipeline.map((s, j) => { const ns = j === i ? st : s; return [ns.id, stageVarKind(ns)]; }));
+    const newKinds = Object.fromEntries(pipelineColumns(postPipeline).map(c => [c.id, c.kind]));
     const orphanIds = renamed.filter(s => statKindInvalid(s, newKinds)).map(s => s.id);
     // Distribution-structure guard: only a change to *what gets drawn* (counts,
     // probabilities, with/without replacement, branches, adding/removing outcomes) clears
@@ -494,7 +504,7 @@ export default function App() {
       if (!window.confirm("Removing this column deletes the statistics already collected in the table, and any tracked column or branch that depends on it. Continue?")) { rejectEdit(); return; }
       clearCollected();
     }
-    const liveIds = pipeline.filter((_, j) => j !== i).map(s => s.id);
+    const liveIds = pipelineColumns(pipeline.filter((_, j) => j !== i)).map(c => c.id);
     setTrackedStats(ts => dropInvalid(ts, liveIds));
     setPipeline(p => p.filter((_, j) => j !== i).map(s => {
       // Drop any branch that conditioned on the removed stage; the default branch
@@ -747,14 +757,20 @@ export default function App() {
             </>
           ) : (
             <>
-              {[["stacks", "Stacks"], ["mixer", "Mixer"], ["spinner", "Spinner"]].map(([t, l]) => (
-                <button data-no-capture="1" key={t} onClick={() => addStage(t)} disabled={sampling}
-                  style={{ padding:"4px 10px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:7, fontSize:13, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--text-2)", opacity:sampling?0.5:1 }}>+ {l}</button>
-              ))}
-              <button data-no-capture="1" onClick={() => doShare()} disabled={sampling} title="Copy a link that regenerates this sampler"
-                style={{ padding:"4px 10px", background:"var(--accent-soft)", border:"1.5px solid var(--accent-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--accent-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔗 Share</button>
-              <button data-no-capture="1" onClick={shareLocked} disabled={sampling} title="Copy a password-protected link (contents concealed until the password is entered)"
-                style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid var(--purple-soft-bd)", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"var(--text-faint)":"var(--purple-ink)", fontWeight:600, opacity:sampling?0.5:1 }}>🔒 Share Locked</button>
+              {[["stacks", "Stacks"], ["mixer", "Mixer"], ["spinner", "Spinner"]].map(([t, l]) => {
+                const dis = sampling || hasRowSample;
+                return (
+                <button data-no-capture="1" key={t} onClick={() => addStage(t)} disabled={dis}
+                  title={hasRowSample ? "A row-resampling sampler stands alone — revert it to a normal mixer to add devices" : undefined}
+                  style={{ padding:"4px 10px", background:"var(--surface-3)", border:"1.5px dashed var(--border-2)", borderRadius:7, fontSize:13, cursor:dis?"not-allowed":"pointer", color:dis?"var(--text-faint)":"var(--text-2)", opacity:dis?0.5:1 }}>+ {l}</button>
+                );
+              })}
+              <button data-no-capture="1" onClick={() => doShare()} disabled={sampling || hasRowSample}
+                title={hasRowSample ? "Row-resampling samplers embed your dataset and can't be shared" : "Copy a link that regenerates this sampler"}
+                style={{ padding:"4px 10px", background:"var(--accent-soft)", border:"1.5px solid var(--accent-soft-bd)", borderRadius:7, fontSize:12, cursor:(sampling||hasRowSample)?"not-allowed":"pointer", color:(sampling||hasRowSample)?"var(--text-faint)":"var(--accent-ink)", fontWeight:600, opacity:(sampling||hasRowSample)?0.5:1 }}>🔗 Share</button>
+              <button data-no-capture="1" onClick={shareLocked} disabled={sampling || hasRowSample}
+                title={hasRowSample ? "Row-resampling samplers embed your dataset and can't be shared" : "Copy a password-protected link (contents concealed until the password is entered)"}
+                style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid var(--purple-soft-bd)", borderRadius:7, fontSize:12, cursor:(sampling||hasRowSample)?"not-allowed":"pointer", color:(sampling||hasRowSample)?"var(--text-faint)":"var(--purple-ink)", fontWeight:600, opacity:(sampling||hasRowSample)?0.5:1 }}>🔒 Share Locked</button>
               <CopyImageButton targetRef={samplerRef} style={{ marginLeft:0 }} label="⧉ Copy image"
                 title="Copy an image of the sampler (devices + run settings) to the clipboard" />
             </>
@@ -773,11 +789,12 @@ export default function App() {
                 <span>slow</span><span>fast</span><span>instant</span>
               </div>
             </div>
-            <select value={runMode} onChange={e => changeRunMode(e.target.value)} disabled={sampling} style={iSm} aria-label="Run mode">
+            <select value={hasRowSample ? "fixed" : runMode} onChange={e => changeRunMode(e.target.value)} disabled={sampling || hasRowSample} style={iSm} aria-label="Run mode"
+              title={hasRowSample ? "Run-until isn't available for a row-resampling sampler" : undefined}>
               <option value="fixed">Repeat n</option>
-              <option value="until">Run until…</option>
+              <option value="until" disabled={hasRowSample}>Run until…</option>
             </select>
-            {runMode === "fixed" ? (
+            {(runMode === "fixed" || hasRowSample) ? (
               <label style={ctrlLbl}>n =
                 <NumInput value={sampleSize} min={1} max={10000} round={0}
                   onChange={v => changeSampleSize(v)}
@@ -851,7 +868,8 @@ export default function App() {
               ) : (
                 <StageCard stage={stage} index={i} total={pipeline.length} upstreamStages={pipeline.slice(0, i)}
                   nameOf={nameOf} onChange={st => updStage(i, st)} onRemove={() => remStage(i)} onMove={movStage}
-                  animStates={animStates} locked={sampling} nameError={invalidNameIds.has(stage.id)} dataset={dataset} />
+                  animStates={animStates} locked={sampling} nameError={invalidNameIds.has(stage.id)} dataset={dataset}
+                  casesEligible={pipeline.length === 1 && !!dataset} />
               )}
               {i < pipeline.length - 1 && <div style={{ alignSelf:"center", color:"#ccc", fontSize:20, flexShrink:0 }}>→</div>}
             </div>

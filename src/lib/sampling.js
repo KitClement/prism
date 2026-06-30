@@ -1,4 +1,4 @@
-import { uid, sleep, parseTimeToMinutes } from "./util";
+import { uid, sleep, parseTimeToMinutes, colKind } from "./util";
 
 // ─── Outcome classification ─────────────────────────────────────────────────────
 // Extract the declared outcome labels from a single device.
@@ -38,6 +38,41 @@ function stageOutcomes(stage) {
     if (!seen.has(s)) { seen.add(s); out.push(s); }
   }));
   return out;
+}
+
+// ─── Row-resampling (case resampling) ─────────────────────────────────────────
+// A row-sample mixer carries `device.rowSample = { headers, rows, dataset }` — an embedded
+// snapshot of an EDA dataset. Its balls are observation numbers; drawing a ball brings the
+// WHOLE case (every CSV variable) into the sample, so one stage emits MANY columns. It's a
+// standalone mode of the first/only mixer (no forks, never a condition variable).
+function rowSampleDevice(stage) {
+  if (!stage || !stage.branches) return null;
+  const def = stage.branches.find(b => b.condVar === null) || stage.branches[0];
+  const dev = def && def.device;
+  return dev && dev.rowSample ? dev : null;
+}
+const isRowSampleStage = stage => !!rowSampleDevice(stage);
+
+// The OUTPUT COLUMNS of a stage — the single source of truth for "what columns this stage
+// produces". A normal stage owns one column (its stable stage id). A row-sample stage owns one
+// column per CSV header, keyed by `${stage.id}::${headerIndex}` (stable across draws). Row-sample
+// column kinds use colKind (the EDA 80% rule) since they describe real data, not declared outcomes.
+function stageColumns(stage) {
+  const dev = rowSampleDevice(stage);
+  if (dev) {
+    const { headers, rows } = dev.rowSample;
+    return headers.map((h, idx) => ({ id: stage.id + "::" + idx, name: h, header: h, stageId: stage.id, kind: colKind(rows, h) }));
+  }
+  return [{ id: stage.id, name: stage.varName, stageId: stage.id, kind: stageVarKind(stage) }];
+}
+// Flatten every stage's output columns into the pipeline-wide column list (plot/table headers).
+function pipelineColumns(pipeline) { return (pipeline || []).flatMap(stageColumns); }
+
+// Write a row-sample stage's columns from a drawn ball index (the matching CSV case). A null/out-
+// of-range index (empty pool) writes blanks. Shared by both draw paths so they can't diverge.
+function writeRowSampleCols(row, stageId, dev, ballIdx) {
+  const srcRow = (ballIdx != null && ballIdx >= 0) ? dev.rowSample.rows[ballIdx] : null;
+  dev.rowSample.headers.forEach((h, ci) => { row[stageId + "::" + ci] = srcRow ? (srcRow[h] != null ? srcRow[h] : "") : ""; });
 }
 
 // ─── Stages & branches ──────────────────────────────────────────────────────────
@@ -154,6 +189,17 @@ function drawValueFromDevice(dev, state) {
 function drawStageValue(stage, row, state) {
   return drawValueFromDevice(selectBranch(stage, row).device, state);
 }
+// Draw one stage into `row`, writing one key (normal) or many (row-sample). Single source of
+// truth for the batch path; the animation loop mirrors this inline (constraint #1).
+function applyStageDraw(stage, row, state) {
+  const rs = rowSampleDevice(stage);
+  if (rs) {
+    const d = drawMixer(rs, state); // { label, ballIdx } | null
+    writeRowSampleCols(row, stage.id, rs, d ? d.ballIdx : null);
+    return;
+  }
+  row[stage.id] = drawStageValue(stage, row, state);
+}
 
 // ─── Stop-until rule ────────────────────────────────────────────────────────────
 // In "until" mode a sample keeps drawing rows until the rule holds (checked against the
@@ -184,7 +230,7 @@ function drawSample(pipeline, sampleSize, opts) {
     else if (stopReached(rows, rule) || s >= cap) break;
     const row = { _id: uid(), _sample: s + 1 };
     // Build the row incrementally so a downstream stage's branch sees upstream values.
-    pipeline.forEach(stage => { row[stage.id] = drawStageValue(stage, row, state); });
+    pipeline.forEach(stage => applyStageDraw(stage, row, state));
     rows.push(row);
     s++;
   }
@@ -258,6 +304,7 @@ async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, spee
       stage.branches.forEach(b => { if (b.device.id !== dev.id) set(b.device.id, { inactive:true, result:null, animating:false }); });
       set(dev.id, { inactive:false });
       let result = "";
+      let pickedBallIdx = null; // row-sample: the drawn case index, written as many columns below
 
       if (dev.type === "spinner") {
         result = sampleSpinner(dev.slices);
@@ -322,8 +369,13 @@ async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, spee
       } else if (dev.type === "mixer") {
         const removed = drawnSets[dev.id];
         const avail = dev.balls.map((b, i) => i).filter(i => dev.withReplacement || !removed.has(i));
-        if (!avail.length) { set(dev.id, { result:"—" }); row[stage.id] = ""; continue; }
+        if (!avail.length) {
+          set(dev.id, { result:"—" });
+          if (dev.rowSample) writeRowSampleCols(row, stage.id, dev, null); else row[stage.id] = "";
+          continue;
+        }
         const pickedIdx = avail[Math.floor(Math.random() * avail.length)];
+        pickedBallIdx = pickedIdx;
         result = dev.balls[pickedIdx].label;
         if (delay > 0) {
           set(dev.id, { bouncing:true, surfaceIdx:null, result:null, removedSet:new Set(removed) });
@@ -339,7 +391,10 @@ async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, spee
           set(dev.id, { result, removedSet:new Set(removed), bouncing:false });
         }
       }
-      row[stage.id] = result; // keyed by the stage's stable id (see drawSample)
+      // A row-sample stage writes one column per CSV variable from the drawn case; a normal
+      // stage writes its single value keyed by the stage's stable id (see drawSample).
+      if (dev.rowSample) writeRowSampleCols(row, stage.id, dev, pickedBallIdx);
+      else row[stage.id] = result;
     }
 
     collected.push({ ...row });
@@ -361,4 +416,5 @@ export {
   sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, deviceVarKind,
   deviceLabels, stageVarKind, stageOutcomes, mkStage, toStages, migratePipeline, rekeyStats, rekeyStopRule, selectBranch, stopReached,
   mkSpinner, mkStacks, mkMixer, runAnimatedSample,
+  rowSampleDevice, isRowSampleStage, stageColumns, pipelineColumns,
 };

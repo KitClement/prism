@@ -913,8 +913,133 @@ function hideSampler(lines) {
   return out;
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  ROW-RESAMPLING (CASE) PATH — bootstrap: resample whole rows of a data frame    ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+// A row-sample mixer carries `device.rowSample = { headers, rows, dataset }` (see lib/sampling).
+// One stage produces MANY columns (one per CSV variable), so the code reads the dataset into a
+// frame and resamples its rows — `df[sample(nrow(df), n), ]` (R) / `df.sample(n)` (Python) —
+// rather than drawing per device. Statistics read the drawn frame `samp` by CSV-header column.
+
+// The row-sample stage's columns: { headers, map (colId → header), withReplacement, file }.
+function rowSampleCols(cfg) {
+  const st = (cfg.pipeline || []).find(s => {
+    const def = (s.branches || []).find(b => b.condVar === null) || (s.branches || [])[0];
+    return def && def.device && def.device.rowSample;
+  });
+  if (!st) return null;
+  const def = st.branches.find(b => b.condVar === null) || st.branches[0];
+  const dev = def.device, rsd = dev.rowSample;
+  const map = {};
+  rsd.headers.forEach((h, ci) => { map[st.id + "::" + ci] = h; });
+  return { headers: rsd.headers, map, withReplacement: dev.withReplacement !== false, file: rsd.dataset || "data.csv" };
+}
+const isRowSample = cfg => !!rowSampleCols(cfg);
+// A drawn-frame column reference: R `samp$h` / `samp[["h"]]` (non-syntactic), Python `samp["h"]`.
+function rsColRef(colId, rsc, lang) {
+  const h = rsc.map[colId];
+  if (h == null) return lang === "r" ? "NA" : "float('nan')";
+  if (lang === "r") return /^[A-Za-z.][A-Za-z0-9._]*$/.test(h) ? `samp$${h}` : `samp[[${JSON.stringify(h)}]]`;
+  return `samp[${JSON.stringify(h)}]`;
+}
+// One statistic as a value expression over the drawn frame `samp`. Regression fits over the two
+// header columns (R lm on the column refs; Python np.polyfit so arbitrary headers need no formula).
+function rsStatExpr(s, rsc, lang) {
+  if (s.fn === "slope" || s.fn === "intercept") {
+    if (lang === "r") {
+      const xref = rsColRef(s.variable, rsc, "r"), yref = rsColRef(s.variable2, rsc, "r");
+      return `unname(coef(lm(${yref} ~ ${xref}))[${s.fn === "slope" ? 2 : 1}])`;
+    }
+    return `np.polyfit(${rsColRef(s.variable, rsc, "py")}, ${rsColRef(s.variable2, rsc, "py")}, 1)[${s.fn === "slope" ? 0 : 1}]`;
+  }
+  const v = rsColRef(s.variable, rsc, lang);
+  if (s.condVar) {
+    const cond = rsColRef(s.condVar, rsc, lang);
+    return lang === "r" ? vStat(s, `${v}[${cond} == ${lit(s.condVal)}]`, "r") : vStat(s, `${v}[(${cond} == ${lit(s.condVal)})]`, "py");
+  }
+  return vStat(s, v, lang);
+}
+// The resample line (single sample). Faithfully reflects the device's replacement flag — a
+// row-sample is trivially expressible either way (unlike pool devices, no with-replacement caveat).
+function rsDrawLine(rsc, lang) {
+  const wr = rsc.withReplacement;
+  return lang === "r"
+    ? `samp <- df[sample(nrow(df), n, replace = ${wr ? "TRUE" : "FALSE"}), ]`
+    : `samp = df.sample(n, replace=${wr ? "True" : "False"}, ignore_index=True)`;
+}
+function genRowSample(cfg, lang) {
+  const rsc = rowSampleCols(cfg);
+  // Result-vector identifiers (statId) use safe header identifiers; column refs use the raw header.
+  const names = {}; Object.keys(rsc.map).forEach(colId => { names[colId] = safeName(rsc.map[colId]); });
+  const stats = withIds(plainStats(cfg), names);
+  const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
+  const R = lang === "r", ind = R ? "  " : "    ";
+  const drawLine = rsDrawLine(rsc, lang);
+  const inf = compactInfLines(cfg, stats, lang);
+  const anyReg = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+  const needsNp = !R && (anyReg || inf.some(([t]) => t.includes("np.")));
+
+  const sampler = mk("sampler");
+  if (!R) { sampler.push("import pandas as pd"); if (needsNp) sampler.push("import numpy as np"); sampler.push(""); }
+  sampler.push("# Sampler — resample whole rows (cases) from the dataset");
+  sampler.push(R ? `df <- read.csv(${JSON.stringify(rsc.file)})` : `df = pd.read_csv(${JSON.stringify(rsc.file)})`);
+  sampler.push(R ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`);
+  sampler.push(drawLine);
+
+  const single = mk("single");
+  if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(R ? `${id} <- ${rsStatExpr(s, rsc, "r")}` : `${id} = ${rsStatExpr(s, rsc, "py")}`)); }
+
+  const collect = mk("collect");
+  if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
+  else {
+    collect.push(R ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`);
+    stats.forEach(({ id }) => collect.push(R ? `${id} <- numeric(N)` : `${id} = []`));
+    collect.push(R ? "for (i in 1:N) {" : "for i in range(N):");
+    collect.push(ind + drawLine);
+    stats.forEach(({ s, id }) => collect.push(ind + (R ? `${id}[i] <- ${rsStatExpr(s, rsc, "r")}` : `${id}.append(${rsStatExpr(s, rsc, "py")})`)));
+    if (R) collect.push("}"); else collect.push(statDfLinePy(stats));
+  }
+
+  const inference = mk("inference");
+  inf.forEach(([t]) => inference.push(t));
+  return { sampler, single, collect, inference };
+}
+// The row-sample one-script view (mirrors genIntegrated's compact branch): the resample draw (★)
+// and statistics (●) nest inside the green (▲) for-loop, then inference (■).
+function genRowSampleIntegrated(cfg, lang) {
+  const rsc = rowSampleCols(cfg);
+  const names = {}; Object.keys(rsc.map).forEach(colId => { names[colId] = safeName(rsc.map[colId]); });
+  const stats = withIds(plainStats(cfg), names);
+  const R = lang === "r", ind = R ? "  " : "    ";
+  const drawLine = rsDrawLine(rsc, lang);
+  const inf = compactInfLines(cfg, stats, lang);
+  const anyReg = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+  const needsNp = !R && (anyReg || inf.some(([t]) => t.includes("np.")));
+  const L = [], push = (text, section) => L.push({ text, section });
+  if (!R) { push("import pandas as pd", "sampler"); if (needsNp) push("import numpy as np", "sampler"); push("", "sampler"); }
+  push("# Set up the sampler — resample whole rows (cases)", "sampler");
+  push(R ? `df <- read.csv(${JSON.stringify(rsc.file)})` : `df = pd.read_csv(${JSON.stringify(rsc.file)})`, "sampler");
+  push(R ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
+  if (!stats.length) { push("# Enable a statistic (click a value on the plot) to collect a distribution", "collect"); return L; }
+  push(R ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
+  stats.forEach(({ id }) => push(R ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
+  push(R ? "for (i in 1:N) {" : "for i in range(N):", "collect");
+  push(ind + drawLine, "sampler");
+  stats.forEach(({ s, id }) => push(ind + (R ? `${id}[i] <- ${rsStatExpr(s, rsc, "r")}` : `${id}.append(${rsStatExpr(s, rsc, "py")})`), "single"));
+  if (R) push("}", "collect"); else push(statDfLinePy(stats), "collect");
+  push("", "inference");
+  inf.forEach(([t, sec]) => push(t, sec));
+  return L;
+}
+
 export function generateCode(cfg, lang) {
   const language = lang === "python" ? "py" : "r";
+  if (isRowSample(cfg)) {
+    const secs = genRowSample(cfg, language);
+    const integrated = cfg.hidden ? hideSampler(genRowSampleIntegrated(cfg, language)) : genRowSampleIntegrated(cfg, language);
+    return { ...secs, integrated };
+  }
   const names = buildNames(cfg.pipeline || []);
   const { sampler, single, collect, inference } =
     isSimple(cfg) ? genCompact(cfg, names, language) : genSplit(cfg, names, language);

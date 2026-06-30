@@ -22,12 +22,15 @@ const PEPPER = "tinkersim-veil-v1";
 // panel can emit read.csv). But the recipient of a shared link has no CSV — so we strip
 // `source` here, hard-coding the data: the literal items/balls already populated by the fill
 // stay, the sampler runs identically, and generated code inlines a literal vector (no read.csv).
+// Also drop `rowSample` (the embedded dataset snapshot of a row-resampling mixer): the UI
+// already disables sharing for those samplers, and a snapshot would bloat/break the URL. This
+// is a defensive strip so a stray encode can never embed a dataset.
 function stripSource(pipeline) {
   return (pipeline || []).map(st => ({
     ...st,
     branches: (st.branches || []).map(b => {
-      if (!b.device || !b.device.source) return b;
-      const { source, ...device } = b.device;
+      if (!b.device || (!b.device.source && !b.device.rowSample)) return b;
+      const { source, rowSample, ...device } = b.device;
       return { ...b, device };
     }),
   }));

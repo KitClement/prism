@@ -580,7 +580,18 @@ function StacksDevice({ device, onChange, animState, dataset }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // MIXER COMPONENT
 // ══════════════════════════════════════════════════════════════════════════════
-function MixerDevice({ device, onChange, animState, dataset }) {
+// Turn a mixer into a ROW-RESAMPLING device: balls become observation numbers (1…N) and a
+// snapshot of the dataset rides along, so a draw brings a whole case (every variable) into the
+// sample. Defaults to with replacement (the bootstrap convention).
+function buildRowSampleDevice(device, dataset) {
+  const headers = dataset.headers.slice();
+  const rows = dataset.rows.map(r => { const o = {}; headers.forEach(h => { o[h] = r[h]; }); return o; });
+  const balls = rows.map((_, i) => ({ id: uid(), label: String(i + 1), color: "#6366f1" }));
+  return { ...device, balls, withReplacement: true, source: undefined, rowSample: { headers, rows, dataset: dataset.name } };
+}
+
+function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
+  const rs = device.rowSample || null; // row-resampling mode: a dataset snapshot rides along
   const BOWL_W = 190, BOWL_H = 108;
   // Manual content edits break any CSV link — drop `source` so codegen reverts to a literal
   // vector. Only Fill-from-data sets it. Color/replacement keep the live `onChange`.
@@ -740,9 +751,25 @@ function MixerDevice({ device, onChange, animState, dataset }) {
         })}
       </div>
       <div style={{ fontSize:12, color:"var(--text-faint)", textAlign:"center", marginBottom:4 }}>
-        {device.balls.length} ball{device.balls.length !== 1 ? "s" : ""}
+        {rs ? `${device.balls.length} case${device.balls.length !== 1 ? "s" : ""}` : `${device.balls.length} ball${device.balls.length !== 1 ? "s" : ""}`}
       </div>
 
+      {rs ? (
+        <div>
+          <div style={{ fontSize:12, color:"var(--text-2)", marginBottom:6 }}>
+            Resampling whole cases{rs.dataset ? " from " + rs.dataset : ""} — each draw brings one observation's value for every variable.
+          </div>
+          <div style={{ fontSize:12, color:"var(--text-faint)", marginBottom:4 }}>Variables ({rs.headers.length}):</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:4, marginBottom:8, maxHeight:84, overflowY:"auto" }}>
+            {rs.headers.map(h => (
+              <span key={h} style={{ fontSize:12, fontFamily:"monospace", padding:"1px 6px", borderRadius:10, background:"var(--xsel-cell)", color:"var(--accent-ink)", border:"1px solid #a5b4fc" }}>{h}</span>
+            ))}
+          </div>
+          <button onClick={() => onChange({ ...device, rowSample: undefined, balls: mkMixer(1).balls })}
+            style={{ ...btnPlus, color:"#e74c3c", borderColor:"#f5b7b1", background:"var(--surface-2)" }}>✕ Use as a normal mixer</button>
+        </div>
+      ) : (
+      <>
       <div style={{ display:"flex", flexDirection:"column", gap:3, maxHeight:120, overflowY:"auto" }}>
         {grouped.map(group => (
           <div key={group.label} style={{ display:"flex", alignItems:"center", gap:3 }}>
@@ -777,12 +804,14 @@ function MixerDevice({ device, onChange, animState, dataset }) {
         <FillFromData dataset={dataset} onFill={(vals, varName, dsName) => {
           const cm = {}; [...new Set(vals)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; });
           onChange({ ...device, balls:vals.map(label => ({ id:uid(), label, color:cm[label] })), source:{ dataset:dsName, var:varName } });
-        }} />
+        }} onSelectCases={casesEligible && dataset ? () => onChange(buildRowSampleDevice(device, dataset)) : undefined} />
       </div>
       {rangeOpen && (
         <RangeInput
           onApply={items => { const cm = {}; [...new Set(items)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; }); editClear({ ...device, balls:items.map(label => ({ id:uid(), label, color:cm[label] })) }); setRangeOpen(false); }}
           onClose={() => setRangeOpen(false)} />
+      )}
+      </>
       )}
       <ReplacementToggle device={device} onChange={onChange} />
     </div>
@@ -884,7 +913,7 @@ function cloneDeviceFresh(dev) {
 const mkDeviceOfType = type => ({ spinner:mkSpinner, stacks:mkStacks, mixer:mkMixer }[type] || mkStacks)(1);
 
 // The body of one branch: result badge + the device editor, dimmable when not selected.
-function BranchDeviceBody({ device, onChange, animState, locked, dataset }) {
+function BranchDeviceBody({ device, onChange, animState, locked, dataset, casesEligible }) {
   const [spinnerReady, setSpinnerReady] = useState(false);
   const drawId = animState && animState.drawId;
   const isAnimating = animState && animState.animating;
@@ -903,7 +932,7 @@ function BranchDeviceBody({ device, onChange, animState, locked, dataset }) {
       </div>
       {device.type === "spinner" && <SpinnerDevice device={device} onChange={edit} animState={animState} onSpinReady={() => setSpinnerReady(true)} />}
       {device.type === "stacks" && <StacksDevice device={device} onChange={edit} animState={animState} dataset={dataset} />}
-      {device.type === "mixer" && <MixerDevice device={device} onChange={edit} animState={animState} dataset={dataset} />}
+      {device.type === "mixer" && <MixerDevice device={device} onChange={edit} animState={animState} dataset={dataset} casesEligible={casesEligible} />}
     </div>
   );
 }
@@ -932,7 +961,7 @@ function BranchConditionEditor({ branch, upstreamStages, nameOf, onChange, locke
 
 const DTYPE_OPTS = [["stacks","Stacks"], ["mixer","Mixer"], ["spinner","Spinner"]];
 
-function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRemove, onMove, animStates, locked, nameError, dataset }) {
+function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRemove, onMove, animStates, locked, nameError, dataset, casesEligible }) {
   const branches = stage.branches;
   const forked = branches.length > 1;
   const canFork = upstreamStages.length > 0; // need an upstream stage to condition on
@@ -1002,7 +1031,8 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
               </div>
             )}
             <BranchDeviceBody device={branch.device} animState={animStates[branch.device.id] || null}
-              locked={locked} onChange={dev => setBranchDevice(branch.id, dev)} dataset={dataset} />
+              locked={locked} onChange={dev => setBranchDevice(branch.id, dev)} dataset={dataset}
+              casesEligible={casesEligible && !forked} />
           </div>
         );
       })}

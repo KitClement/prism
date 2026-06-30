@@ -50,7 +50,9 @@ function ReplacementToggle({ device, onChange }) {
 // select listing the dataset's headers. Picking a column hands its raw values to `onFill`
 // along with the column name + dataset name, so the device can stamp a `source` link the
 // codegen reads (read.csv / pd.read_csv). Disabled with a hint when no dataset is loaded.
-function FillFromData({ dataset, onFill }) {
+// `onSelectCases` (optional, mixer only) adds a "Select entire cases" choice that turns the
+// device into a row-resampling sampler (one draw = one whole observation, all variables).
+function FillFromData({ dataset, onFill, onSelectCases }) {
   const headers = (dataset && dataset.headers) || [];
   if (!headers.length) return (
     <button disabled title="Upload a CSV in Data & Exploratory Analysis first"
@@ -62,12 +64,14 @@ function FillFromData({ dataset, onFill }) {
     <select value="" title="Fill this device from a CSV column"
       onChange={e => {
         const h = e.target.value; if (!h) return;
+        if (h === "__cases__") { onSelectCases && onSelectCases(); e.target.value = ""; return; }
         const vals = dataset.rows.map(r => r[h]).filter(v => v !== undefined && v !== "");
         onFill(vals, h, dataset.name);
         e.target.value = "";
       }}
       style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)", cursor:"pointer" }}>
       <option value="">Fill from data…</option>
+      {onSelectCases && <option value="__cases__">Select entire cases (all variables)</option>}
       {headers.map(h => <option key={h} value={h}>{h}</option>)}
     </select>
   );

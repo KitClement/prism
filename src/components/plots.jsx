@@ -1581,6 +1581,12 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
   const scrollRef = useRef(null);
   const [visRows, setVisRows] = useState(WIN_ROWS);
   const [visCols, setVisCols] = useState(WIN_COLS);
+  // Spreadsheet-style editing (editable mode): one focused-cell buffer + a ref registry so
+  // keyboard navigation can focus a target cell. `pendingFocus` defers focusing a cell that
+  // doesn't exist yet (just-created row/column, or one past the current window) until it mounts.
+  const [editing, setEditing] = useState(null);     // { key, text } | null  (key = rowIdheader)
+  const cellRefs = useRef({});
+  const [pendingFocus, setPendingFocus] = useState(null);
   // Reset the window when a new dataset loads (header signature changes); clamp so editing —
   // which rebuilds the same-length arrays each keystroke — never collapses the view.
   useEffect(() => { setVisRows(WIN_ROWS); setVisCols(WIN_COLS); }, [headers.join("")]);
@@ -1609,8 +1615,67 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
   const headBg = h => h === xVar ? "var(--xsel-head)" : (h === yVar ? "var(--ysel-head)" : "var(--stathdr-bg)");
 
   // ── Edit helpers (editable mode): each rebuilds {headers, rows} and calls onChange ──
-  const editCell = (id, h, v) => onChange(headers, rows.map(r => r._id === id ? { ...r, [h]: v } : r));
   const uniqueHeader = base => { let n = base, i = 1; while (headers.includes(n)) n = `${base}${++i}`; return n; };
+
+  // ── Spreadsheet keyboard navigation (editable body cells) ──
+  // Cell identity: a header can be arbitrary text, so join with a control char a header/id won't
+  // contain. The focused input shows the live buffer; every other cell shows its stored value.
+  const SEP = "";
+  const keyFor = (rid, h) => rid + SEP + h;
+  const isFocused = (rid, h) => !!editing && editing.key === keyFor(rid, h);
+  // Apply the focused cell's buffer to a fresh rows array (without calling onChange yet), so a
+  // navigation that ALSO creates a row/column can commit + create in a single onChange.
+  const rowsWithCommit = () => {
+    if (!editing) return rows;
+    const i = editing.key.indexOf(SEP);
+    const rid = editing.key.slice(0, i), h = editing.key.slice(i + 1);
+    return rows.map(r => r._id === rid ? { ...r, [h]: editing.text } : r);
+  };
+  const commitOnly = () => { if (editing) { onChange(headers, rowsWithCommit()); setEditing(null); } };
+  // Move focus to the cell at full-array indices (tr, tc), growing the window to include it.
+  const moveTo = (tr, tc) => {
+    onChange(headers, rowsWithCommit()); setEditing(null);
+    if (tr >= visRows) setVisRows(Math.min(rows.length, tr + 1));
+    if (tc >= visCols) setVisCols(Math.min(headers.length, tc + 1));
+    setPendingFocus(keyFor(rows[tr]._id, headers[tc]));
+  };
+  const onCellKeyDown = (e, r, c, rid, h) => {
+    const lastRow = rows.length - 1, lastCol = headers.length - 1, el = e.target;
+    if (e.key === "ArrowUp") { if (r > 0) { e.preventDefault(); moveTo(r - 1, c); } return; }
+    if (e.key === "ArrowDown") { if (r < lastRow) { e.preventDefault(); moveTo(r + 1, c); } return; }
+    // Left/Right move a cell only at the field edge, so you can still edit within a cell.
+    if (e.key === "ArrowLeft") { if (el.selectionStart === 0 && el.selectionEnd === 0 && c > 0) { e.preventDefault(); moveTo(r, c - 1); } return; }
+    if (e.key === "ArrowRight") { if (el.selectionStart === el.value.length && el.selectionEnd === el.value.length && c < lastCol) { e.preventDefault(); moveTo(r, c + 1); } return; }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (e.shiftKey) { if (c > 0) moveTo(r, c - 1); return; }
+      if (c < lastCol) { moveTo(r, c + 1); return; }
+      // Past the right edge → create a new column and step into it on this row.
+      const name = uniqueHeader("col");
+      const committed = rowsWithCommit().map(rr => ({ ...rr, [name]: "" }));
+      setEditing(null); onChange([...headers, name], committed);
+      setVisCols(headers.length + 1); setPendingFocus(keyFor(rid, name));
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (r < lastRow) { moveTo(r + 1, c); return; }
+      // Past the bottom → create a new row and step into it in this column.
+      const id = uid();
+      const committed = [...rowsWithCommit(), { _id: id, ...Object.fromEntries(headers.map(hh => [hh, ""])) }];
+      setEditing(null); onChange(headers, committed);
+      setVisRows(rows.length + 1); setPendingFocus(keyFor(id, h));
+      return;
+    }
+    if (e.key === "Escape") { setEditing(null); el.blur(); }
+  };
+  // Focus a pending target once it has rendered (after a window grow or a row/column creation).
+  // Leaves `pendingFocus` set until the element exists, so a later render retries.
+  useEffect(() => {
+    if (!pendingFocus) return;
+    const el = cellRefs.current[pendingFocus];
+    if (el) { el.focus(); if (el.select) el.select(); setPendingFocus(null); }
+  }, [pendingFocus, visRows, visCols, rows, headers]);
   const renameHeader = (oldH, raw) => {
     const newH = raw.trim();
     if (!newH || newH === oldH || headers.includes(newH)) return; // ignore empty/duplicate
@@ -1663,9 +1728,20 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
                   {editable && <button title="Delete row" onClick={e => { e.stopPropagation(); delRow(r._id); }} style={{ ...btnX, fontSize:12, marginRight:2 }}>×</button>}
                   {i + 1}
                 </td>
-                {visHeaders.map(h => (
+                {visHeaders.map((h, ci) => (
                   <td key={h} style={{ padding:"3px 8px", color:"var(--text-2)", background:cellBg(h, sel), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>
-                    {editable ? <InlineEdit value={r[h] ?? ""} onChange={v => editCell(r._id, h, v)} /> : r[h]}
+                    {editable ? (
+                      <input
+                        ref={el => { cellRefs.current[keyFor(r._id, h)] = el; }}
+                        value={isFocused(r._id, h) ? editing.text : (r[h] ?? "")}
+                        onChange={e => setEditing({ key: keyFor(r._id, h), text: e.target.value })}
+                        onFocus={() => setEditing({ key: keyFor(r._id, h), text: r[h] ?? "" })}
+                        onBlur={commitOnly}
+                        onKeyDown={e => onCellKeyDown(e, i, ci, r._id, h)}
+                        aria-label={`${h}, row ${i + 1}`}
+                        style={{ width:"100%", boxSizing:"border-box", font:"inherit", fontSize:12, padding:"1px 3px", borderRadius:3, color:"var(--text-2)", background:"transparent", border: isFocused(r._id, h) ? "1px solid #6366f1" : "1px solid transparent", outline:"none" }}
+                      />
+                    ) : r[h]}
                   </td>
                 ))}
                 {editable && <td style={{ background: sel ? HL : undefined }} />}
