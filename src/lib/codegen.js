@@ -943,14 +943,20 @@ function rsColRef(colId, rsc, lang) {
   return `samp[${JSON.stringify(h)}]`;
 }
 // One statistic as a value expression over the drawn frame `samp`. Regression fits over the two
-// header columns (R lm on the column refs; Python np.polyfit so arbitrary headers need no formula).
+// header columns with the SAME idiom as every other regression case — R `lm()` on the column refs,
+// Python `smf.ols`. Because a row-sample's columns are raw CSV headers (unlike the sanitized
+// identifier names elsewhere), a header that isn't a valid identifier is wrapped in patsy's `Q('…')`
+// so the formula parses; the slope's `params` key is then the exact x-term string (e.g. `Q('h')`).
 function rsStatExpr(s, rsc, lang) {
   if (s.fn === "slope" || s.fn === "intercept") {
     if (lang === "r") {
       const xref = rsColRef(s.variable, rsc, "r"), yref = rsColRef(s.variable2, rsc, "r");
       return `unname(coef(lm(${yref} ~ ${xref}))[${s.fn === "slope" ? 2 : 1}])`;
     }
-    return `np.polyfit(${rsColRef(s.variable, rsc, "py")}, ${rsColRef(s.variable2, rsc, "py")}, 1)[${s.fn === "slope" ? 0 : 1}]`;
+    const term = h => /^[A-Za-z_][A-Za-z0-9_]*$/.test(h) ? h : `Q('${String(h).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}')`;
+    const tx = term(rsc.map[s.variable]), ty = term(rsc.map[s.variable2]);
+    const paramKey = s.fn === "slope" ? tx : "Intercept";
+    return `smf.ols(${JSON.stringify(`${ty} ~ ${tx}`)}, data=samp).fit().params[${JSON.stringify(paramKey)}]`;
   }
   const v = rsColRef(s.variable, rsc, lang);
   if (s.condVar) {
@@ -976,11 +982,11 @@ function genRowSample(cfg, lang) {
   const R = lang === "r", ind = R ? "  " : "    ";
   const drawLine = rsDrawLine(rsc, lang);
   const inf = compactInfLines(cfg, stats, lang);
-  const anyReg = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
-  const needsNp = !R && (anyReg || inf.some(([t]) => t.includes("np.")));
+  const needsSm = !R && stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+  const needsNp = !R && inf.some(([t]) => t.includes("np."));
 
   const sampler = mk("sampler");
-  if (!R) { sampler.push("import pandas as pd"); if (needsNp) sampler.push("import numpy as np"); sampler.push(""); }
+  if (!R) { sampler.push("import pandas as pd"); if (needsNp) sampler.push("import numpy as np"); if (needsSm) sampler.push("import statsmodels.formula.api as smf"); sampler.push(""); }
   sampler.push("# Sampler — resample whole rows (cases) from the dataset");
   sampler.push(R ? `df <- read.csv(${JSON.stringify(rsc.file)})` : `df = pd.read_csv(${JSON.stringify(rsc.file)})`);
   sampler.push(R ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`);
@@ -1014,10 +1020,10 @@ function genRowSampleIntegrated(cfg, lang) {
   const R = lang === "r", ind = R ? "  " : "    ";
   const drawLine = rsDrawLine(rsc, lang);
   const inf = compactInfLines(cfg, stats, lang);
-  const anyReg = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
-  const needsNp = !R && (anyReg || inf.some(([t]) => t.includes("np.")));
+  const needsSm = !R && stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+  const needsNp = !R && inf.some(([t]) => t.includes("np."));
   const L = [], push = (text, section) => L.push({ text, section });
-  if (!R) { push("import pandas as pd", "sampler"); if (needsNp) push("import numpy as np", "sampler"); push("", "sampler"); }
+  if (!R) { push("import pandas as pd", "sampler"); if (needsNp) push("import numpy as np", "sampler"); if (needsSm) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
   push("# Set up the sampler — resample whole rows (cases)", "sampler");
   push(R ? `df <- read.csv(${JSON.stringify(rsc.file)})` : `df = pd.read_csv(${JSON.stringify(rsc.file)})`, "sampler");
   push(R ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
