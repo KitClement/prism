@@ -477,6 +477,13 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
     // controls so a one-device sampler crops narrow instead of spanning the panel width).
     // html-to-image inlines computed styles, so the class-driven CSS is honored in the PNG.
     node.classList.add("capturing-image");
+    // html-to-image clones nodes via cloneNode, which copies the `checked` *attribute* (the
+    // initial mount state) but not the live `.checked` property React controls — so a
+    // without-replacement checkbox would still rasterize as checked. Sync the attribute to the
+    // current property before capture, then restore, so the image matches the checkbox state.
+    const checkboxes = Array.from(node.querySelectorAll('input[type="checkbox"]'));
+    const prevChecked = checkboxes.map(c => c.hasAttribute("checked"));
+    checkboxes.forEach(c => { if (c.checked) c.setAttribute("checked", ""); else c.removeAttribute("checked"); });
     try {
       // Match the on-screen theme so the PNG isn't transparent when pasted into Word.
       const bgc = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff";
@@ -487,7 +494,10 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
       await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
       setMsg("ok"); setTimeout(() => setMsg(""), 2200);
     } catch { fail(); }
-    finally { node.classList.remove("capturing-image"); }
+    finally {
+      node.classList.remove("capturing-image");
+      checkboxes.forEach((c, i) => { if (prevChecked[i]) c.setAttribute("checked", ""); else c.removeAttribute("checked"); });
+    }
   };
   // The wrapper is tagged data-no-capture so the button never appears in an image of a region
   // that contains it (e.g. the sampler).
