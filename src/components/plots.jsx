@@ -73,7 +73,7 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
       aria-label={(tracked ? "Tracking " + lbl + ", activate to remove. Value " : "Track " + lbl + ". Value ") + text}
       style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
         background: tracked ? "var(--xsel-head)" : "transparent",
-        color: tracked ? "#1e1b4b" : "var(--accent-ink)",
+        color: "var(--accent-ink)",
         boxShadow: tracked ? "none" : "inset 0 -1px 0 #a5b4fc" }}>
       {text}
     </span>
@@ -1117,7 +1117,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? R + 1 : R}
                 fill={sel ? "#f97316" : "#3b82f6"}
                 fillOpacity={sel ? 1 : Math.min(0.85, Math.max(0.2, 70 / Math.sqrt(dots.length + 1)))}
-                stroke={sel ? "#7c2d12" : "none"} strokeWidth={sel ? 1.5 : 0}
+                // hairline outline keeps each dot's boundary ≥3:1 (1.4.11) even at low fill opacity
+                stroke={sel ? "#7c2d12" : "var(--dot-outline)"} strokeWidth={sel ? 1.5 : 0.75}
                 style={selectable ? { cursor:"pointer" } : undefined}
                 onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
             })}
@@ -1131,15 +1132,15 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                   {trackable ? (
                     // Slope and intercept are individually clickable to track.
                     <g>
-                      <TrackText x={PL + iW - 4} y={PT + 12} anchor="end" color="#ef4444" fontSize={12}
+                      <TrackText x={PL + iW - 4} y={PT + 12} anchor="end" color="var(--red-ink)" fontSize={12}
                         label={"slope " + parseFloat(ls.slope.toFixed(3))}
                         spec={{ fn:"slope", variable:xVar, variable2:yVar }} {...trackProps} />
-                      <TrackText x={PL + iW - 4} y={PT + 28} anchor="end" color="#ef4444" fontSize={12}
+                      <TrackText x={PL + iW - 4} y={PT + 28} anchor="end" color="var(--red-ink)" fontSize={12}
                         label={"intercept " + parseFloat(ls.intercept.toFixed(3))}
                         spec={{ fn:"intercept", variable:xVar, variable2:yVar }} {...trackProps} />
                     </g>
                   ) : showVals && (
-                    <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={12} fill="#ef4444" fontWeight={700}>
+                    <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={12} fill="var(--red-ink)" fontWeight={700}>
                       ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
                     </text>
                   )}
@@ -1152,10 +1153,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               const labelX = Math.max(hiX, mx + 9) + 5; // keep the value clear of the triangle
               return (
                 <g>
-                  <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
-                  <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                  <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                  {showVals && <TrackText x={labelX} y={sdBarY + 3} anchor="start" color="#d97706" fontSize={12}
+                  <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="var(--sd-mark)" strokeWidth={2} />
+                  <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="var(--sd-mark)" strokeWidth={2} />
+                  <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="var(--sd-mark)" strokeWidth={2} />
+                  {showVals && <TrackText x={labelX} y={sdBarY + 3} anchor="start" color="var(--amber-ink)" fontSize={12}
                     label={"±1 SD = " + parseFloat(xSummary.sd.toFixed(2))} spec={{ fn:"sd", variable:xVar }} {...trackProps} />}
                 </g>
               );
@@ -1165,8 +1166,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               const mx = sx(xSummary.mean);
               return (
                 <g>
+                  {/* the #059669 stroke is load-bearing for WCAG 1.4.11: the #10b981 fill alone
+                      is only ~2.5:1 on a white surface, the darker outline lifts it past 3:1 */}
                   <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
-                  {showVals && <TrackText x={mx} y={meanValY} anchor="middle" color="#059669" fontSize={12}
+                  {showVals && <TrackText x={mx} y={meanValY} anchor="middle" color="var(--green-ink)" fontSize={12}
                     label={fmtX(xSummary.mean)} spec={{ fn:"mean", variable:xVar }} {...trackProps} />}
                 </g>
               );
@@ -1174,9 +1177,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             {/* Boxplot (univariate numeric) — Tukey whiskers, separated below */}
             {showBox && xSummary && !bivariate && (
               <g>
-                <line x1={sx(xSummary.whiskerLo)} y1={boxCy} x2={sx(xSummary.whiskerHi)} y2={boxCy} stroke="#475569" strokeWidth={1.5} />
-                <line x1={sx(xSummary.whiskerLo)} y1={boxCy - 6} x2={sx(xSummary.whiskerLo)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
-                <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
+                <line x1={sx(xSummary.whiskerLo)} y1={boxCy} x2={sx(xSummary.whiskerHi)} y2={boxCy} stroke="var(--box-line)" strokeWidth={1.5} />
+                <line x1={sx(xSummary.whiskerLo)} y1={boxCy - 6} x2={sx(xSummary.whiskerLo)} y2={boxCy + 6} stroke="var(--box-line)" strokeWidth={1.5} />
+                <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="var(--box-line)" strokeWidth={1.5} />
                 <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
                 <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
                 {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="var(--accent-ink)" fontSize={12}
@@ -1245,7 +1248,7 @@ function StatDefiner({ stat, varNames, nameOf, sampleData, onChange, onRemove })
         <Sel label="| filter" value={stat.condVar || "none"} onChange={v => onChange({ ...stat, condVar:v === "none" ? "" : v, condVal:"" })} options={["none", ...varNames]} labels={["(none)", ...varNames.map(nm)]} />
         {stat.condVar && <Sel label="=" value={stat.condVal || ""} onChange={v => onChange({ ...stat, condVal:v })} options={["", ...condVals]} labels={["—", ...condVals]} />}
       </div>
-      <div style={{ marginTop:5, fontSize:12, color:"#6366f1", fontFamily:"monospace" }}>→ {statLabel(stat, nameOf)}</div>
+      <div style={{ marginTop:5, fontSize:12, color:"var(--accent-ink)", fontFamily:"monospace" }}>→ {statLabel(stat, nameOf)}</div>
     </div>
   );
 }
@@ -1311,7 +1314,7 @@ function DerivedBuilder({ columns, onAdd }) {
           <button key={c.id} onClick={() => insertAtCaret(aliasOf[c.id])} title={"Insert " + aliasOf[c.id] + " = " + c.label + " (" + fmt(c.value) + " on this sample)"}
             style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)", display:"inline-flex", gap:5, alignItems:"center" }}>
             <strong>{aliasOf[c.id]}</strong>
-            <span style={{ fontFamily:"monospace", fontSize:12, color:"#6366f1", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
+            <span style={{ fontFamily:"monospace", fontSize:12, color:"var(--accent-ink)", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
           </button>
         ))}
         <span style={{ width:1, height:18, background:"var(--border)", margin:"2px 1px" }} />
@@ -1338,7 +1341,7 @@ function DerivedBuilder({ columns, onAdd }) {
           </span>
         )}
       </div>
-      {msg && <div style={{ fontSize:12, color:"#ef4444", marginTop:4 }}>{msg}</div>}
+      {msg && <div style={{ fontSize:12, color:"var(--red-ink)", marginTop:4 }}>{msg}</div>}
       <div style={{ marginTop:8, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
         <label style={{ ...ctrlLbl, fontSize:12 }}>Name
           <input value={name} onChange={e => setName(e.target.value)}
@@ -1710,7 +1713,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
               ))}
               {editable && (
                 <th style={{ position:"sticky", top:0, background:"var(--surface-2)", borderBottom:"1px solid var(--border)", padding:"2px 6px" }}>
-                  <button title="Add column" onClick={addCol} style={{ ...btnX, color:"#6366f1", fontSize:15 }}>＋</button>
+                  <button title="Add column" onClick={addCol} style={{ ...btnX, color:"var(--accent-ink)", fontSize:15 }}>＋</button>
                 </th>
               )}
             </tr>
@@ -1925,7 +1928,10 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
                   return <div key={r._id || i}
                     onClick={selectable ? () => onToggleSelect(r._id) : undefined}
                     style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%", background:color, flexShrink:0,
-                      cursor: selectable ? "pointer" : "default", boxShadow: sel ? "0 0 0 2px #1f2937" : "none" }} />;
+                      cursor: selectable ? "pointer" : "default",
+                      // hairline keeps each dot's boundary ≥3:1 (1.4.11) for light palette hues; the
+                      // selected state overrides with its own dark ring
+                      boxShadow: sel ? "0 0 0 2px #1f2937" : "inset 0 0 0 1px var(--dot-outline)" }} />;
                 })}
               </div>
               <div style={{ borderTop:"1px solid var(--border-2)", width:"100%", marginTop:2 }} />
@@ -2048,7 +2054,8 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
                       return <div key={r._id || i}
                         onClick={selectable ? () => onToggleSelect(r._id) : undefined}
                         style={{ width:dotR * 2, height:dotR * 2, borderRadius:"50%", background:yColor[yc], flexShrink:0,
-                          cursor: selectable ? "pointer" : "default", boxShadow: sel ? "0 0 0 2px #1f2937" : "none" }} />;
+                          cursor: selectable ? "pointer" : "default",
+                          boxShadow: sel ? "0 0 0 2px #1f2937" : "inset 0 0 0 1px var(--dot-outline)" }} />;
                     })}
                   </div>
                 </div>
@@ -2165,16 +2172,16 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                   return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? dotR + 1 : dotR}
                     fill={sel ? "#f97316" : color}
                     fillOpacity={sel ? 1 : Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))}
-                    stroke={sel ? "#1f2937" : "none"} strokeWidth={sel ? 1.5 : 0}
+                    stroke={sel ? "#1f2937" : "var(--dot-outline)"} strokeWidth={sel ? 1.5 : 0.75}
                     style={selectable ? { cursor:"pointer" } : undefined}
                     onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
                 })}
                 {/* boxplot (vertical, Tukey whiskers) */}
                 {showBox && summary && (
                   <g>
-                    <line x1={bx} y1={sy(summary.whiskerLo)} x2={bx} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
-                    <line x1={bx - 4} y1={sy(summary.whiskerLo)} x2={bx + 4} y2={sy(summary.whiskerLo)} stroke="#475569" strokeWidth={1.2} />
-                    <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
+                    <line x1={bx} y1={sy(summary.whiskerLo)} x2={bx} y2={sy(summary.whiskerHi)} stroke="var(--box-line)" strokeWidth={1.2} />
+                    <line x1={bx - 4} y1={sy(summary.whiskerLo)} x2={bx + 4} y2={sy(summary.whiskerLo)} stroke="var(--box-line)" strokeWidth={1.2} />
+                    <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="var(--box-line)" strokeWidth={1.2} />
                     <rect x={bx - 6} y={sy(summary.q3)} width={12} height={Math.max(1, sy(summary.q1) - sy(summary.q3))} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={bx - 6} y1={sy(summary.median)} x2={bx + 6} y2={sy(summary.median)} stroke={color} strokeWidth={2} />
                     {showValues && <TrackText x={bx - 9} y={sy(summary.median) + 3} anchor="end" color="var(--accent-ink)" fontSize={12} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
@@ -2188,7 +2195,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     <g>
                       <polygon points={xData + "," + my + " " + (xData - 10) + "," + (my - 5) + " " + (xData - 10) + "," + (my + 5)}
                         fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                      {showValues && <TrackText x={xData - 13} y={my + 3} anchor="end" color="#059669" fontSize={12} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
+                      {showValues && <TrackText x={xData - 13} y={my + 3} anchor="end" color="var(--green-ink)" fontSize={12} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
                     </g>
                   );
                 })()}
@@ -2198,10 +2205,10 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                   const labelY = Math.min(topY, sy(summary.mean) - 8) - 4; // keep value off the triangle
                   return (
                     <g>
-                      <line x1={sdMidX} y1={topY} x2={sdMidX} y2={botY} stroke="#f59e0b" strokeWidth={2} />
-                      <line x1={sdMidX - 3} y1={topY} x2={sdMidX + 3} y2={topY} stroke="#f59e0b" strokeWidth={2} />
-                      <line x1={sdMidX - 3} y1={botY} x2={sdMidX + 3} y2={botY} stroke="#f59e0b" strokeWidth={2} />
-                      {showValues && <TrackText x={sdMidX} y={labelY} anchor="middle" color="#d97706" fontSize={11} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
+                      <line x1={sdMidX} y1={topY} x2={sdMidX} y2={botY} stroke="var(--sd-mark)" strokeWidth={2} />
+                      <line x1={sdMidX - 3} y1={topY} x2={sdMidX + 3} y2={topY} stroke="var(--sd-mark)" strokeWidth={2} />
+                      <line x1={sdMidX - 3} y1={botY} x2={sdMidX + 3} y2={botY} stroke="var(--sd-mark)" strokeWidth={2} />
+                      {showValues && <TrackText x={sdMidX} y={labelY} anchor="middle" color="var(--amber-ink)" fontSize={11} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
                     </g>
                   );
                 })()}
@@ -2297,7 +2304,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 return <circle key={d.id || i} cx={d.x} cy={d.y} r={sel ? dotR + 1 : dotR}
                   fill={sel ? "#f97316" : color}
                   fillOpacity={sel ? 1 : Math.min(0.85, Math.max(0.3, 60 / Math.sqrt(groupDots.length + 1)))}
-                  stroke={sel ? "#1f2937" : "none"} strokeWidth={sel ? 1.5 : 0}
+                  stroke={sel ? "#1f2937" : "var(--dot-outline)"} strokeWidth={sel ? 1.5 : 0.75}
                   style={selectable ? { cursor:"pointer" } : undefined}
                   onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
               })}
@@ -2308,10 +2315,10 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 const labelX = Math.max(hiX, mx + 9) + 4;
                 return (
                   <g>
-                    <line x1={loX} y1={y} x2={hiX} y2={y} stroke="#f59e0b" strokeWidth={2} />
-                    <line x1={loX} y1={y - 3} x2={loX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
-                    <line x1={hiX} y1={y - 3} x2={hiX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
-                    {showValues && <TrackText x={labelX} y={y + 3} anchor="start" color="#d97706" fontSize={11} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
+                    <line x1={loX} y1={y} x2={hiX} y2={y} stroke="var(--sd-mark)" strokeWidth={2} />
+                    <line x1={loX} y1={y - 3} x2={loX} y2={y + 3} stroke="var(--sd-mark)" strokeWidth={2} />
+                    <line x1={hiX} y1={y - 3} x2={hiX} y2={y + 3} stroke="var(--sd-mark)" strokeWidth={2} />
+                    {showValues && <TrackText x={labelX} y={y + 3} anchor="start" color="var(--amber-ink)" fontSize={11} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
                   </g>
                 );
               })()}
@@ -2321,7 +2328,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 return (
                   <g>
                     <polygon points={mx + "," + gb + " " + (mx - 5) + "," + (gb + 10) + " " + (mx + 5) + "," + (gb + 10)} fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                    {showValues && <TrackText x={mx} y={gb + 20} anchor="middle" color="#059669" fontSize={12} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
+                    {showValues && <TrackText x={mx} y={gb + 20} anchor="middle" color="var(--green-ink)" fontSize={12} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
                   </g>
                 );
               })()}
@@ -2330,9 +2337,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                 const by = baseY + dotR + 32;
                 return (
                   <g>
-                    <line x1={sx(summary.whiskerLo)} y1={by} x2={sx(summary.whiskerHi)} y2={by} stroke="#475569" strokeWidth={1.2} />
-                    <line x1={sx(summary.whiskerLo)} y1={by - 4} x2={sx(summary.whiskerLo)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
-                    <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
+                    <line x1={sx(summary.whiskerLo)} y1={by} x2={sx(summary.whiskerHi)} y2={by} stroke="var(--box-line)" strokeWidth={1.2} />
+                    <line x1={sx(summary.whiskerLo)} y1={by - 4} x2={sx(summary.whiskerLo)} y2={by + 4} stroke="var(--box-line)" strokeWidth={1.2} />
+                    <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="var(--box-line)" strokeWidth={1.2} />
                     <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
                     {showValues && <TrackText x={sx(summary.median)} y={by + 15} anchor="middle" color="var(--accent-ink)" fontSize={12} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}

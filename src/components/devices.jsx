@@ -766,7 +766,7 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
             ))}
           </div>
           <button onClick={() => onChange({ ...device, rowSample: undefined, balls: mkMixer(1).balls })}
-            style={{ ...btnPlus, color:"#e74c3c", borderColor:"#f5b7b1", background:"var(--surface-2)" }}>✕ Use as a normal mixer</button>
+            style={{ ...btnPlus, color:"var(--red-ink)", borderColor:"#f5b7b1", background:"var(--surface-2)" }}>✕ Use as a normal mixer</button>
         </div>
       ) : (
       <>
@@ -800,7 +800,7 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
           }}
           style={btnPlus}>+ ball type</button>
         <button onClick={() => setRangeOpen(r => !r)}
-          style={{ ...btnPlus, color:"#7c3aed", borderColor:"#c4b5fd", background:"#f5f3ff" }}>… range</button>
+          style={{ ...btnPlus, color:"var(--purple-ink)", borderColor:"var(--purple-soft-bd)", background:"var(--purple-soft)" }}>… range</button>
         <FillFromData dataset={dataset} onFill={(vals, varName, dsName) => {
           const cm = {}; [...new Set(vals)].forEach((l, i) => { cm[l] = COLORS[i % COLORS.length]; });
           onChange({ ...device, balls:vals.map(label => ({ id:uid(), label, color:cm[label] })), source:{ dataset:dsName, var:varName } });
@@ -860,7 +860,7 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
         <div style={{ display:"flex", gap:2 }}>
           <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr} aria-label={"Move " + label + " left"}>←</button>
           <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr} aria-label={"Move " + label + " right"}>→</button>
-          <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }} aria-label={"Remove " + label}>✕</button>
+          <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"var(--red-ink)" }} aria-label={"Remove " + label}>✕</button>
         </div>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
@@ -943,7 +943,7 @@ function BranchConditionEditor({ branch, upstreamStages, nameOf, onChange, locke
   const opts = condStage ? stageOutcomes(condStage) : [];
   const selSty = { ...iSm, fontSize:12, padding:"2px 4px" };
   return (
-    <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:"#7c3aed", flexWrap:"wrap" }}>
+    <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:"var(--purple-ink)", flexWrap:"wrap" }}>
       <span style={{ fontWeight:700 }}>if</span>
       <select value={branch.condVar || (condStage && condStage.id) || ""} disabled={locked}
         onChange={e => { const sid = e.target.value; const st = upstreamStages.find(s => s.id === sid); const vs = st ? stageOutcomes(st) : []; onChange({ ...branch, condVar:sid, condVal: vs.includes(branch.condVal) ? branch.condVal : (vs[0] || "") }); }}
@@ -1007,7 +1007,7 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
           style={{ ...iSm, flex:1, fontFamily:"monospace", fontSize:12, borderColor: nameError ? "#ef4444" : undefined, boxShadow: nameError ? "0 0 0 1px #ef4444" : undefined }} />
         <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr} aria-label={"Move column " + stage.varName + " left"}>←</button>
         <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr} aria-label={"Move column " + stage.varName + " right"}>→</button>
-        <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }} aria-label={"Remove column " + stage.varName}>✕</button>
+        <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"var(--red-ink)" }} aria-label={"Remove column " + stage.varName}>✕</button>
       </div>
 
       {branches.map(branch => {
@@ -1017,7 +1017,7 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
             {forked && (
               <div style={{ display:"flex", alignItems:"center", gap:4, marginBottom:4 }}>
                 {isDefault ? (
-                  <span style={{ fontSize:12, fontWeight:700, color:"#7c3aed" }}>otherwise</span>
+                  <span style={{ fontSize:12, fontWeight:700, color:"var(--purple-ink)" }}>otherwise</span>
                 ) : (
                   <BranchConditionEditor branch={branch} upstreamStages={upstreamStages} nameOf={nameOf}
                     onChange={nb => setBranch(branch.id, nb)} locked={locked} />

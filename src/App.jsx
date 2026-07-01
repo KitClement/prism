@@ -751,9 +751,9 @@ export default function App() {
           <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Sampler</h2>
           {concealed ? (
             <>
-              <span style={{ fontSize:12, color:"#7c3aed", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
+              <span style={{ fontSize:12, color:"var(--purple-ink)", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
               <button data-no-capture="1" onClick={revealSampler}
-                style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid #e3d0ff", borderRadius:7, fontSize:12, cursor:"pointer", color:"#7c3aed", fontWeight:600 }}>Reveal</button>
+                style={{ padding:"4px 10px", background:"var(--purple-soft)", border:"1.5px solid var(--purple-soft-bd)", borderRadius:7, fontSize:12, cursor:"pointer", color:"var(--purple-ink)", fontWeight:600 }}>Reveal</button>
             </>
           ) : (
             <>
@@ -775,8 +775,8 @@ export default function App() {
                 title="Copy an image of the sampler (devices + run settings) to the clipboard" />
             </>
           )}
-          {shareMsg && <span data-no-capture="1" style={{ fontSize:12, color:"#10b981", fontWeight:700 }}>{shareMsg}</span>}
-          {sampling && <span data-no-capture="1" style={{ fontSize:12, color:"#6366f1", fontWeight:600 }}>drawing {sampleData.length}{runMode === "until" ? "…" : "/" + sampleSize + "…"}</span>}
+          {shareMsg && <span data-no-capture="1" style={{ fontSize:12, color:"var(--green-ink)", fontWeight:700 }}>{shareMsg}</span>}
+          {sampling && <span data-no-capture="1" style={{ fontSize:12, color:"var(--accent-ink)", fontWeight:600 }}>drawing {sampleData.length}{runMode === "until" ? "…" : "/" + sampleSize + "…"}</span>}
           {/* Sampler run controls — these drive the pipeline below, so they live in
               its header rather than the app-level top bar (B3). */}
           <div data-capture-left style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
@@ -838,7 +838,7 @@ export default function App() {
               {sampling ? "⏹ Stop" : "▶ Draw Sample"}
             </button>
             {hasNameError && !sampling && (
-              <span data-no-capture="1" style={{ fontSize:12, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
+              <span data-no-capture="1" style={{ fontSize:12, color:"var(--red-ink)", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
                 Rename — device names must be unique and non-blank
               </span>
             )}
@@ -862,8 +862,8 @@ export default function App() {
                   background:"repeating-linear-gradient(45deg,#faf5ff,#faf5ff 10px,#f3e8ff 10px,#f3e8ff 20px)",
                   display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8, flexShrink:0 }}>
                   <div style={{ fontSize:34 }}>🔒</div>
-                  <div style={{ fontSize:13, fontWeight:700, color:"#7c3aed" }}>{nameOf(stage.id)}</div>
-                  <div style={{ fontSize:12, color:"#a78bda" }}>hidden device</div>
+                  <div style={{ fontSize:13, fontWeight:700, color:"var(--purple-ink)" }}>{nameOf(stage.id)}</div>
+                  <div style={{ fontSize:12, color:"var(--text-faint)" }}>hidden device</div>
                 </div>
               ) : (
                 <StageCard stage={stage} index={i} total={pipeline.length} upstreamStages={pipeline.slice(0, i)}

@@ -41,7 +41,14 @@
   /* indigo/green "ink" text + axis-selection column tints (kept readable in dark) */
   --accent-ink: #4338ca;  /* deep indigo text on chips / selected columns */
   --purple-ink: #7c3aed;  /* deep violet text (locked-share button)       */
-  --green-ink:  #047857;  /* deep green text (y-column)                   */
+  --green-ink:  #047857;  /* deep green text (y-column / mean value)       */
+  --red-ink:    #b91c1c;  /* error / LS-equation / ✕ text — ≥4.5:1 (6.5)  */
+  --amber-ink:  #b45309;  /* ±SD value text — ≥4.5:1 (5.0)                */
+
+  /* plot-marker "ink" (graphic objects, WCAG 1.4.11 ≥3:1 on the surface) */
+  --sd-mark:    #d97706;  /* ±SD bar/marker line (3.19)                   */
+  --box-line:   #475569;  /* whisker / median / box outline (7.6)         */
+  --dot-outline:#64748b;  /* hairline boundary on plotted data dots (4.8) */
 
   /* ruler (teal) overlay: lines, text, and soft pill/label backgrounds */
   --ruler-line: #0d9488;
@@ -89,6 +96,12 @@
   --accent-ink: #a5b4fc;
   --purple-ink: #e0aaff;
   --green-ink:  #6ee7b7;
+  --red-ink:    #fca5a5;  /* error / LS-equation / ✕ text — ≥4.5:1 (8.5)  */
+  --amber-ink:  #e0a85a;  /* ±SD value text — ≥4.5:1 (7.6)                */
+
+  --sd-mark:    #f59e0b;  /* ±SD bar/marker line (7.5)                    */
+  --box-line:   #94a3b8;  /* whisker / median / box outline (6.3)         */
+  --dot-outline:#cbd5e1;  /* hairline boundary on plotted data dots (10.9)*/
 
   --ruler-line: #2dd4bf;
   --ruler-text: #5eead4;

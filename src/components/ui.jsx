@@ -101,8 +101,8 @@ function RangeInput({ onApply, onClose }) {
     onApply(items);
   };
   return (
-    <div style={{ marginTop:6, padding:8, background:"var(--purple-soft)", borderRadius:8, border:"1px solid #c4b5fd" }}>
-      <div style={{ fontSize:12, color:"#7c3aed", marginBottom:4 }}>
+    <div style={{ marginTop:6, padding:8, background:"var(--purple-soft)", borderRadius:8, border:"1px solid var(--purple-soft-bd)" }}>
+      <div style={{ fontSize:12, color:"var(--purple-ink)", marginBottom:4 }}>
         <code>a to f</code> or <code>1 to 10</code> or comma-separated
       </div>
       <input value={val} onChange={e => setVal(e.target.value)} placeholder="e.g. 1 to 6"
