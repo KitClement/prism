@@ -162,7 +162,8 @@ function dividerInfo(cfg, stats) {
   if (!cuts.length) return null;
   const frame = { cuts, range: d.range && cuts.length >= 2,
     dir: d.dir === "left" || d.dir === "right" ? d.dir : "none",
-    by: d.by === "pct" ? "pct" : "value", pct: typeof d.pct === "number" ? d.pct : 0.05 };
+    by: d.by === "pct" ? "pct" : "value", pct: typeof d.pct === "number" ? d.pct : 0.05,
+    band: d.band === "tails" ? "tails" : "middle" };
   const match = stats.find(({ s }) => s.id === d.statId);
   if (match) return { ...frame, id: match.id };
   // A derived column is plotted: emit it from its operands (which must be enabled plain stats).
@@ -171,11 +172,13 @@ function dividerInfo(cfg, stats) {
   return null;
 }
 // The inference line(s) a divider implies over a vector/Series expression `vec`, by mode:
-//   range + value → band proportion P(lo ≤ x ≤ hi)
-//   range + pct   → CI: the middle-m percentile interval `quantile(c((1-m)/2, 1-(1-m)/2))`.
+//   range + middle + value → band proportion P(lo ≤ x ≤ hi)
+//   range + middle + pct   → CI: the middle-m percentile interval `quantile(c((1-m)/2, 1-(1-m)/2))`.
 //                   A plain percentile interval for the set %, NOT the conservative band the
 //                   tool draws — the student-facing code stays simple (won't match the visual
 //                   band exactly on discrete data, which is fine).
+//   range + tails  + value → combined two-sided tail proportion P(x < lo) + P(x > hi) (a two-sided p-value)
+//   range + tails  + pct   → two-sided critical values `quantile(c(m/2, 1-m/2))` (m = combined tail mass)
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
 //   tail  + pct   → critical value: the (1-m) percentile (right) / m percentile (left)
 //   two-sided     → both proportions P(x ≥ v) / P(x < v)
@@ -186,17 +189,27 @@ function dividerExprs(vec, div, lang) {
   const lt = v => (R ? `mean(${vec} < ${v})` : `(${vec} < ${v}).mean()`);
   const le = v => (R ? `mean(${vec} <= ${v})` : `(${vec} <= ${v}).mean()`); // left tail is inclusive
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
+  const outside = (a, b) => (R ? `mean(${vec} < ${a} | ${vec} > ${b})` : `((${vec} < ${a}) | (${vec} > ${b})).mean()`);
   const quant = a => (R ? `quantile(${vec}, ${a})` : `np.quantile(${vec}, ${a})`);
 
   if (div.range) {
+    const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
+    if (div.band === "tails") {
+      if (div.by === "pct") {
+        // Two-sided critical values: the cutoffs enclosing the central 1-m band (m = combined tail mass).
+        const lo = numLit(div.pct / 2), hi = numLit(1 - div.pct / 2);
+        const args = R ? `c(${lo}, ${hi})` : `[${lo}, ${hi}]`;
+        return [`${quant(args)}   # two-sided critical values (~${pctLabel(div.pct)} in tails)`];
+      }
+      return [`${outside(a, b)}   # two-sided p-value P(stat < ${a} or stat > ${b})`];
+    }
     if (div.by === "pct") {
       // CI: the middle-m percentile interval for the set % (a plain percentile interval — not
       // the tool's conservative band; simple and student-readable).
-      const a = numLit((1 - div.pct) / 2), b = numLit(1 - (1 - div.pct) / 2);
-      const args = R ? `c(${a}, ${b})` : `[${a}, ${b}]`;
+      const a2 = numLit((1 - div.pct) / 2), b2 = numLit(1 - (1 - div.pct) / 2);
+      const args = R ? `c(${a2}, ${b2})` : `[${a2}, ${b2}]`;
       return [`${quant(args)}   # middle ${pctLabel(div.pct)} (percentile interval)`];
     }
-    const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
     return [`${band(a, b)}   # P(${a} <= stat <= ${b})`];
   }
   if (div.dir === "left" || div.dir === "right") {

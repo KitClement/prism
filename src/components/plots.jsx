@@ -89,9 +89,10 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
 //   cuts: [v] (single) | [lo, hi] (range) — values in data units, in array order.
 // Translucent region shading for the divider, rendered as its own layer so callers can
 // paint it BEHIND the dots (the dots stay visible + clickable). Single → split the two
-// sides; range → highlight the middle band between the two lines. `dir` ("left"/"right"/
-// "none") focuses one tail for a one-sided cut.
-function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none" }) {
+// sides; range → highlight the middle band (`band="middle"`) or the two outer regions
+// (`band="tails"`) between the two lines. `dir` ("left"/"right"/"none") focuses one tail for
+// a one-sided cut.
+function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none", band = "middle" }) {
   const xL = sx(xlo), xR = sx(xhi);
   const shades = [];
   if (cuts.length === 1) {
@@ -104,7 +105,13 @@ function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none" }) {
     }
   } else if (cuts.length === 2) {
     const a = sx(Math.min(cuts[0], cuts[1])), b = sx(Math.max(cuts[0], cuts[1]));
-    shades.push(<rect key="mid" x={a} y={topY} width={Math.max(0, b - a)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+    if (band === "tails") {
+      // Highlight the two outer regions (a two-sided p-value), leaving the middle clear.
+      shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, a - xL)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+      shades.push(<rect key="gt" x={b} y={topY} width={Math.max(0, xR - b)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+    } else {
+      shades.push(<rect key="mid" x={a} y={topY} width={Math.max(0, b - a)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
+    }
   }
   return <g style={{ pointerEvents: "none" }}>{shades}</g>;
 }
@@ -555,7 +562,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // / CI). The two are linked: editing the value box switches to "value", the % box to "pct".
   const [divDir, setDivDir] = useState("none"); // "none" | "left" | "right"
   const [divBy, setDivBy] = useState("value");  // "value" | "pct"
-  const [divPct, setDivPct] = useState(0.05);   // fraction: tail (single) / middle (range)
+  const [divPct, setDivPct] = useState(0.05);   // fraction: tail (single) / middle-or-tails (range)
+  // Range-mode framing: "middle" highlights the central band (a CI); "tails" highlights the two
+  // outer regions (a two-sided p-value). In tails mode `divPct` is the COMBINED tail mass, so the
+  // central band that snaps to it covers 1 - divPct. Only meaningful when `divRange`.
+  const [divBand, setDivBand] = useState("middle"); // "middle" | "tails"
   // Ruler measurement tool (Phase 6c): off by default; opt-in per plot. Endpoints carry
   // their snapped operand ({ value, spec, label }) so a difference of two measures can be
   // tracked as a derived column.
@@ -753,8 +764,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       // left tail; constraint #5 `quantile`).
       const sorted = [...vals].sort((a, b) => a - b); // quantile() expects sorted input
       const q = t => clampVal(quantile(sorted, t), lo, hi);
+      // Tails mode: the box is combined tail mass, so the central band covers 1 - m.
+      const cover = divBand === "tails" ? 1 - m : m;
       effCuts = divRange
-        ? conservativeBand(vals, m).map(c => clampVal(c, lo, hi))
+        ? conservativeBand(vals, cover).map(c => clampVal(c, lo, hi))
         : [q(divDir === "right" ? 1 - m : m)];
     } else {
       const inRange = v => v >= lo && v <= hi;
@@ -785,9 +798,16 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const divDirected = showDivider && !divRange && divDir !== "none";
   // The focused tail is always inclusive of the cut: right → x ≥ v ("ge", already inclusive);
   // left → x ≤ v (built here so it matches the generated p-value `mean(vec <= v)`, not the
-  // strict "lt" region). Range → the middle band.
+  // strict "lt" region). Range middle → the central band; range tails → the two outer regions
+  // combined (lt + gt), so the box/read-out reflect combined tail mass.
   const focusRegion = !divRegions ? null
-    : divRange ? divRegions.find(r => r.key === "mid")
+    : divRange ? (divBand === "tails"
+        ? (() => {
+            const lt = divRegions.find(r => r.key === "lt"), gt = divRegions.find(r => r.key === "gt");
+            const n = (lt ? lt.n : 0) + (gt ? gt.n : 0), total = divDomain.values.length;
+            return { key: "tails", n, p: total ? n / total : NaN };
+          })()
+        : divRegions.find(r => r.key === "mid"))
     : divDir === "right" ? divRegions.find(r => r.key === "ge")
     : divDir === "left" ? (() => {
         const v = effCuts[0], total = divDomain.values.length;
@@ -805,9 +825,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   useEffect(() => {
     if (!onDivider) return;
     onDivider(showDivider
-      ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct }
+      ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct, band: divRange ? divBand : "middle" }
       : null);
-  }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, effCuts.join(",")]);
+  }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, divBand, effCuts.join(",")]);
 
   // Report active univariate summary overlays (boxplot / mean / ±1 SD) the same way, so the Collect
   // plot can drive code that computes those statistics over the sampling distribution. Only the
@@ -986,6 +1006,18 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               ))}
             </div>
           )}
+          {/* Range framing: Middle (central band → CI) | Tails (outer regions → two-sided p-value).
+              Switching returns to value mode so the % box re-reads the live proportion. */}
+          {divRange && (
+            <div style={{ display:"flex", border:"1px solid var(--border-2)", borderRadius:6, overflow:"hidden" }}>
+              {[["middle", "Middle"], ["tails", "Tails"]].map(([val, lab]) => (
+                <button key={val} onClick={() => { setDivBand(val); setDivBy("value"); }}
+                  style={{ padding:"3px 9px", border:"none", borderLeft: val === "middle" ? "none" : "1px solid var(--border)",
+                    background: divBand === val ? "#6366f1" : "var(--surface)", color: divBand === val ? "#fff" : "var(--text-2)",
+                    fontSize:12, fontWeight:600, cursor:"pointer" }}>{lab}</button>
+              ))}
+            </div>
+          )}
           {effCuts.map((v, i) => (
             <label key={i} style={ctrlLbl}>{divRange ? (i === 0 ? "low" : "high") : "at"}
               <NumInput step="any" value={v} round={4}
@@ -996,7 +1028,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               cut(s) to the empirical quantile (→ critical value / CI); reading it shows the
               proportion at the current cut (→ p-value). Hidden for a two-sided single divider. */}
           {(divRange || divDir !== "none") && (
-            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "var(--accent-ink)" : undefined }}>{divRange ? "middle" : "tail"}
+            <label style={{ ...ctrlLbl, color: divBy === "pct" ? "var(--accent-ink)" : undefined }}>{divRange ? (divBand === "tails" ? "tails" : "middle") : "tail"}
               <NumInput step="any" min="0" max="1" round={3}
                 value={isNaN(shownPct) ? "" : shownPct}
                 onChange={n => setPct(n)} style={{ ...iSm, width:64, marginLeft:4 }} />
@@ -1120,7 +1152,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
             {freqAxis && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>Frequency</text>}
             {/* divider shading — painted BEHIND the dots so dots stay visible + clickable */}
-            {showDivider && <DividerShades topY={PT} botY={PT + iH} sx={sx} xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} dir={divRange ? "none" : divDir} />}
+            {showDivider && <DividerShades topY={PT} botY={PT + iH} sx={sx} xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} dir={divRange ? "none" : divDir} band={divRange ? divBand : "middle"} />}
             {/* dots — one per row; click toggles linked highlighting (D1) */}
             {dots.map((d, i) => {
               const sel = isSel(d.id);
@@ -1437,7 +1469,7 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
     if (!onDivider) return;
     if (!d) { onDivider(null); return; }
     const k = headers.indexOf(d.variable);
-    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct });
+    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct, band: d.band });
   }, [onDivider, headers, columns]);
 
   // Same header→stat-id translation for the summary overlays.

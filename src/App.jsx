@@ -110,13 +110,13 @@ export default function App() {
   const [collectSelectedIds, setCollectSelectedIds] = useState(() => new Set());
   const [collectScroll, setCollectScroll] = useState(null); // { id } — reveal a just-selected row
   // The divider cut on the Collect (sampling-distribution) plot, lifted up so the generated
-  // inference code mirrors the actual cutoff. `{ statId, cuts, range }` | null. The setter
+  // inference code mirrors the actual cutoff. `{ statId, cuts, range, dir, by, pct, band }` | null. The setter
   // dedupes (the plot re-reports each render) so an unchanged cut doesn't loop re-renders.
   const [dividerState, setDividerState] = useState(null);
   const onCollectDivider = useCallback(d => {
     setDividerState(prev => {
       const same = prev === d || (prev && d && prev.statId === d.statId && prev.range === d.range &&
-        prev.dir === d.dir && prev.by === d.by && prev.pct === d.pct &&
+        prev.dir === d.dir && prev.by === d.by && prev.pct === d.pct && prev.band === d.band &&
         prev.cuts.length === d.cuts.length && prev.cuts.every((v, i) => v === d.cuts[i]));
       return same ? prev : d;
     });

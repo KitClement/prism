@@ -181,17 +181,24 @@ Both are off by default and gated to plots where they make sense.
     proportion shows. The value box and a linked **tail/middle proportion** box (0–1, matching
     the tool's proportion convention) are two ends of one relationship (`divBy`): editing the
     value (drag/type) reads a probability; editing the proportion snaps the cut(s) to a target.
-    A **range** (CI) uses `measure.js` `conservativeBand`: the **smallest achievable central
-    band that covers ≥ the target** — so setting 0.95 yields an interval covering *at least*
-    0.95 (conservative; discrete data rarely lands exactly on the nominal level). It walks the
-    nested central family (start at the median value, each step extends whichever side has the
-    larger excluded tail, ties → upper) and stops at the first band reaching the target. A
-    single **tail** snaps to a standard interpolating percentile (`stats.js` `quantile`): the
-    `1-m` percentile for a right tail, the `m` percentile for a left tail (the critical value).
-    Both are O(N + k log k) — no per-value rescans. Toggling Range or direction resets `divBy`
-    to `"value"`. `divPct` is stored as a fraction; generated-code comments keep conventional `%`.
+    A **range** carries a `Middle | Tails` framing (`divBand`, analogous to the single-line
+    direction): **middle** highlights the central band (a CI), **tails** highlights the two
+    outer regions (a two-sided p-value) and its proportion box shows/drives the **combined tail
+    mass** — complementary to the middle (a 0.05 tails box ⇒ a 0.95 central band). A range (either
+    framing) uses `measure.js` `conservativeBand` for the central band: the **smallest achievable
+    central band that covers ≥ the target** — so a 0.95 middle (or 0.05 tails) yields an interval
+    covering *at least* 0.95 (conservative; discrete data rarely lands exactly on the nominal
+    level). It walks the nested central family (start at the median value, each step extends
+    whichever side has the larger excluded tail, ties → upper) and stops at the first band
+    reaching the target. A single **tail** snaps to a standard interpolating percentile
+    (`stats.js` `quantile`): the `1-m` percentile for a right tail, the `m` percentile for a left
+    tail (the critical value). Both are O(N + k log k) — no per-value rescans. Toggling Range,
+    direction, or the Middle/Tails framing resets `divBy` to `"value"`. `divPct` is stored as a
+    fraction; generated-code comments keep conventional `%`.
     On the Collect plot this drives the generated **inference**: tail+value → p-value, tail+prop
-    → critical value, range+value → band proportion, range+prop → CI (see codegen note below).
+    → critical value, range/middle+value → band proportion, range/middle+prop → CI,
+    range/tails+value → combined two-sided tail proportion, range/tails+prop → two-sided critical
+    values (see codegen note below).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
   *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
@@ -265,20 +272,23 @@ R/Python code panels, serialization polish) all shipped. Possible follow-ons:
   deferred earlier). More device types or pipeline composition, if the curriculum needs them.
 
 The Collect-plot **divider is wired into the inference code**: `Plot` reports its active cut +
-framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
+framing (`{ variable, cuts, range, dir, by, pct, band }`) via an `onDivider` callback,
 `DistributionPlot` maps the X header back to its tracked-stat id, and `App` lifts it into
 `dividerState` (a deduped setter prevents a re-render loop) → the `generateCode` cfg.
 `codegen.js`'s `dividerInfo`/`dividerExprs` then emit, over the matched statistic's result
 vector, one of: **p-value** `mean(vec >= v)` (right) / `mean(vec <= v)` (left — the focused
 tail is always inclusive of the cut) (tail + value), **critical value** (tail + %) as the
-percentile `quantile(vec, 1-m)` (right) / `quantile(vec, m)` (left), **CI** (range + %) as the
-plain percentile interval `quantile(vec, c((1-m)/2, 1-(1-m)/2))` for the set % — deliberately
-**not** the tool's `conservativeBand` (the student-facing code stays a simple one-liner; it
-won't match the drawn band exactly on discrete data, which is acceptable) — **band proportion**
-`mean(vec >= lo & vec <= hi)` (range + value); two-sided shows
-both `>= v` / `< v` proportions (disjoint). The on-plot left-tail read-out is built inclusively
-to match. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
-(derived) column.
+percentile `quantile(vec, 1-m)` (right) / `quantile(vec, m)` (left), and — in **range** mode,
+split by `band` — for **middle**: a **CI** (+ %) as the plain percentile interval
+`quantile(vec, c((1-m)/2, 1-(1-m)/2))` for the set % (deliberately **not** the tool's
+`conservativeBand` — the student-facing code stays a simple one-liner that won't match the drawn
+band exactly on discrete data, which is acceptable) or a **band proportion**
+`mean(vec >= lo & vec <= hi)` (+ value); for **tails**: a **two-sided p-value**
+`mean(vec < lo | vec > hi)` (+ value, the exact complement of the inclusive middle band) or
+**two-sided critical values** `quantile(vec, c(m/2, 1-m/2))` (+ %, m = combined tail mass).
+The two-sided single divider shows both `>= v` / `< v` proportions (disjoint); the on-plot
+left-tail read-out is built inclusively to match. Falls back to the `>= 0` placeholder when the
+divider is off or on a non-emitted (derived) column.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.
