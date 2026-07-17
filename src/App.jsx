@@ -57,6 +57,9 @@ export default function App() {
   const [hiddenData, setHiddenData] = useState(null);
   // Brief "Copied!" confirmation after a Share click.
   const [shareMsg, setShareMsg] = useState("");
+  // shareMsg doubles as the stale-link warning, which is a failure and must not read as the
+  // green "copied" confirmation — nor vanish on the copy timeout before it's been read.
+  const [shareErr, setShareErr] = useState(false);
   const [sampleData, setSampleData] = useState([]);
   const [sampling, setSampling] = useState(false);
   const [animStates, setAnimStates] = useState({});
@@ -84,15 +87,23 @@ export default function App() {
 
   // One-time URL import (Task C/D). Read ?s=<blob> on mount and load the config. A hidden
   // blob (Task D) loads and RUNS the same way — no password needed to open it — but starts
-  // veiled (`revealed:false`); the stored salt+verifier gate a later Reveal. Garbled or
-  // unsupported blobs fall back to today's defaults. The URL is then cleaned so editing and
-  // reloading don't keep re-importing the original config.
+  // veiled (`revealed:false`); the stored salt+verifier gate a later Reveal. Garbled blobs
+  // fall back to today's defaults. A link in the pre-compact v1 format is recognized and
+  // reported rather than opened, so a stale link in a syllabus says so instead of quietly
+  // presenting a blank sampler. The URL is then cleaned so editing and reloading don't keep
+  // re-importing the original config.
   useEffect(() => {
     const blob = new URLSearchParams(window.location.search).get("s");
     if (!blob) return;
     const decoded = decodeConfig(blob);
     const cleanURL = () => window.history.replaceState(null, "", window.location.pathname);
     if (!decoded) { cleanURL(); return; }
+    if (decoded.stale) {
+      setShareErr(true);
+      setShareMsg("⚠ This link was made by an older version of PRISM and can't be opened — ask for a new one.");
+      cleanURL();
+      return;
+    }
     applyConfig(decoded.config);
     if (decoded.hidden) {
       setHidden(true); setRevealed(false); setHiddenData({ salt: decoded.salt, pw: decoded.pw });
@@ -632,7 +643,7 @@ export default function App() {
   const doShare = password => {
     const blob = encodeConfig({ pipeline, sampleSize, runMode, stopRule, codeLang }, password ? { password } : undefined);
     const url = shareURL(blob);
-    const announce = () => { setShareMsg((password ? "🔒 " : "") + "Share link copied to clipboard"); setTimeout(() => setShareMsg(""), 2200); };
+    const announce = () => { setShareErr(false); setShareMsg((password ? "🔒 " : "") + "Share link copied to clipboard"); setTimeout(() => setShareMsg(""), 2200); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(announce).catch(() => safePrompt("Copy this link:", url));
     } else {
@@ -787,7 +798,7 @@ export default function App() {
                 title="Copy an image of the sampler (devices + run settings) to the clipboard" />
             </>
           )}
-          {shareMsg && <span data-no-capture="1" style={{ fontSize:12, color:"var(--green-ink)", fontWeight:700 }}>{shareMsg}</span>}
+          {shareMsg && <span data-no-capture="1" style={{ fontSize:12, color:shareErr ? "var(--red-ink)" : "var(--green-ink)", fontWeight:700 }}>{shareMsg}</span>}
           {sampling && <span data-no-capture="1" style={{ fontSize:12, color:"var(--accent-ink)", fontWeight:600 }}>drawing {sampleData.length}{runMode === "until" ? "…" : "/" + sampleSize + "…"}</span>}
           {/* Sampler run controls — these drive the pipeline below, so they live in
               its header rather than the app-level top bar (B3). */}
