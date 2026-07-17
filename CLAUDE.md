@@ -164,7 +164,7 @@ outcomes, not re-inferred per sample.
 - **Invalidation guards.** Sample-size change clears the accumulated rows but keeps the
   columns; a distribution-structure device change clears rows and drops columns whose vars
   vanished; pure relabels propagate seamlessly (`propagateRenames`). See Resolved
-  decision #2 in `plan.md`.
+  decision #2 in `.claude/plans/plan.md`.
 
 ### Plot measurement tools (divider + ruler)
 Two opt-in tools share one measurement-overlay foundation on `Plot` (`lib/measure.js`).
@@ -262,10 +262,16 @@ These were the source of real bugs during development. Preserve them.
 Slider: 0 = Slow (default, left), 1 = Fast, 2 = Instant (right).
 
 ## Suggested next steps
-Both roadmaps are complete: the Phase 0–7 plan (module split, shared `Plot`, the Sample
-Results / Collect Statistics overhaul, divider + ruler) and the next feature wave Tasks A–F
-in `.claude/plans/` (forked/conditional stages, run-until, URL sharing, hidden samplers,
-R/Python code panels, serialization polish) all shipped. Possible follow-ons:
+Planning docs live in **`.claude/plans/`** (`plan.md`, `QOL.md`, `WCAG.md`, `file-structure.md`).
+
+Both roadmaps are complete: the Phase 0–7 plan (`.claude/plans/plan.md` — module split, shared
+`Plot`, the Sample Results / Collect Statistics overhaul, divider + ruler) and the next feature
+wave Tasks A–F (forked/conditional stages, run-until, URL sharing, hidden samplers, R/Python
+code panels, serialization polish) all shipped. Possible follow-ons:
+- **Save / open a session to a `.prism` file** — a full roadmap is written up in
+  `.claude/plans/file-structure.md` (7 phases, sized for parallel work). Persists what Share
+  deliberately omits: the dataset, drawn samples, tracked stats, collected rows, and plot view
+  state. Not started.
 - **Without-replacement fidelity in generated code** (currently flagged-but-with-replacement).
 - **Multi-condition stop rules** (run-until is single-condition v1; no AND/OR yet).
 - Trackability for the ruler's **residual** case; the divider on num×num scatter (both
