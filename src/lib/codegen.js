@@ -286,14 +286,14 @@ function overlayInfo(cfg, stats) {
 }
 // Overlay lines over the target stat's collected vector. fivenum (R) / .describe() (py) give the
 // five-number summary; SD is the sample SD (matches the tool and the `sd` statistic). A plain stat's
-// bare list is accepted by np.mean / np.std / pd.Series directly; a derived column is built from its
+// bare list is accepted by np.mean / pd.Series directly; a derived column is built from its
 // operands first via `resolveTarget` (which arrayizes them in the py compact path so arithmetic works).
 function overlayBody(ov, lang, emittedOf, vecRef, arrayize) {
   const r = resolveTarget(ov, lang, emittedOf, vecRef, arrayize);
   if (!r) return null;
   const v = r.target, R = lang === "r", out = [];
   if (ov.mean) out.push((R ? `mean(${v})` : `np.mean(${v})`) + "   # center of the sampling distribution");
-  if (ov.sd)   out.push((R ? `sd(${v})` : `np.std(${v}, ddof=1)`) + "   # spread (sample SD)");
+  if (ov.sd)   out.push((R ? `sd(${v})` : `pd.Series(${v}).std()`) + "   # spread (sample SD)");
   if (ov.box)  out.push((R ? `fivenum(${v})` : `pd.Series(${v}).describe().loc[['min', '25%', '50%', '75%', 'max']]`) + "   # five-number summary");
   return out.length ? [...r.setup, ...out] : null;
 }
