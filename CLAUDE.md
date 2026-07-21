@@ -263,7 +263,12 @@ These were the source of real bugs during development. Preserve them.
    (a without-replacement device is flagged in a comment, not reproduced); sample SD;
    type-7 quantiles (R `type=7`; pandas `.quantile()`/`np.quantile` are type-7 by default) to
    match `quantile()`; one column per **enabled** tracked stat — nothing until one is enabled,
-   derived columns aren't emitted, and inference targets the first enabled stat. The **compact**
+   and inference targets the first enabled stat. **Derived columns** are emitted too: after the
+   plain stats build the sampling-distribution frame, each emittable derived column (all operands
+   already emitted — plain or an earlier derived, in dependency order) is added as a column of that
+   frame in the collect section (Python `samp_dist["d"] = …`, R split `dist$d`, R compact bare `d`),
+   so inference reads it like any plain column; an un-emittable derived (a deleted operand) is
+   skipped and falls back to the inference placeholder. See `derivedCols`/`derivedCollectLines`. The **compact**
    path draws the whole sample at once (`sample(...,n)` / `pop.sample(n)`); the **split** path
    draws row-by-row (needed for forks/until/multi-column). `codegen.js` has **no imports**
    (it's self-contained), so a bare-Node ESM round-trip of `generateCode` plus an actual
@@ -318,8 +323,9 @@ band exactly on discrete data, which is acceptable) or a **band proportion**
 `mean(vec < lo | vec > hi)` (+ value, the exact complement of the inclusive middle band) or
 **two-sided critical values** `quantile(vec, c(m/2, 1-m/2))` (+ %, m = combined tail mass).
 The two-sided single divider shows both `>= v` / `< v` proportions (disjoint); the on-plot
-left-tail read-out is built inclusively to match. Falls back to the `>= 0` placeholder when the
-divider is off or on a non-emitted (derived) column.
+left-tail read-out is built inclusively to match. An emittable derived column is now a real frame
+column, so the divider reads it directly; it falls back to the placeholder only when the divider is
+off or on an **un-emittable** derived column (a deleted operand).
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.

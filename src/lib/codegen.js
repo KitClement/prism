@@ -101,8 +101,9 @@ function csvFile(cfg) {
 }
 
 // ─── Statistic selection & identity ───────────────────────────────────────────
-// The enabled, code-emittable statistics: plain (non-derived) tracked stats. Derived columns
-// aren't emitted (scope); an empty list means "nothing enabled yet".
+// The plain (non-derived) tracked stats — the ones computed per-sample in the draw loop. Derived
+// columns are added to the collect table afterward (see `derivedCols`), off these; an empty list
+// means "nothing enabled yet".
 const plainStats = cfg => (cfg.trackedStats || []).filter(s => s && s.kind !== "derived" && s.fn);
 // A readable, valid identifier for one statistic (its column in the collect table). A group stat
 // (condVar) appends its group value, so two group means read `mean_value_A` / `mean_value_B`.
@@ -147,9 +148,10 @@ const collectNote = cfg => (cfg.collectedCount > 0 ? "   # samples collected so 
 
 // The Collect-plot divider (lifted from the UI), resolved against the tracked stats so the
 // inference section can mirror the real cutoff + framing. Returns either `{ id, ... }` (the
-// divider sits on an enabled plain stat — `id` is its generated result-vector name) or
-// `{ derived, ... }` (it sits on a derived column — `derived` is the tracked spec, emitted from
-// its operands at inference time), or null (no divider / unresolvable column / off).
+// divider sits on an emitted column — plain stat OR an emittable derived column, now a real
+// `samp_dist` column — where `id` is its generated result-vector name) or `{ derived, ... }` (it
+// sits on an UN-emittable derived column — `derived` is the tracked spec, built inline from its
+// operands at inference time), or null (no divider / unresolvable column / off).
 const numLit = v => String(parseFloat(Number(v).toFixed(4)));
 const pctLabel = f => `${parseFloat((f * 100).toFixed(2))}%`;
 // A tracked column's display name → a valid R/Python identifier (non-word chars → "_",
@@ -226,7 +228,7 @@ function dividerExprs(vec, div, lang) {
 }
 // Translate a derived column's token array (lib/expr.js) into a code expression over the collected
 // vectors. `refOf(id)` resolves a referenced stat-id to its emitted vector reference, or null if it
-// can't be emitted (e.g. a derived-of-derived operand) — in which case the whole thing returns null.
+// can't be emitted (a missing/deleted operand) — in which case the whole thing returns null.
 function derivedExprCode(tokens, refOf, lang) {
   const out = [];
   for (const t of tokens || []) {
@@ -239,61 +241,94 @@ function derivedExprCode(tokens, refOf, lang) {
   }
   return out.join("").trim();
 }
-// The inference body lines for a divider: optional setup (py list→array conversions, or a derived-
-// column definition built from its operands) then `dividerExprs` over the target vector. `vecRef(e)`
-// gives an emitted stat's collected-vector reference in this path (R: bare name compact / dist$x
-// split; Python: samp_dist['x']); `emittedOf(id)` maps a tracked stat-id to its emitted name (or null);
-// `arrayize(e)` (py compact only) turns a collected list into a numpy array. Returns string[] of
-// lines, or null when the divider sits on something we can't emit (derived with a missing operand).
-// Resolve a divider/overlay spec ({ id } | { derived }) to its target vector reference plus any
-// setup lines: py list→array conversions, and — for a derived column — its definition built from
-// the operand vectors. Returns { setup, target } or null when an operand can't be emitted.
-function resolveTarget(spec, lang, emittedOf, vecRef, arrayize) {
-  const setup = [], done = new Set();
-  const azOnce = e => { if (!arrayize || done.has(e)) return; done.add(e); setup.push(...arrayize(e)); };
-  if (spec.derived) {
-    const colIds = (spec.derived.tokens || []).filter(t => t.k === "col").map(t => t.id);
-    for (const id of colIds) if (emittedOf(id) == null) return null;
-    colIds.forEach(id => azOnce(emittedOf(id)));
-    const expr = derivedExprCode(spec.derived.tokens, id => { const e = emittedOf(id); return e == null ? null : vecRef(e); }, lang);
-    if (expr == null) return null;
-    const vn = safeVarName(spec.derived.name);   // the column's name → a valid identifier (else "derived")
-    setup.push((lang === "r" ? vn + " <- " : vn + " = ") + expr + "   # the plotted derived column");
-    return { setup, target: vn };
+// ─── Derived columns as part of the emitted sampling-distribution table ────────
+// Derived tracked columns live in the collect table, so — unlike the single sample — the generated
+// collect section defines them as columns of the sampling-distribution frame (Python `samp_dist["d"]`,
+// R split `dist$d`, R compact bare `d`), computed vectorized from the already-collected columns. A
+// derived column is EMITTABLE when every operand it references is itself emitted (a plain stat, or an
+// earlier derived column — derived-of-derived resolves once its operand lands); an un-emittable one
+// (a deleted operand) is skipped and still falls back to the inference-time placeholder. Appended in
+// dependency order (fixpoint), each column takes a unique identifier from its display name. Returns
+// { cols:[{s,id}], byId } (byId: original tracked-id → generated identifier, for plain AND derived).
+function derivedCols(cfg, plainWithIds) {
+  const byId = new Map(), used = new Set();
+  plainWithIds.forEach(({ s, id }) => { byId.set(s.id, id); used.add(id); });
+  const cols = [];
+  const pending = (cfg.trackedStats || []).filter(
+    s => s && s.kind === "derived" && Array.isArray(s.tokens) && s.tokens.some(t => t.k === "col"));
+  for (let advanced = true; advanced; ) {
+    advanced = false;
+    for (let i = 0; i < pending.length; i++) {
+      const s = pending[i];
+      const opIds = s.tokens.filter(t => t.k === "col").map(t => t.id);
+      if (opIds.some(id => !byId.has(id))) continue;   // an operand isn't emitted (yet, or at all)
+      let id = safeVarName(s.name), k = 2; while (used.has(id)) id = safeVarName(s.name) + "_" + k++;
+      used.add(id); byId.set(s.id, id); cols.push({ s, id });
+      pending.splice(i, 1); i--; advanced = true;
+    }
   }
-  azOnce(spec.id);
+  return { cols, byId };
+}
+// The collect-section lines defining those derived columns, using the section's own `vecRef` so each
+// is written exactly where inference later reads it (Python `samp_dist["d"] = …`, R compact bare
+// `d <- …`, R split `dist$d <- …`). `dcols.byId` resolves each operand's original id to its emitted
+// reference. Empty when there are no emittable derived columns.
+function derivedCollectLines(dcols, vecRef, lang) {
+  return dcols.cols.map(({ s, id }) => {
+    const expr = derivedExprCode(s.tokens, oid => vecRef(dcols.byId.get(oid)), lang);
+    return `${vecRef(id)}${lang === "r" ? " <- " : " = "}${expr}   # derived column`;
+  });
+}
+// True when any emittable derived column uses a numpy function (sqrt/abs) in Python — so the caller
+// knows to keep the `import numpy as np` line even when nothing else needs it.
+const derivedNeedsNp = dcols => dcols.cols.some(({ s }) => (s.tokens || []).some(t => t.k === "fn"));
+// The inference body lines for a divider: optional setup (py list→array conversions) then
+// `dividerExprs` over the target vector. `vecRef(e)` gives an emitted column's collected-vector
+// reference in this path (R: bare name compact / dist$x split; Python: samp_dist['x']); `arrayize(e)`
+// (py compact only) turns a collected list into a numpy array. Returns string[] of lines, or null
+// when the divider sits on something we can't emit (an un-emittable derived column).
+// Resolve a divider/overlay spec to its target vector reference plus any setup lines (py list→array
+// conversions). An emittable derived column is now a real `samp_dist` column, so it arrives here as
+// `{ id }` and resolves like a plain stat; a `{ derived }` spec only reaches here when the column is
+// UN-emittable (a missing operand), so it can't be built — return null (→ the inference placeholder).
+function resolveTarget(spec, lang, vecRef, arrayize) {
+  if (spec.derived) return null;
+  const setup = [];
+  if (arrayize) setup.push(...arrayize(spec.id));
   return { setup, target: vecRef(spec.id) };
 }
-function dividerBody(div, lang, emittedOf, vecRef, arrayize) {
-  const r = resolveTarget(div, lang, emittedOf, vecRef, arrayize);
+function dividerBody(div, lang, vecRef, arrayize) {
+  const r = resolveTarget(div, lang, vecRef, arrayize);
   if (!r) return null;
   return [...r.setup, ...dividerExprs(r.target, div, lang)];
 }
 // The plot-overlay summaries (boxplot / mean / ±1 SD on the Collect plot) the host reports via
-// `cfg.overlays` ({ statId, mean, sd, box } | null), resolved to the matched enabled stat. Skipped
-// on a derived / un-enabled column (not emitted, like the divider). Independent of the divider.
+// `cfg.overlays` ({ statId, mean, sd, box } | null), resolved to the matched emitted column (plain
+// stat OR an emittable derived column). Falls back to `{ derived }` for an un-emittable derived
+// column (built inline, like the divider), else null. Independent of the divider.
 function overlayInfo(cfg, stats) {
   const o = cfg.overlays;
   if (!o || o.statId == null || !(o.mean || o.sd || o.box)) return null;
   const flags = { mean: !!o.mean, sd: !!o.sd, box: !!o.box };
   const match = stats.find(({ s }) => s.id === o.statId);
   if (match) return { ...flags, id: match.id };
-  // A derived column is plotted (e.g. a difference of means): summarize it from its operands,
-  // exactly as the divider does (which must be enabled plain stats).
+  // An un-emittable derived column (a missing operand) is still summarized from its operands inline,
+  // exactly as the divider does.
   const der = (cfg.trackedStats || []).find(s => s && s.kind === "derived" && s.id === o.statId);
   if (der) return { ...flags, derived: der };
   return null;
 }
 // Overlay lines over the target stat's collected vector. fivenum (R) / .describe() (py) give the
-// five-number summary; SD is the sample SD (matches the tool and the `sd` statistic). A plain stat's
-// bare list is accepted by np.mean / pd.Series directly; a derived column is built from its
-// operands first via `resolveTarget` (which arrayizes them in the py compact path so arithmetic works).
-function overlayBody(ov, lang, emittedOf, vecRef, arrayize) {
-  const r = resolveTarget(ov, lang, emittedOf, vecRef, arrayize);
+// five-number summary; SD is the sample SD (matches the tool and the `sd` statistic). The py target
+// is a `samp_dist` column (already a Series, whether a plain stat or an emitted derived column), so
+// `.std()` is a direct sample-SD method call — no pd.Series wrap. An UN-emittable derived column
+// yields no summary (`resolveTarget` returns null → the inference placeholder).
+function overlayBody(ov, lang, vecRef, arrayize) {
+  const r = resolveTarget(ov, lang, vecRef, arrayize);
   if (!r) return null;
   const v = r.target, R = lang === "r", out = [];
   if (ov.mean) out.push((R ? `mean(${v})` : `np.mean(${v})`) + "   # center of the sampling distribution");
-  if (ov.sd)   out.push((R ? `sd(${v})` : `pd.Series(${v}).std()`) + "   # spread (sample SD)");
+  if (ov.sd)   out.push((R ? `sd(${v})` : `${v}.std()`) + "   # spread (sample SD)");
   if (ov.box)  out.push((R ? `fivenum(${v})` : `pd.Series(${v}).describe().loc[['min', '25%', '50%', '75%', 'max']]`) + "   # five-number summary");
   return out.length ? [...r.setup, ...out] : null;
 }
@@ -302,19 +337,15 @@ function overlayBody(ov, lang, emittedOf, vecRef, arrayize) {
 // resolves an emitted stat's collected vector in this path; `arrayize` (py compact) converts a list
 // to a numpy array for the divider's vectorized comparisons. Empty when nothing is enabled/emittable.
 function inferenceBody(cfg, stats, lang, vecRef, arrayize) {
-  const emittedById = {}; stats.forEach(({ s, id }) => emittedById[s.id] = id);
-  const emittedOf = id => (emittedById[id] != null ? emittedById[id] : null);
   const out = [];
   const div = dividerInfo(cfg, stats);
   if (div) {
-    const body = dividerBody(div, lang, emittedOf, vecRef, arrayize);
+    const body = dividerBody(div, lang, vecRef, arrayize);
     if (body) { out.push("# Inference from the sampling distribution (divider)"); body.forEach(t => out.push(t)); }
   }
   const ov = overlayInfo(cfg, stats);
   if (ov) {
-    // A plain stat's vector is summarized directly (no array conversion); a derived column needs
-    // its operands arrayized (py compact) to do arithmetic, like the divider.
-    const body = overlayBody(ov, lang, emittedOf, vecRef, ov.derived ? arrayize : null);
+    const body = overlayBody(ov, lang, vecRef, arrayize);
     if (body) { out.push("# Summary of the sampling distribution (plot overlays)"); body.forEach(t => out.push(t)); }
   }
   return out;
@@ -462,6 +493,7 @@ function vStat(s, v, lang) {
 
 function genCompact(cfg, names, lang) {
   const stats = withIds(plainStats(cfg), names);
+  const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
   const first = stats[0];
 
@@ -485,6 +517,7 @@ function genCompact(cfg, names, lang) {
       cfg.pipeline.forEach(st => collect.push("  " + drawVec(names[st.id], defDevice(st), "r")));
       stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${compactStatExpr(s, names)}`));
       collect.push("}");
+      derivedCollectLines(dcols, e => e, "r").forEach(t => collect.push(t));
     }
 
     const inference = mk("inference");
@@ -495,9 +528,10 @@ function genCompact(cfg, names, lang) {
   // Python (pandas / numpy) — each device is drawn as its own vector, then assembled into the
   // per-sample DataFrame `sample`; every statistic is computed off `sample` with df syntax.
   const needsFrame = compactNeedsFrame(stats);
+  const derPy = derivedCollectLines(dcols, e => `samp_dist[${key(e)}]`, "py");
   const sampler = mk("sampler");
   sampler.push("import pandas as pd");
-  if (compactNeedsNp(cfg)) sampler.push("import numpy as np");
+  if (compactNeedsNp(cfg) || derivedNeedsNp(dcols)) sampler.push("import numpy as np");
   if (compactNeedsSm(stats)) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
   sampler.push("# Sampler — draw one sample of n (one vector per device)");
@@ -521,6 +555,7 @@ function genCompact(cfg, names, lang) {
     if (needsFrame) collect.push("    " + sampleFrameLinePy(cfg, names));
     stats.forEach(({ s, id }) => compactStatLinesPy(s, id, names, e => `${id}.append(${e})`).forEach(t => collect.push("    " + t)));
     collect.push(statDfLinePy(stats));
+    derPy.forEach(t => collect.push(t));
   }
 
   const inference = mk("inference");
@@ -700,6 +735,7 @@ function genSplit(cfg, names, lang) {
   const tmplPy = p => `${p.name}_template = list(` + (p.source ? srcCol(p.source, "df", "py") : (p.weights.every(w => w === 1) ? vec(p.labels, "py") : `np.repeat(${vec(p.labels, "py")}, [${p.weights.join(", ")}])`)) + ")";
   const poolInitPy = `pools = {${pools.map(p => `${key(p.name)}: list(${p.name}_template)`).join(", ")}}`;
   const stats = withIds(plainStats(cfg), names);
+  const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
   const first = stats[0];
   // `push(text)` tags the line with the array's own section; `push(text, sec)` overrides it — so a
@@ -766,12 +802,13 @@ function genSplit(cfg, names, lang) {
       stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${rStatValue(s, names)}`, "single"));
       collect.push("}");
       collect.push(`dist <- data.frame(${stats.map(({ id }) => id).join(", ")})`);
+      derivedCollectLines(dcols, e => `dist$${e}`, "r").forEach(t => collect.push(t));
     }
 
     const inference = mk("inference");
     if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
     else {
-      const lines = inferenceBody(cfg, stats, "r", e => `dist$${e}`, null);
+      const lines = inferenceBody(cfg, [...stats, ...dcols.cols], "r", e => `dist$${e}`, null);
       if (lines.length) lines.forEach(t => inference.push(t));
       else inference.push(NO_INFERENCE);
     }
@@ -834,12 +871,13 @@ function genSplit(cfg, names, lang) {
     collect.push(`    sample = draw_sample(${cap})`, "sampler");
     stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t, "single")));
     collect.push(`samp_dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`);
+    derivedCollectLines(dcols, e => `samp_dist[${key(e)}]`, "py").forEach(t => collect.push(t));
   }
 
   const inference = mk("inference");
   if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
   else {
-    const lines = inferenceBody(cfg, stats, "py", e => `samp_dist[${key(e)}]`, null);
+    const lines = inferenceBody(cfg, [...stats, ...dcols.cols], "py", e => `samp_dist[${key(e)}]`, null);
     if (lines.length) lines.forEach(t => inference.push(t));
     else inference.push(NO_INFERENCE);
   }
@@ -866,7 +904,10 @@ function isSimple(cfg) {
 function compactInfLines(cfg, stats, lang) {
   if (!stats[0]) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
   const vecRef = lang === "py" ? e => `samp_dist[${key(e)}]` : e => e;
-  const lines = inferenceBody(cfg, stats, lang, vecRef, null);
+  // Derived columns are emitted into the collect table, so inference can read them like any plain
+  // column (the un-emittable ones fall back to the divider/overlay's inline-from-operands path).
+  const dcols = derivedCols(cfg, stats);
+  const lines = inferenceBody(cfg, [...stats, ...dcols.cols], lang, vecRef, null);
   if (!lines.length) return [[NO_INFERENCE, "inference"]];
   return lines.map(t => [t, "inference"]);
 }
@@ -876,11 +917,12 @@ function compactInfLines(cfg, stats, lang) {
 // (▲) for-loop; the split case lays the function defs / loop / inference out in order.
 function genIntegrated(cfg, names, lang) {
   const stats = withIds(plainStats(cfg), names);
+  const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const L = [], push = (text, section) => L.push({ text, section });
   if (isSimple(cfg)) {
     const ind = lang === "r" ? "  " : "    ";
     const needsFrame = compactNeedsFrame(stats);
-    if (lang === "py") { push("import pandas as pd", "sampler"); if (compactNeedsNp(cfg)) push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
+    if (lang === "py") { push("import pandas as pd", "sampler"); if (compactNeedsNp(cfg) || derivedNeedsNp(dcols)) push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
     if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
@@ -897,6 +939,8 @@ function genIntegrated(cfg, names, lang) {
     });
     if (lang === "r") push("}", "collect");
     else push(statDfLinePy(stats), "collect");
+    const dRef = lang === "py" ? e => `samp_dist[${key(e)}]` : e => e;
+    derivedCollectLines(dcols, dRef, lang).forEach(t => push(t, "collect"));
     push("", "inference");
     compactInfLines(cfg, stats, lang).forEach(([t, sec]) => push(t, sec));
     return L;
@@ -991,12 +1035,13 @@ function genRowSample(cfg, lang) {
   // Result-vector identifiers (statId) use safe header identifiers; column refs use the raw header.
   const names = {}; Object.keys(rsc.map).forEach(colId => { names[colId] = safeName(rsc.map[colId]); });
   const stats = withIds(plainStats(cfg), names);
-  const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
   const R = lang === "r", ind = R ? "  " : "    ";
+  const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
+  const derLines = derivedCollectLines(dcols, R ? e => e : e => `samp_dist[${key(e)}]`, lang);
   const drawLine = rsDrawLine(rsc, lang);
   const inf = compactInfLines(cfg, stats, lang);
   const needsSm = !R && stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
-  const needsNp = !R && inf.some(([t]) => t.includes("np."));
+  const needsNp = !R && (inf.some(([t]) => t.includes("np.")) || derivedNeedsNp(dcols) || derLines.some(t => t.includes("np.")));
 
   const sampler = mk("sampler");
   if (!R) { sampler.push("import pandas as pd"); if (needsNp) sampler.push("import numpy as np"); if (needsSm) sampler.push("import statsmodels.formula.api as smf"); sampler.push(""); }
@@ -1018,6 +1063,7 @@ function genRowSample(cfg, lang) {
     collect.push(ind + drawLine);
     stats.forEach(({ s, id }) => collect.push(ind + (R ? `${id}[i] <- ${rsStatExpr(s, rsc, "r")}` : `${id}.append(${rsStatExpr(s, rsc, "py")})`)));
     if (R) collect.push("}"); else collect.push(statDfLinePy(stats));
+    derLines.forEach(t => collect.push(t));
   }
 
   const inference = mk("inference");
@@ -1031,10 +1077,12 @@ function genRowSampleIntegrated(cfg, lang) {
   const names = {}; Object.keys(rsc.map).forEach(colId => { names[colId] = safeName(rsc.map[colId]); });
   const stats = withIds(plainStats(cfg), names);
   const R = lang === "r", ind = R ? "  " : "    ";
+  const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
+  const derLines = derivedCollectLines(dcols, R ? e => e : e => `samp_dist[${key(e)}]`, lang);
   const drawLine = rsDrawLine(rsc, lang);
   const inf = compactInfLines(cfg, stats, lang);
   const needsSm = !R && stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
-  const needsNp = !R && inf.some(([t]) => t.includes("np."));
+  const needsNp = !R && (inf.some(([t]) => t.includes("np.")) || derivedNeedsNp(dcols) || derLines.some(t => t.includes("np.")));
   const L = [], push = (text, section) => L.push({ text, section });
   if (!R) { push("import pandas as pd", "sampler"); if (needsNp) push("import numpy as np", "sampler"); if (needsSm) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
   push("# Set up the sampler — resample whole rows (cases)", "sampler");
@@ -1047,6 +1095,7 @@ function genRowSampleIntegrated(cfg, lang) {
   push(ind + drawLine, "sampler");
   stats.forEach(({ s, id }) => push(ind + (R ? `${id}[i] <- ${rsStatExpr(s, rsc, "r")}` : `${id}.append(${rsStatExpr(s, rsc, "py")})`), "single"));
   if (R) push("}", "collect"); else push(statDfLinePy(stats), "collect");
+  derLines.forEach(t => push(t, "collect"));
   push("", "inference");
   inf.forEach(([t, sec]) => push(t, sec));
   return L;
