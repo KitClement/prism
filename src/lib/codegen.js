@@ -184,7 +184,7 @@ function dividerInfo(cfg, stats) {
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
 //   tail  + pct   → critical value: the (1-m) percentile (right) / m percentile (left)
 //   two-sided     → both proportions P(x ≥ v) / P(x < v)
-// Quantiles are type-7 percentile-based (R/numpy/pandas default), matching stats.js `quantile`.
+// Quantiles are type-7 percentile-based (R/pandas default), matching stats.js `quantile`.
 function dividerExprs(vec, div, lang) {
   const R = lang === "r";
   const ge = v => (R ? `mean(${vec} >= ${v})` : `(${vec} >= ${v}).mean()`);
@@ -192,7 +192,7 @@ function dividerExprs(vec, div, lang) {
   const le = v => (R ? `mean(${vec} <= ${v})` : `(${vec} <= ${v}).mean()`); // left tail is inclusive
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
   const outside = (a, b) => (R ? `mean(${vec} < ${a} | ${vec} > ${b})` : `((${vec} < ${a}) | (${vec} > ${b})).mean()`);
-  const quant = a => (R ? `quantile(${vec}, ${a})` : `np.quantile(${vec}, ${a})`);
+  const quant = a => (R ? `quantile(${vec}, ${a})` : `${vec}.quantile(${a})`);
 
   if (div.range) {
     const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
