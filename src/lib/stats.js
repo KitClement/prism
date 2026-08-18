@@ -30,6 +30,33 @@ function numericSummary(nums) {
   return { n, min: s[0], max: s[n - 1], mean, sd, q1, median, q3, whiskerLo, whiskerHi };
 }
 
+// Gaussian kernel-density estimate sampled across [lo, hi]. Bandwidth by Silverman's
+// rule of thumb (h = 0.9·min(SD, IQR/1.34)·n^(-1/5)). Returns `steps` points
+// { x, y } with y the raw density (the caller scales height into the plot), or null
+// for degenerate input (fewer than 2 points, or zero spread → nothing to smooth).
+function kdeCurve(values, lo, hi, steps = 120) {
+  const nums = (values || []).map(Number).filter(v => !isNaN(v));
+  const n = nums.length;
+  if (n < 2 || !(hi > lo)) return null;
+  const summ = numericSummary(nums);
+  const iqr = summ.q3 - summ.q1;
+  const spread = Math.min(summ.sd || Infinity, iqr > 0 ? iqr / 1.34 : Infinity);
+  const h = 0.9 * (isFinite(spread) ? spread : (summ.sd || 0)) * Math.pow(n, -1 / 5);
+  if (!(h > 0)) return null; // all values identical → no curve
+  const inv = 1 / (h * Math.sqrt(2 * Math.PI));
+  const curve = [];
+  for (let i = 0; i < steps; i++) {
+    const x = lo + ((hi - lo) * i) / (steps - 1);
+    let sum = 0;
+    for (let j = 0; j < n; j++) {
+      const z = (x - nums[j]) / h;
+      sum += Math.exp(-0.5 * z * z);
+    }
+    curve.push({ x, y: (sum * inv) / n });
+  }
+  return curve;
+}
+
 function lsFit(pairs) {
   if (pairs.length < 2) return null;
   const n = pairs.length;
@@ -132,4 +159,4 @@ const FN_OPTS = [{ v:"mean", l:"Mean" }, { v:"sd", l:"SD" }, { v:"median", l:"Me
 // value and work on any kind, so they are excluded.
 const NUMERIC_FNS = new Set(["mean", "sd", "median", "min", "max", "q1", "q3", "slope", "intercept", "countBetween", "propBetween"]);
 
-export { quantile, numericSummary, lsFit, computeStat, statLabel, statKey, FN_OPTS, NUMERIC_FNS };
+export { quantile, numericSummary, kdeCurve, lsFit, computeStat, statLabel, statKey, FN_OPTS, NUMERIC_FNS };

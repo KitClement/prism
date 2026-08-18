@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnPlus, btnArr } from "../lib/styles";
 import { COLORS, clamp, uid, nextItemLabel } from "../lib/util";
 import { InlineEdit, FillFromData, ReplacementToggle, RangeInput, NumInput } from "./ui";
-import { mkSpinner, mkStacks, mkMixer, stageOutcomes } from "../lib/sampling";
+import { mkSpinner, mkStacks, mkMixer, convertDevice, stageOutcomes } from "../lib/sampling";
 
 // ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
 // Floor so a slice never fully vanishes (small enough that manual entry stays flexible;
@@ -991,7 +991,10 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
     setBranches([...cond, nb, ...dft]);
   };
   const remBranch = bid => { const b = branches.find(x => x.id === bid); if (b.condVar === null) return; setBranches(branches.filter(x => x.id !== bid)); };
-  const changeBranchType = (bid, type) => { const b = branches.find(x => x.id === bid); if (b.device.type === type) return; setBranchDevice(bid, mkDeviceOfType(type)); };
+  // Convert a branch's device to another type IN PLACE — preserve labels/colors/counts
+  // (convertDevice), rather than stamping a fresh default. A brand-new branch still uses
+  // mkDeviceOfType (a genuine fresh add) via addBranch/cloneDeviceFresh above.
+  const changeBranchType = (bid, type) => { const b = branches.find(x => x.id === bid); if (b.device.type === type) return; setBranchDevice(bid, convertDevice(b.device, type)); };
 
   return (
     <div style={{ background:"var(--surface)", borderRadius:12, boxShadow:"0 2px 10px var(--shadow-sm)",
@@ -1009,6 +1012,20 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
         <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr} aria-label={"Move column " + stage.varName + " right"}>→</button>
         <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"var(--red-ink)" }} aria-label={"Remove column " + stage.varName}>✕</button>
       </div>
+
+      {/* Device-type selector for a plain (non-forked) stage: convert in place, preserving
+          labels/colors/counts. Forked stages carry a per-branch selector in the branch header
+          instead. Hidden for row-sample mixers (not a plain category device). */}
+      {!forked && !branches[0].device.rowSample && (
+        <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:12, color:"var(--text-faint)" }}>
+          <span>type:</span>
+          <select value={branches[0].device.type} disabled={locked}
+            onChange={e => changeBranchType(branches[0].id, e.target.value)}
+            style={{ ...iSm, fontSize:12, padding:"2px 3px", flex:1 }} aria-label="Device type">
+            {DTYPE_OPTS.map(([t, l]) => <option key={t} value={t}>{l}</option>)}
+          </select>
+        </div>
+      )}
 
       {branches.map(branch => {
         const isDefault = branch.condVar === null;

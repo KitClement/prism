@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } fr
 import { toCanvas } from "html-to-image";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { colorAt, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
-import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
+import { numericSummary, kdeCurve, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
@@ -94,9 +94,12 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
 // a one-sided cut.
 function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none", band = "middle" }) {
   const xL = sx(xlo), xR = sx(xhi);
+  // Clamp cut pixels to the plate so an off-window cut yields an empty outer band rather
+  // than a rect that overshoots the axis (the true value still drives the read-out/code).
+  const cx = v => clamp(sx(v), Math.min(xL, xR), Math.max(xL, xR));
   const shades = [];
   if (cuts.length === 1) {
-    const xv = sx(cuts[0]);
+    const xv = cx(cuts[0]);
     if (dir === "left") shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.14} />);
     else if (dir === "right") shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.14} />);
     else {
@@ -104,7 +107,7 @@ function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none", band = "m
       shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.07} />);
     }
   } else if (cuts.length === 2) {
-    const a = sx(Math.min(cuts[0], cuts[1])), b = sx(Math.max(cuts[0], cuts[1]));
+    const a = cx(Math.min(cuts[0], cuts[1])), b = cx(Math.max(cuts[0], cuts[1]));
     if (band === "tails") {
       // Highlight the two outer regions (a two-sided p-value), leaving the middle clear.
       shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, a - xL)} height={botY - topY} fill="#6366f1" fillOpacity={0.1} />);
@@ -147,11 +150,19 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
   };
   const onUp = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {} setSelecting(false); setDragI(-1); };
 
+  // A cut may sit beyond the visible window (an unclamped typed value). The line + handle are
+  // drawn at the CLAMPED edge pixel; `offOf` reports which side a cut overshoots so we can add
+  // an outward arrow marking it as off-window. The true value still labels the handle.
+  const pxL = sx(xlo), pxR = sx(xhi), pxMin = Math.min(pxL, pxR), pxMax = Math.max(pxL, pxR);
+  const clampPx = p => (p < pxMin ? pxMin : p > pxMax ? pxMax : p);
+  const lo = Math.min(xlo, xhi), hi = Math.max(xlo, xhi);
+  const offOf = v => (v < lo ? -1 : v > hi ? 1 : 0);
+
   // Direction arrow for a one-sided single divider: a short horizontal arrow at mid-height
   // pointing into the shaded tail (blue ◂ left, orange ▸ right).
   let arrow = null;
   if (dir !== "none" && cuts.length === 1) {
-    const x = sx(cuts[0]), my = (topY + botY) / 2, right = dir === "right";
+    const x = clampPx(sx(cuts[0])), my = (topY + botY) / 2, right = dir === "right";
     const tip = x + (right ? 26 : -26), base = x + (right ? 8 : -8), col = right ? "#d97706" : "#2563eb";
     const back = tip + (right ? -7 : 7);
     arrow = (
@@ -166,15 +177,26 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
     <g>
       {arrow}
       {cuts.map((v, i) => {
-        const x = sx(v);
+        const off = offOf(v);
+        const x = clampPx(sx(v));
+        // Off-window marker: a short arrow at the edge pointing further out, so the clamped
+        // line reads as "the real cut is beyond here." Drawn near the top, clear of the arrow above.
+        const my = topY + 22, oT = x + (off > 0 ? 22 : -22), oB = x + (off > 0 ? 5 : -5), oBk = oT + (off > 0 ? -6 : 6);
         return (
           <g key={i} style={{ cursor:"ew-resize", touchAction:"none" }}
             onPointerDown={onDown(i)} onPointerMove={onMove} onPointerUp={onUp}>
             {/* wide transparent hit area for easy grabbing */}
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="transparent" strokeWidth={14} />
             <line x1={x} y1={topY} x2={x} y2={botY} stroke="#6366f1" strokeWidth={dragI === i ? 2.5 : 1.5} strokeDasharray="4 3" />
-            {/* the cut value, directly above the grab handle */}
-            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={12} fontWeight={700} fill="var(--accent-ink)">{fmt(v)}</text>}
+            {off !== 0 && (
+              <g style={{ pointerEvents:"none" }}>
+                <line x1={oB} y1={my} x2={oT} y2={my} stroke="#6366f1" strokeWidth={2} />
+                <path d={`M ${oT} ${my} L ${oBk} ${my - 4} L ${oBk} ${my + 4} Z`} fill="#6366f1" />
+              </g>
+            )}
+            {/* the cut value (true, unclamped), directly above the grab handle */}
+            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={12} fontWeight={700}
+              fill={off !== 0 ? "#6366f1" : "var(--accent-ink)"}>{off !== 0 ? (off > 0 ? "» " : "« ") + fmt(v) : fmt(v)}</text>}
             {/* grab handle at the top of the line */}
             <rect x={x - 5} y={topY - 9} width={10} height={9} rx={2} fill="#6366f1" stroke="#fff" strokeWidth={1} />
           </g>
@@ -542,6 +564,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const [showMean, setShowMean] = useState(false);
   const [showSD, setShowSD] = useState(false);
   const [showLS, setShowLS] = useState(false);
+  const [showDensity, setShowDensity] = useState(false);
   // Categorical cell labels (counts off by default; opt-in via "# Count")
   const [showCount, setShowCount] = useState(false);
   const [showPct, setShowPct] = useState(false);
@@ -770,8 +793,13 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         ? conservativeBand(vals, cover).map(c => clampVal(c, lo, hi))
         : [q(divDir === "right" ? 1 - m : m)];
     } else {
-      const inRange = v => v >= lo && v <= hi;
-      effCuts = (divCuts.length === want && divCuts.every(inRange))
+      // Value mode: keep the user's cuts whenever the count matches the mode — even when a
+      // cut lies OUTSIDE the visible window (a two-sided p-value may need a tail past the
+      // data range). The line is drawn clamped to the edge with an off-window arrow; the
+      // read-out + generated code use the true value. Only fall back to defaults when the
+      // mode just switched (wrong count) or a cut is non-finite.
+      const ok = v => typeof v === "number" && isFinite(v);
+      effCuts = (divCuts.length === want && divCuts.every(ok))
         ? divCuts
         : (divRange ? [lo + (hi - lo) / 3, lo + 2 * (hi - lo) / 3] : [(lo + hi) / 2]);
     }
@@ -780,7 +808,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // percentage snaps the cut to that quantile (pct mode). The two boxes stay linked.
   const onDivDrag = next => { setDivCuts(next); setDivBy("value"); };
   const setCut = (i, raw) => {
-    const v = clampVal(parseFloat(raw), divDomain.lo, divDomain.hi);
+    // No clamp: a typed value may sit beyond the window (drag still clamps to the axis).
+    const v = parseFloat(raw);
     if (isNaN(v)) return;
     const next = effCuts.slice(); next[i] = v; setDivCuts(next); setDivBy("value");
   };
@@ -974,6 +1003,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             <ChkLabel checked={showBox} onChange={setShowBox} label="Boxplot" />
             <ChkLabel checked={showMean} onChange={setShowMean} label="△ Mean" />
             <ChkLabel checked={showSD} onChange={setShowSD} label="↔ ±1 SD" />
+            {((xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric))) && <ChkLabel checked={showDensity} onChange={setShowDensity} label="∿ Density" />}
           </>
         )}
         {bivariate && xNumeric && yNumeric && (
@@ -1102,7 +1132,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
           const numTime = xNumeric ? xTime : yTime;
           return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} nameOf={nameOf} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
-            showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals}
+            showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals} showDensity={showDensity}
             expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps} {...divProps} {...rulerProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
@@ -1164,6 +1194,16 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 style={selectable ? { cursor:"pointer" } : undefined}
                 onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
             })}
+            {/* Density curve — a Gaussian KDE (Silverman bandwidth) over the univariate-numeric
+                data, x-aligned to the dots via `sx` and anchored to the axis baseline. */}
+            {showDensity && xSummary && !bivariate && (() => {
+              const curve = kdeCurve(xNums, xS.lo, xS.hi);
+              if (!curve) return null;
+              const peak = Math.max(...curve.map(p => p.y)) || 1;
+              const h = iH * 0.9;
+              const d = curve.map((p, i) => (i ? "L" : "M") + sx(p.x).toFixed(1) + " " + (PT + iH - (p.y / peak) * h).toFixed(1)).join(" ");
+              return <path d={d} fill="none" stroke="var(--accent-ink)" strokeWidth={2} strokeOpacity={0.85} style={{ pointerEvents:"none" }} />;
+            })()}
             {/* LS line */}
             {showLS && ls && yS && (() => {
               const x1 = xS.lo, x2 = xS.hi;
@@ -2134,7 +2174,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
+function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const selectable = !!onToggleSelect;
   const isSel = id => !!(selectedIds && selectedIds.has(id));
@@ -2218,6 +2258,15 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                     style={selectable ? { cursor:"pointer" } : undefined}
                     onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
                 })}
+                {/* per-group density curve — value→y, density extends rightward from the baseline */}
+                {showDensity && summary && (() => {
+                  const curve = kdeCurve(groupNums, lo, hi);
+                  if (!curve) return null;
+                  const peak = Math.max(...curve.map(p => p.y)) || 1;
+                  const w = Math.max(0, dotAreaW - dotR) * 0.95;
+                  const d = curve.map((p, i) => (i ? "L" : "M") + (xData + (p.y / peak) * w).toFixed(1) + " " + sy(p.x).toFixed(1)).join(" ");
+                  return <path d={d} fill="none" stroke={color} strokeWidth={1.75} strokeOpacity={0.85} style={{ pointerEvents:"none" }} />;
+                })()}
                 {/* boxplot (vertical, Tukey whiskers) */}
                 {showBox && summary && (
                   <g>
@@ -2350,6 +2399,15 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                   style={selectable ? { cursor:"pointer" } : undefined}
                   onClick={selectable && d.id ? () => onToggleSelect(d.id) : undefined} />;
               })}
+              {/* per-group density curve — value→x, density scaled to the band height */}
+              {showDensity && summary && (() => {
+                const curve = kdeCurve(groupNums, lo, hi);
+                if (!curve) return null;
+                const peak = Math.max(...curve.map(p => p.y)) || 1;
+                const hgt = Math.max(0, avail) * 0.95;
+                const d = curve.map((p, i) => (i ? "L" : "M") + sx(p.x).toFixed(1) + " " + (baseY - (p.y / peak) * hgt).toFixed(1)).join(" ");
+                return <path d={d} fill="none" stroke={color} strokeWidth={1.75} strokeOpacity={0.85} style={{ pointerEvents:"none" }} />;
+              })()}
               {/* ±1 SD — runs through the mean triangle, centred on the mean */}
               {showSD && summary && (() => {
                 const gb = baseY + dotR + 1, y = gb + 5, mx = sx(summary.mean);

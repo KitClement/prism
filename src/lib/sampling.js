@@ -264,6 +264,60 @@ const mkMixer = n => ({
   ]
 });
 
+// ─── Device type conversion ────────────────────────────────────────────────────
+// Collapse any device to its canonical categories `[{ label, color, weight }]` — the
+// single representation the three device types share. Stacks weight = count, mixer
+// weight = ball count (group by label, first color wins), spinner weight = pct.
+function deviceCategories(dev) {
+  if (dev.type === "stacks") return dev.items.map(it => ({ label: it.label, color: it.color, weight: it.count }));
+  if (dev.type === "spinner") return dev.slices.map(s => ({ label: s.label, color: s.color, weight: s.pct }));
+  if (dev.type === "mixer") {
+    const out = [], seen = {};
+    dev.balls.forEach(b => {
+      if (!seen[b.label]) { seen[b.label] = { label: b.label, color: b.color, weight: 0 }; out.push(seen[b.label]); }
+      seen[b.label].weight++;
+    });
+    return out;
+  }
+  return [];
+}
+
+const gcd2 = (a, b) => { a = Math.abs(a); b = Math.abs(b); while (b) { [a, b] = [b, a % b]; } return a || 1; };
+
+// Convert a device to another type in place, preserving labels, colors, quantities,
+// varName, and the replacement flag. A fresh id avoids colliding with animation
+// draw-state keyed by the old id (constraint #1). Same type → returned unchanged.
+// Counts are rounded to integers; when the source is a spinner (weights are pct) the
+// integer counts are reduced by their GCD so 70/30 → 7/3. A mixer's total ball count
+// is capped (~200) so the bowl stays renderable.
+function convertDevice(dev, targetType) {
+  if (!dev || dev.type === targetType) return dev;
+  const cats = deviceCategories(dev).filter(c => c.label !== undefined);
+  const base = { id: uid(), varName: dev.varName, withReplacement: dev.withReplacement !== false };
+  if (targetType === "spinner") {
+    const total = cats.reduce((a, c) => a + c.weight, 0) || 1;
+    return { ...base, type: "spinner",
+      slices: cats.map(c => ({ id: uid(), label: c.label, pct: (c.weight / total) * 100, color: c.color })) };
+  }
+  // → stacks / mixer both need integer counts.
+  let counts = cats.map(c => Math.max(1, Math.round(c.weight)));
+  if (dev.type === "spinner" && counts.length) {
+    const g = counts.reduce((a, b) => gcd2(a, b));
+    if (g > 1) counts = counts.map(c => c / g);
+  }
+  if (targetType === "stacks") {
+    return { ...base, type: "stacks",
+      items: cats.map((c, i) => ({ id: uid(), label: c.label, count: counts[i], color: c.color })) };
+  }
+  // → mixer: expand each category into `count` individual balls, capped in total.
+  const total = counts.reduce((a, b) => a + b, 0);
+  const CAP = 200;
+  if (total > CAP) { const f = CAP / total; counts = counts.map(c => Math.max(1, Math.round(c * f))); }
+  const balls = [];
+  cats.forEach((c, i) => { for (let k = 0; k < counts[i]; k++) balls.push({ id: uid(), label: c.label, color: c.color }); });
+  return { ...base, type: "mixer", balls };
+}
+
 async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, speedRef, setAnimStates, onRow, onDone, cancelRef }) {
   // speed (0=slow, 1=fast, 2=instant) is read live from speedRef.current so a
   // mid-run slider change takes effect on the next draw. delay/spinMs are
@@ -415,6 +469,6 @@ async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, spee
 export {
   sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, deviceVarKind,
   deviceLabels, stageVarKind, stageOutcomes, mkStage, toStages, migratePipeline, rekeyStats, rekeyStopRule, selectBranch, stopReached,
-  mkSpinner, mkStacks, mkMixer, runAnimatedSample,
+  mkSpinner, mkStacks, mkMixer, deviceCategories, convertDevice, runAnimatedSample,
   rowSampleDevice, isRowSampleStage, stageColumns, pipelineColumns,
 };
