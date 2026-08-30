@@ -256,17 +256,29 @@ function pwVerifier(password, salt) {
   return toAlpha(deriveKey(password, salt + "::pw"));
 }
 
+// Veil the sampler config into the URL-safe data half of a hidden blob, and back. Split out
+// so the .prism file codec (lib/persist.js) can conceal a saved hidden sampler with the SAME
+// XOR/PEPPER implementation — one veil, no parallel copy. The key comes from deriveKey(PEPPER,
+// salt) (code-known, not the password), so the config runs for anyone who opens it; the salt
+// pairs with the password verifier stored alongside to gate a later Reveal.
+export function veilConfig(state, salt) {
+  return xorAlpha(LZString.compressToEncodedURIComponent(encCompact(state)), deriveKey(PEPPER, salt), 1);
+}
+export function unveilConfig(data, salt) {
+  try { return decCompact(LZString.decompressFromEncodedURIComponent(xorAlpha(data, deriveKey(PEPPER, salt), -1))); }
+  catch { return null; }
+}
+
 // Encode app state → a URL-safe blob string (the value of the ?s= param).
 // opts.password (optional) produces a HIDDEN blob: the config is concealed behind the
 // password while the sampler still runs for whoever opens the link.
 export function encodeConfig(state, opts) {
-  const lz = LZString.compressToEncodedURIComponent(encCompact(state));
   const password = opts && opts.password;
-  if (!password) return "P" + lz;
+  if (!password) return "P" + LZString.compressToEncodedURIComponent(encCompact(state));
   const salt = randomSalt();
   // Obfuscate with a code-known key (NOT the password) so the sampler runs for anyone who
   // opens the link; store a password verifier so Reveal can gate viewing the internals.
-  return "H" + salt + pwVerifier(password, salt).slice(0, PW_LEN) + xorAlpha(lz, deriveKey(PEPPER, salt), 1);
+  return "H" + salt + pwVerifier(password, salt).slice(0, PW_LEN) + veilConfig(state, salt);
 }
 
 // Decode a blob → one of:
@@ -290,8 +302,7 @@ export function decodeConfig(blob) {
     if (blob[0] === "H") {
       const salt = blob.slice(1, 9);
       const pw = blob.slice(9, 9 + PW_LEN);
-      const lz = xorAlpha(blob.slice(9 + PW_LEN), deriveKey(PEPPER, salt), -1);
-      const config = decCompact(LZString.decompressFromEncodedURIComponent(lz));
+      const config = unveilConfig(blob.slice(9 + PW_LEN), salt);
       return config ? { hidden: true, salt, pw, config } : null;
     }
     // No marker: either garbage or a v1 link (an lz-compressed JSON envelope). v1 is a clean

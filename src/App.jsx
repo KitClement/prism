@@ -5,6 +5,7 @@ import { computeStat, statLabel, statKey, NUMERIC_FNS } from "./lib/stats";
 import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample, isRowSampleStage, pipelineColumns } from "./lib/sampling";
 import { encodeConfig, decodeConfig, checkHiddenPassword, shareURL } from "./lib/share";
+import { buildSaveFile, parseSaveFile, suggestFilename, downloadJSON } from "./lib/persist";
 import { StageCard } from "./components/devices";
 import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
 import { generateCode } from "./lib/codegen";
@@ -24,6 +25,7 @@ export default function App() {
   // CSV / EDA dataset
   const [dataset, setDataset] = useState(null); // { headers, rows, name }
   const csvInputRef = useRef(null);              // keyboard-reachable Upload CSV trigger (a11y)
+  const prismInputRef = useRef(null);            // keyboard-reachable Open .prism trigger (a11y)
   const samplerRef = useRef(null);               // capture region for the sampler "Copy image" button
   const [liveMsg, setLiveMsg] = useState("");    // polite screen-reader announcements (a11y)
 
@@ -60,6 +62,21 @@ export default function App() {
   // shareMsg doubles as the stale-link warning, which is a failure and must not read as the
   // green "copied" confirmation — nor vanish on the copy timeout before it's been read.
   const [shareErr, setShareErr] = useState(false);
+  // Brief "Saved / Opened <name>" confirmation in the page-header cluster (Phase 7), reusing the
+  // shareMsg toast idiom but kept separate so a file action and a Share action don't overwrite
+  // each other's message.
+  const [fileMsg, setFileMsg] = useState("");
+  const fileMsgTimer = useRef(null);
+  const flashFileMsg = msg => { setFileMsg(msg); clearTimeout(fileMsgTimer.current); fileMsgTimer.current = setTimeout(() => setFileMsg(""), 2600); };
+  // Unsaved-changes tracking for the beforeunload guard (Phase 7). dirtyRef flips true on any
+  // edit to persistable state and back to false on Save/Open — a ref (not state) so the
+  // beforeunload handler reads the live value without re-subscribing. suppressDirtyRef swallows
+  // the state changes that an Open (or a shared-link import) itself triggers. dirtyDeps snapshots
+  // the tracked references so the effect marks dirty only on a REAL change — value comparison,
+  // not a run counter, so StrictMode's double-invoked mount effect (identical refs) stays clean.
+  const dirtyRef = useRef(false);
+  const suppressDirtyRef = useRef(false);
+  const dirtyDeps = useRef(null);
   const [sampleData, setSampleData] = useState([]);
   const [sampling, setSampling] = useState(false);
   const [animStates, setAnimStates] = useState({});
@@ -83,6 +100,10 @@ export default function App() {
     setStopRule(rekeyStopRule(config.stopRule || null, idMap));
     setTrackedStats(rekeyStats(Array.isArray(config.trackedStats) ? config.trackedStats : [], idMap));
     if (config.codeLang) setCodeLang(config.codeLang);
+    // Return the migrated stages + id map so Open (applySession) can detect a legacy flat
+    // pipeline (non-identity idMap → orphaned result keys) and derive live column ids. The
+    // URL importer at mount ignores the return value, so this stays backward compatible.
+    return { idMap, stages };
   }, []);
 
   // One-time URL import (Task C/D). Read ?s=<blob> on mount and load the config. A hidden
@@ -104,6 +125,9 @@ export default function App() {
       cleanURL();
       return;
     }
+    // A shared-link import is a load, not a user edit — don't let it arm the unsaved-changes
+    // guard (Phase 7). Mirrors applySession's suppression.
+    suppressDirtyRef.current = true;
     applyConfig(decoded.config);
     if (decoded.hidden) {
       setHidden(true); setRevealed(false); setHiddenData({ salt: decoded.salt, pw: decoded.pw });
@@ -143,6 +167,32 @@ export default function App() {
       return same ? prev : o;
     });
   }, []);
+  // Plot view state for Save/Open (Phase 4). Each slot ("eda"/"sample"/"collect") holds its
+  // host's { xVar, yVar, selectedIds, plot } blob as a JSON STRING, so dedup is a stringify
+  // compare (scales to ~20 plot fields, unlike the hand-written compare above) and buildSaveFile
+  // just JSON.parses it. Reported UNCONDITIONALLY — not gated on codeLang, since that gate is
+  // exactly why dividerState/overlayState go stale with the code panel off.
+  const [viewState, setViewState] = useState({});
+  const setSlotView = useCallback((slot, v) => {
+    setViewState(prev => {
+      const s = JSON.stringify(v);
+      return prev[slot] === s ? prev : { ...prev, [slot]: s };
+    });
+  }, []);
+  const onEdaView = useCallback(v => setSlotView("eda", v), [setSlotView]);
+  const onSampleView = useCallback(v => setSlotView("sample", v), [setSlotView]);
+  const onCollectView = useCallback(v => setSlotView("collect", v), [setSlotView]);
+  // Bumped on Open (Phase 5) to remount the plots so their lazy useState re-seeds from
+  // initialView. `initialViews` is memoized on sessionKey ONLY (viewState deliberately omitted):
+  // it captures the view at remount time and does NOT re-seed as the plots report changes back
+  // during a normal session — the seed is a one-shot at mount, so feedback can't loop.
+  const [sessionKey, setSessionKey] = useState(0);
+  const initialViews = useMemo(() => ({
+    eda:     viewState.eda     ? JSON.parse(viewState.eda)     : undefined,
+    sample:  viewState.sample  ? JSON.parse(viewState.sample)  : undefined,
+    collect: viewState.collect ? JSON.parse(viewState.collect) : undefined,
+  }), [sessionKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toggleCollectId = id => {
     const adding = !collectSelectedIds.has(id);
     setCollectSelectedIds(prev => {
@@ -611,31 +661,51 @@ export default function App() {
     const newRows = [];
     let lastRows = null;
     let rep = 0;
-    const CHUNK = 200;
-    const step = () => {
-      let n = 0;
-      while (n < CHUNK && rep < batchSize && !batchCancelRef.current) {
+    // Time-sliced collect: draw for a short budget, then YIELD to the event loop, so a
+    // large collect (e.g. 999 samples × a big n = millions of draws — resampling a full
+    // dataset) never blocks the main thread long enough for the browser to kill the tab.
+    // Scheduling goes through a MessageChannel — a non-throttled "yield to the browser":
+    // unlike requestAnimationFrame it does NOT pause when the tab is hidden, and unlike
+    // setTimeout it isn't clamped to ~1s in a background tab, so a collect started and then
+    // backgrounded still finishes promptly. Always draws at least one sample per slice, so
+    // it makes progress even when a single sample is slower than the budget.
+    const SLICE_MS = 20;    // draw budget per event-loop turn before yielding
+    const PAINT_MS = 200;   // min wall-clock between progress re-renders
+    let lastPaint = 0;
+    const chan = new MessageChannel();
+    const scheduleNext = () => chan.port2.postMessage(0);
+    const finish = () => {
+      chan.port1.onmessage = null;
+      setCollectRows(cr => [...cr, ...newRows]);
+      // Show the most recent sample generated by the batch in Sample Results, so the
+      // window stays current regardless of which path drew the last sample. Also point
+      // currentSample at it so click-to-track seeds from the displayed sample.
+      if (lastRows) {
+        setSampleData(lastRows);
+        setCurrentSample({ id: uid(), rows: lastRows });
+      }
+      setBatchProgress(100);
+      setBatchCollecting(false);
+    };
+    chan.port1.onmessage = () => {
+      const t0 = performance.now();
+      do {
         const rows = drawSample(pipeline, sampleSize, { runMode, stopRule });
         lastRows = rows;
-        const statRow = { _id: uid(), ...computeStatRow(specs, rows, computeStat) };
-        newRows.push(statRow);
-        rep++; n++;
+        newRows.push({ _id: uid(), ...computeStatRow(specs, rows, computeStat) });
+        rep++;
+      } while (rep < batchSize && !batchCancelRef.current && performance.now() - t0 < SLICE_MS);
+      const done = rep >= batchSize || batchCancelRef.current;
+      // Throttle the progress re-render: a full app re-render (with the sample/collect
+      // plots) is far heavier than a slice of drawing, so painting every slice would
+      // dominate the run. Paint at most every PAINT_MS; the final state is set in finish().
+      if (!done && performance.now() - lastPaint >= PAINT_MS) {
+        lastPaint = performance.now();
+        setBatchProgress(Math.round(rep / batchSize * 100));
       }
-      setBatchProgress(Math.round(rep / batchSize * 100));
-      if (rep < batchSize && !batchCancelRef.current) requestAnimationFrame(step);
-      else {
-        setCollectRows(cr => [...cr, ...newRows]);
-        // Show the most recent sample generated by the batch in Sample Results, so the
-        // window stays current regardless of which path drew the last sample. Also point
-        // currentSample at it so click-to-track seeds from the displayed sample.
-        if (lastRows) {
-          setSampleData(lastRows);
-          setCurrentSample({ id: uid(), rows: lastRows });
-        }
-        setBatchCollecting(false);
-      }
+      if (done) finish(); else scheduleNext();
     };
-    requestAnimationFrame(step);
+    scheduleNext();
   };
 
   // Build a shareable URL for the current sampler config and copy it (Task C). With a
@@ -675,9 +745,102 @@ export default function App() {
   const exportCSV = (data, name) => {
     const cols = Object.keys(data[0] || {});
     const csv = [cols.join(","), ...data.map(r => cols.map(c => r[c]).join(","))].join("\n");
+    // Blob, not a data: URI — a data: href silently no-ops past Chrome's ~2 MB ceiling,
+    // which a 999-row collect export can exceed (matches persist.js's downloadJSON).
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = "data:text/csv," + encodeURIComponent(csv);
-    a.download = name; a.click();
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // Save the whole session to a `.prism` file (lib/persist.js). Unlike Share (which drops the
+  // dataset and results to fit a URL), this persists everything a student produced — dataset,
+  // drawn samples, tracked stats, collected rows, and plot view — as plain, inspectable JSON.
+  // Not gated on hasRowSample: the dataset travels with the file, so a case-resampling sampler
+  // saves fine. A hidden sampler stays veiled (buildSaveFile reuses its stored salt/verifier).
+  const saveSession = () => {
+    const state = {
+      hidden, hiddenData, pipeline, sampleSize, runMode, stopRule,
+      dataset, sampleData, currentSample,
+      trackedStats, collectRows, collectSelectedIds, batchSize,
+      codeLang, cbMode, animSpeed, dark,
+      // Each slot's blob is a JSON string; parse back to an object for the plain-JSON file.
+      view: Object.fromEntries(Object.entries(viewState).map(([k, v]) => [k, JSON.parse(v)])),
+    };
+    const filename = suggestFilename(state);
+    downloadJSON(buildSaveFile(state), filename);
+    dirtyRef.current = false; // Save clears unsaved-changes; touches no dirty-tracked dep itself.
+    flashFileMsg("⬇ Saved " + filename);
+    setLiveMsg("Session saved to " + filename + ".");
+  };
+
+  // Restore a whole session from a parsed `.prism` file (lib/persist.js). This is the ONE real
+  // refactor in the Save/Open roadmap: unlike the mount-time URL importer, Open runs mid-session,
+  // so it must NOT reuse applyConfig alone — that only writes the authoring slots and would weld
+  // the new sampler onto the old results. applySession writes EVERY remaining slot exhaustively
+  // (including ones whose saved value is empty), in one pass, so there is no half-open state.
+  const applySession = session => {
+    // The batched state writes below are an Open, not user edits — swallow the one dirty-effect
+    // run they trigger so a freshly opened session starts clean (Phase 7).
+    suppressDirtyRef.current = true;
+    // applyConfig migrates + rekeys authoring; its idMap is identity for any well-formed file
+    // (Finding 3). A NON-identity map means a legacy flat pipeline got fresh ids, orphaning every
+    // sampleData/currentSample/collectRows key — restore authoring but DROP results (Trap B):
+    // silently-wrong results are worse than none.
+    const { idMap, stages } = applyConfig(session);
+    const identity = Object.keys(idMap).every(k => idMap[k] === k);
+    // Self-heal a hand-edited file that references a deleted stage, reusing the app's own
+    // invalidation (dropInvalid) rather than a parallel validator (Trap E). applyConfig already
+    // set the rekeyed stats; refine that same list against the restored pipeline's live columns.
+    const rekeyed = rekeyStats(Array.isArray(session.trackedStats) ? session.trackedStats : [], idMap);
+    setTrackedStats(dropInvalid(rekeyed, pipelineColumns(stages).map(c => c.id)));
+
+    setDataset(session.dataset || null);
+    setSampleData(identity ? session.sampleData : []);
+    setCurrentSample(identity ? session.currentSample : null);
+    setCollectRows(identity ? session.collectRows : []);
+    setCollectSelectedIds(new Set(identity ? session.collectSelectedIds : []));
+    setCollectScroll(null);
+    setBatchSize(session.batchSize);
+    setBatchProgress(0);
+    // dividerState/overlayState are derived — the ~onCollectDivider/onCollectOverlays effects
+    // re-report them from the restored view. Clearing avoids a stale value flashing.
+    setDividerState(null);
+    setOverlayState(null);
+    setCbMode(session.cbMode);
+    setAnimSpeed(session.animSpeed);
+    // Restoring the saved theme also persists it to localStorage (via the dark effect at ~48-50).
+    // Intentional (Phase 7): opening a session adopts its theme as the app theme, the same way the
+    // Dark toggle does — a low-stakes, easily reversed preference, not silent data loss.
+    setDark(session.dark);
+    // Hidden veil inherits the share link's threat model: opens + runs for anyone, password gates
+    // Reveal. A veiled file always opens concealed regardless of how it was saved.
+    setHidden(session.hidden);
+    setRevealed(!session.hidden);
+    setHiddenData(session.hiddenData);
+    // viewState stores JSON STRINGS; session.view is a plain object of plain plot blobs.
+    setViewState(Object.fromEntries(Object.entries(session.view || {}).map(([k, v]) => [k, JSON.stringify(v)])));
+    setSessionKey(k => k + 1); // LAST — remounts the plots so their lazy useState re-seeds from initialView
+    if (!identity) safeAlert("This file was saved in an older format, so the sampler was restored but its drawn samples and collected results could not be.");
+  };
+
+  // Open a `.prism` file: parse (never throws → {ok,error}), confirm before discarding meaningful
+  // in-session work (safeConfirm — the mount-adjacent action the safe wrappers exist for), apply.
+  const handleOpenFile = file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const res = parseSaveFile(String(e.target.result));
+      if (!res.ok) { safeAlert(res.error); return; }
+      if ((collectRows.length || dataset || sampleData.length) &&
+          !safeConfirm("Open this session? Your current dataset, drawn samples, and collected results will be replaced.")) return;
+      applySession(res.session);
+      const label = res.session.dataset ? res.session.dataset.name : (res.session.hidden ? "hidden sampler" : "session");
+      flashFileMsg("📂 Opened " + label);
+      setLiveMsg("Session opened" + (res.session.dataset ? " — " + res.session.dataset.name : "") + ".");
+    };
+    reader.readAsText(file);
   };
 
   // Polite screen-reader announcements (4.1.3): when a draw or a batch collection
@@ -691,6 +854,36 @@ export default function App() {
     if (prevCollecting.current && !batchCollecting) setLiveMsg("Collection complete — " + collectRows.length + " rows collected.");
     prevCollecting.current = batchCollecting;
   }, [batchCollecting, collectRows.length]);
+
+  // Mark the session dirty on any edit to persistable state (Phase 7). Marks dirty only when a
+  // tracked reference actually changed since the last observation — the first observation (and
+  // StrictMode's identical-ref re-run of it) just seeds the snapshot, so a fresh app is never
+  // "dirty". Save/Open drive dirty back to false: Open changes several deps in one batched
+  // render, so suppressDirtyRef lets that single run clear the flag instead of re-setting it;
+  // Save touches none of them and clears dirtyRef directly.
+  useEffect(() => {
+    const snap = [pipeline, dataset, sampleData, currentSample, collectRows, trackedStats, sampleSize, runMode, stopRule];
+    const prev = dirtyDeps.current;
+    dirtyDeps.current = snap;
+    if (prev === null) return;                                  // first observation — seed only
+    if (!snap.some((v, i) => v !== prev[i])) return;            // no real change (StrictMode re-run)
+    if (suppressDirtyRef.current) { suppressDirtyRef.current = false; dirtyRef.current = false; return; }
+    dirtyRef.current = true;
+  }, [pipeline, dataset, sampleData, currentSample, collectRows, trackedStats, sampleSize, runMode, stopRule]);
+
+  // Warn before leaving with unsaved work (Phase 7). dirtyRef is only ever true after a genuine
+  // edit (the mount fire is skipped, Save/Open reset it), so a fresh or just-saved session never
+  // prompts. Registered once — the handler reads the live ref, so no dep churn.
+  useEffect(() => {
+    const handler = e => {
+      if (!dirtyRef.current) return;
+      e.preventDefault();
+      e.returnValue = ""; // required for Chrome to show the native prompt
+      return "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   // Generated R/Python code (Task E), recomputed from the live config. `null` when the code
   // toggle is off so each `CodeBeside` falls back to a no-layout-cost full-width tool. Each
@@ -731,6 +924,28 @@ export default function App() {
               background:"var(--surface)", color:"var(--text-2)", border:"1px solid var(--border-2)", borderRadius:7, cursor:"pointer" }}>
             {dark ? "Light" : "Dark"}
           </button>
+          {/* Save the whole session to a .prism file (dataset + samples + tracked stats +
+              collected rows + view). Header idiom, matching the Dark button — not btnNav. */}
+          <button onClick={saveSession}
+            title={(hidden ? "Save this session to a .prism file — the sampler stays concealed (password still required to reveal)"
+                           : "Save this session to a .prism file") + (dataset ? " (includes the " + dataset.name + " dataset)" : "")}
+            style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px", fontSize:12, fontWeight:600,
+              background:"var(--surface)", color:"var(--text-2)", border:"1px solid var(--border-2)", borderRadius:7, cursor:"pointer" }}>
+            ⬇ Save
+          </button>
+          {/* Open a .prism file — a real <button> drives a hidden file input via ref so the picker
+              is keyboard-reachable (a11y idiom from Upload CSV). The value reset lets the same file
+              be re-picked after an edit. */}
+          <input ref={prismInputRef} type="file" accept=".prism,application/json" className="sr-only" tabIndex={-1}
+            onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleOpenFile(f); e.target.value = ""; }} />
+          <button onClick={() => prismInputRef.current && prismInputRef.current.click()}
+            title="Open a saved .prism session (replaces the current one)"
+            style={{ display:"inline-flex", alignItems:"center", gap:6, padding:"4px 10px", fontSize:12, fontWeight:600,
+              background:"var(--surface)", color:"var(--text-2)", border:"1px solid var(--border-2)", borderRadius:7, cursor:"pointer" }}>
+            📂 Open
+          </button>
+          {/* Saved / Opened confirmation toast (Phase 7) — green like the Share "copied" toast. */}
+          {fileMsg && <span data-no-capture="1" style={{ fontSize:12, color:"var(--green-ink)", fontWeight:700 }}>{fileMsg}</span>}
           <CodeControls codeLang={codeLang} cbMode={cbMode}
             onSetLang={setCodeLang} onToggleCb={() => setCbMode(c => !c)} />
         </div>
@@ -753,8 +968,9 @@ export default function App() {
 
         {dataset ? (
           <div>
-            <EDAPlot rows={dataset.rows} headers={dataset.headers}
-              onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })} />
+            <EDAPlot key={sessionKey} rows={dataset.rows} headers={dataset.headers}
+              onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })}
+              initialView={initialViews.eda} onViewChange={onEdaView} />
             <div style={{ fontSize:12, color:"var(--text-faint)", marginTop:8 }}>
               Build a Stacks or Mixer in the sampler below, then use its <strong>Fill from data</strong> control to load a column from this dataset.
             </div>
@@ -909,7 +1125,8 @@ export default function App() {
           <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Sample Results</h2>
           {sampleData.length > 0 && <span style={{ fontSize:12, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
         </div>
-        <SampleResults sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
+        <SampleResults key={sessionKey} sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats}
+          initialView={initialViews.sample} onViewChange={onSampleView} />
        </CodeBeside>
       </div>
 
@@ -999,8 +1216,9 @@ export default function App() {
         {trackedStats.length > 0 && collectRows.length > 0 && (
           <div style={{ borderTop:"1px solid var(--border)", paddingTop:12 }}>
             <CodeBeside sectionId="inference" lines={code && code.inference} cbMode={cbMode}>
-              <DistributionPlot columns={trackedStats.map(s => ({ id: s.id, label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
+              <DistributionPlot key={sessionKey} columns={trackedStats.map(s => ({ id: s.id, label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
                 rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId}
+                initialView={initialViews.collect} onViewChange={onCollectView}
                 onDivider={codeLang === "off" ? undefined : onCollectDivider}
                 onOverlays={codeLang === "off" ? undefined : onCollectOverlays} />
             </CodeBeside>

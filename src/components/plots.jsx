@@ -552,53 +552,71 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays }) {
+function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
   // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
   // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
   // there and every label renders unchanged.
   const nm = nameOf || (h => h);
-  const [dotSize, setDotSize] = useState(5);
+  // `initialView` (optional) seeds the local view state on mount so a saved/opened
+  // session restores exactly what was on screen; each hook falls back to its original
+  // default via `??`, so a host that passes no `initialView` is byte-identical to before.
+  const iv = initialView;
+  const [dotSize, setDotSize] = useState(() => iv?.dotSize ?? 5);
 
   // Stat overlay toggles
-  const [showBox, setShowBox] = useState(false);
-  const [showMean, setShowMean] = useState(false);
-  const [showSD, setShowSD] = useState(false);
-  const [showLS, setShowLS] = useState(false);
-  const [showDensity, setShowDensity] = useState(false);
+  const [showBox, setShowBox] = useState(() => iv?.showBox ?? false);
+  const [showMean, setShowMean] = useState(() => iv?.showMean ?? false);
+  const [showSD, setShowSD] = useState(() => iv?.showSD ?? false);
+  const [showLS, setShowLS] = useState(() => iv?.showLS ?? false);
+  const [showDensity, setShowDensity] = useState(() => iv?.showDensity ?? false);
   // Categorical cell labels (counts off by default; opt-in via "# Count")
-  const [showCount, setShowCount] = useState(false);
-  const [showPct, setShowPct] = useState(false);
+  const [showCount, setShowCount] = useState(() => iv?.showCount ?? false);
+  const [showPct, setShowPct] = useState(() => iv?.showPct ?? false);
   // Collapse high-cardinality categorical axes (>10 categories)
-  const [expandCats, setExpandCats] = useState(false);
+  const [expandCats, setExpandCats] = useState(() => iv?.expandCats ?? false);
   // Divider measurement tool (Phase 6): off by default; opt-in per plot. The on-plot
   // count / proportion read-outs are themselves off until toggled (like the categorical
   // # Count / % Percent labels).
-  const [divOn, setDivOn] = useState(false);
-  const [divRange, setDivRange] = useState(false);
-  const [divCuts, setDivCuts] = useState([]);
-  const [divShowCount, setDivShowCount] = useState(false);
-  const [divShowPct, setDivShowPct] = useState(false);
+  const [divOn, setDivOn] = useState(() => iv?.divOn ?? false);
+  const [divRange, setDivRange] = useState(() => iv?.divRange ?? false);
+  const [divCuts, setDivCuts] = useState(() => iv?.divCuts ?? []);
+  const [divShowCount, setDivShowCount] = useState(() => iv?.divShowCount ?? false);
+  const [divShowPct, setDivShowPct] = useState(() => iv?.divShowPct ?? false);
   // Inference framing for the single divider: `divDir` picks a one-sided tail (an arrow
   // highlights it and only that tail's proportion shows → a p-value); `divBy` records whether
   // the student last set a VALUE (drag/type → read a probability) or a PERCENTAGE (`divPct`,
   // a tail/middle fraction → the cut snaps to that empirical quantile → read a critical value
   // / CI). The two are linked: editing the value box switches to "value", the % box to "pct".
-  const [divDir, setDivDir] = useState("none"); // "none" | "left" | "right"
-  const [divBy, setDivBy] = useState("value");  // "value" | "pct"
-  const [divPct, setDivPct] = useState(0.05);   // fraction: tail (single) / middle-or-tails (range)
+  const [divDir, setDivDir] = useState(() => iv?.divDir ?? "none"); // "none" | "left" | "right"
+  const [divBy, setDivBy] = useState(() => iv?.divBy ?? "value");  // "value" | "pct"
+  const [divPct, setDivPct] = useState(() => iv?.divPct ?? 0.05);   // fraction: tail (single) / middle-or-tails (range)
   // Range-mode framing: "middle" highlights the central band (a CI); "tails" highlights the two
   // outer regions (a two-sided p-value). In tails mode `divPct` is the COMBINED tail mass, so the
   // central band that snaps to it covers 1 - divPct. Only meaningful when `divRange`.
-  const [divBand, setDivBand] = useState("middle"); // "middle" | "tails"
+  const [divBand, setDivBand] = useState(() => iv?.divBand ?? "middle"); // "middle" | "tails"
   // Ruler measurement tool (Phase 6c): off by default; opt-in per plot. Endpoints carry
   // their snapped operand ({ value, spec, label }) so a difference of two measures can be
   // tracked as a derived column.
-  const [rulerOn, setRulerOn] = useState(false);
+  const [rulerOn, setRulerOn] = useState(() => iv?.rulerOn ?? false);
   const [rulerPts, setRulerPts] = useState([]);
   // Mechanic 2 (residual): which scatter point is measured. Mechanic 3 (cat difference):
   // up to two clicked stat specs whose difference the ruler reports.
   const [residSel, setResidSel] = useState(null);
   const [catSel, setCatSel] = useState([]);
+
+  // Report the raw view state up so a host can persist it (Save/Open). Mirrors the proven
+  // onDivider/onOverlays pattern but stays separate — different purpose, different data. It
+  // reports the raw `divCuts` (NOT the render-derived `effCuts`), so re-seeding can't feedback.
+  // MUST sit above the early returns below — otherwise it silently won't fire on an empty plot
+  // and would throw "Rendered more hooks" the day a host stops guarding for empty rows.
+  useEffect(() => {
+    if (!onViewChange) return;
+    onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
+      expandCats, divOn, divRange, divCuts, divShowCount, divShowPct,
+      divDir, divBy, divPct, divBand, rulerOn });
+  }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
+      expandCats, divOn, divRange, divCuts.join(","), divShowCount, divShowPct,
+      divDir, divBy, divPct, divBand, rulerOn]);
 
   const plotRef = useRef(null);
   const bodyRef = useRef(null);            // wraps just the plot body (no controls) for image copy
@@ -1470,7 +1488,7 @@ function scrollRowIntoView(container, id) {
   else if (rRect.bottom > visBottom) container.scrollTop += (rRect.bottom - visBottom);
 }
 
-function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider, onOverlays }) {
+function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
   // Disambiguate any repeated labels so each column is a distinct header/key
   // (tracked stats are already unique; manually-defined ones may collide).
   const headers = useMemo(() => {
@@ -1482,8 +1500,22 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
     return out;
   }, [columns.map(c => c.label).join("")]);
 
-  const [xVar, setXVar] = useState(headers[0] || "");
-  const [yVar, setYVar] = useState("none");
+  // Seed xVar from a saved STAT ID → its current display label (ids survive renames; a label
+  // gets a " (2)" collision suffix). Idiom mirrors handleDivider's headers.indexOf ↔ columns[k].
+  const [xVar, setXVar] = useState(() => {
+    const id = initialView?.xVar;
+    if (id) { const k = columns.findIndex(c => c.id === id); if (k >= 0 && headers[k]) return headers[k]; }
+    return headers[0] || "";
+  });
+  const [yVar, setYVar] = useState(() => initialView?.yVar ?? "none");
+  // Combined view reported up for Save/Open (Phase 4). Collect has no host-level selection (it's
+  // App's collectSelectedIds prop), so only xVar/yVar/plot travel; xVar → stat id on the way out.
+  const [plotView, setPlotView] = useState(() => initialView?.plot ?? null);
+  useEffect(() => {
+    if (!onViewChange) return;
+    const k = headers.indexOf(xVar);
+    onViewChange({ xVar: k >= 0 && columns[k] ? columns[k].id : null, yVar, plot: plotView });
+  }, [onViewChange, headers, columns, xVar, yVar, plotView]);
 
   // One row per repetition; non-finite stat values (e.g. an empty group in a
   // small/without-replacement sample) become blank so the plot skips them.
@@ -1523,23 +1555,33 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
   if (!columns.length) return null;
   return <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} width={width}
     selectedIds={selectedIds} onToggleSelect={onToggleSelect} onDivider={onDivider ? handleDivider : undefined}
-    onOverlays={onOverlays ? handleOverlays : undefined} />;
+    onOverlays={onOverlays ? handleOverlays : undefined}
+    initialView={initialView?.plot} onViewChange={setPlotView} />;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // EDA PLOT — exploratory plot with toggleable statistics overlays
 // ══════════════════════════════════════════════════════════════════════════════
-function EDAPlot({ rows, headers, onChange }) {
+function EDAPlot({ rows, headers, onChange, initialView, onViewChange }) {
   // X/Y selection lives here so the sibling DataTable can highlight the chosen
   // columns; the Plot owns dot size + overlay toggles. (Plot keeps X/Y valid.)
-  const [xVar, setXVar] = useState(headers[0] || "");
-  const [yVar, setYVar] = useState("none");
+  // `initialView` (optional, from an opened session) seeds these; each falls back
+  // to its original default via `??`, so a host without it is byte-identical.
+  const [xVar, setXVar] = useState(() => initialView?.xVar ?? (headers[0] || ""));
+  const [yVar, setYVar] = useState(() => initialView?.yVar ?? "none");
 
   // Linked highlighting (D1): a shared set of selected row `_id`s, toggled by
   // clicking a plot dot or a table row, highlighting both together. On select, a
   // `scrollTarget` nudges the table to reveal the just-highlighted row.
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [selectedIds, setSelectedIds] = useState(() => new Set(initialView?.selectedIds || []));
   const [scrollTarget, setScrollTarget] = useState(null);
+  // Raw plot-toggle blob reported up from the inner Plot; combined with this host's
+  // xVar/yVar/selectedIds and reported to App for Save/Open (Phase 4).
+  const [plotView, setPlotView] = useState(() => initialView?.plot ?? null);
+  useEffect(() => {
+    if (!onViewChange) return;
+    onViewChange({ xVar, yVar, selectedIds: [...selectedIds], plot: plotView });
+  }, [onViewChange, xVar, yVar, selectedIds, plotView]);
   const toggleId = id => {
     const adding = !selectedIds.has(id);
     setSelectedIds(prev => {
@@ -1562,7 +1604,8 @@ function EDAPlot({ rows, headers, onChange }) {
         selectedIds={selectedIds} onToggleSelect={toggleId} scrollTarget={scrollTarget} />
       {/* RIGHT: shared interactive plot */}
       <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        selectedIds={selectedIds} onToggleSelect={toggleId} />
+        selectedIds={selectedIds} onToggleSelect={toggleId}
+        initialView={initialView?.plot} onViewChange={setPlotView} />
     </div>
   );
 }
@@ -1572,19 +1615,27 @@ function EDAPlot({ rows, headers, onChange }) {
 // raw draws of a sampler run. The table is chronological: newest rows append at
 // the BOTTOM and the scroll view auto-follows as draws stream in.
 // ══════════════════════════════════════════════════════════════════════════════
-function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats }) {
+function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats, initialView, onViewChange }) {
   // `varNames` are device IDS (the plot/table headers); `nameOf(id)` resolves the
   // display name. `nm` falls back to identity so this still works if no map is passed.
+  // `initialView` (optional) seeds the view for Save/Open; xVar here is a column id, so it
+  // persists verbatim (ids survive renames).
   const nm = nameOf || (h => h);
-  const [xVar, setXVar] = useState(varNames[0] || "");
-  const [yVar, setYVar] = useState("none");
+  const [xVar, setXVar] = useState(() => initialView?.xVar ?? (varNames[0] || ""));
+  const [yVar, setYVar] = useState(() => initialView?.yVar ?? "none");
   const scrollRef = useRef(null);
   const trackedKeys = useMemo(() => new Set((trackedStats || []).map(statKey)), [trackedStats]);
 
   // Linked highlighting (D1): clicking a draw-dot or a Draws-table row highlights both.
   // Keyed by each draw's stable `_id`; on select, scroll the row into view.
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [selectedIds, setSelectedIds] = useState(() => new Set(initialView?.selectedIds || []));
   const [scrollTarget, setScrollTarget] = useState(null);
+  // Combined host+plot view reported up for Save/Open (Phase 4).
+  const [plotView, setPlotView] = useState(() => initialView?.plot ?? null);
+  useEffect(() => {
+    if (!onViewChange) return;
+    onViewChange({ xVar, yVar, selectedIds: [...selectedIds], plot: plotView });
+  }, [onViewChange, xVar, yVar, selectedIds, plotView]);
   const toggleId = id => {
     const adding = !selectedIds.has(id);
     setSelectedIds(prev => {
@@ -1646,7 +1697,8 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
       {/* RIGHT: shared interactive plot */}
       <Plot rows={sampleData} headers={varNames} nameOf={nameOf} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
         varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedKeys={trackedKeys}
-        selectedIds={selectedIds} onToggleSelect={toggleId} />
+        selectedIds={selectedIds} onToggleSelect={toggleId}
+        initialView={initialView?.plot} onViewChange={setPlotView} />
     </div>
   );
 }

@@ -156,13 +156,31 @@ function makeDrawState(pipeline) {
   return { liveCounts, drawnBalls };
 }
 
+// Pick a stacks item index weighted by remaining counts, in O(items) — walk the
+// counts and land on the item whose weight bracket a single random draw falls in.
+// Returns -1 when the pool is empty. Deliberately does NOT materialize a per-unit
+// pool: at large totals (e.g. resampling a full 2565-row dataset) building an
+// Array(total) on every draw made a sample O(n·units) and stalled the app (see the
+// scale note in CLAUDE.md); this keeps the same distribution at O(items) per draw.
+function pickStacksIdx(counts) {
+  let total = 0;
+  for (let i = 0; i < counts.length; i++) if (counts[i] > 0) total += counts[i];
+  if (total <= 0) return -1;
+  let r = Math.floor(Math.random() * total);
+  for (let i = 0; i < counts.length; i++) {
+    const c = counts[i] > 0 ? counts[i] : 0;
+    if (r < c) return i;
+    r -= c;
+  }
+  return counts.length - 1;
+}
+
 // Draw a single value from a stacks device. Returns { label, itemIdx } or null
 // if the device is empty. Mutates state.liveCounts when without replacement.
 function drawStacks(dev, state) {
   const counts = state.liveCounts[dev.id];
-  const pool = dev.items.flatMap((it, i) => Array(Math.max(0, counts[i])).fill(i));
-  if (!pool.length) return null;
-  const itemIdx = pool[Math.floor(Math.random() * pool.length)];
+  const itemIdx = pickStacksIdx(counts);
+  if (itemIdx < 0) return null;
   if (!dev.withReplacement) counts[itemIdx] = Math.max(0, counts[itemIdx] - 1);
   return { label: dev.items[itemIdx].label, itemIdx };
 }
@@ -383,15 +401,16 @@ async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, spee
 
       } else if (dev.type === "stacks") {
         const counts = liveCounts[dev.id];
-        // Pool maps each remaining unit to its item index; live counts already
-        // reflect without-replacement removals, so just sample by current counts.
-        const pool = dev.items.flatMap((it, i) => Array(Math.max(0, counts[i])).fill(i));
-        if (!pool.length) { set(dev.id, { result:"—" }); row[stage.id] = ""; continue; }
-        const pickedIdx = pool[Math.floor(Math.random() * pool.length)];
+        // Sample by current counts (already reflect without-replacement removals) in
+        // O(items) — the per-unit pool is built ONLY when animating, below, so a fast
+        // large-n run doesn't allocate Array(total) per draw (see pickStacksIdx).
+        const pickedIdx = pickStacksIdx(counts);
+        if (pickedIdx < 0) { set(dev.id, { result:"—" }); row[stage.id] = ""; continue; }
         result = dev.items[pickedIdx].label;
         if (delay > 0) {
           // Build a merged deck: all remaining units in random order.
           // Place the picked item index on TOP (last element = top of deck).
+          const pool = dev.items.flatMap((it, i) => Array(Math.max(0, counts[i])).fill(i));
           const rest = [...pool];
           const removeAt = rest.indexOf(pickedIdx);
           if (removeAt >= 0) rest.splice(removeAt, 1);

@@ -298,10 +298,13 @@ Both roadmaps are complete: the Phase 0–7 plan (`.claude/plans/plan.md` — mo
 `Plot`, the Sample Results / Collect Statistics overhaul, divider + ruler) and the next feature
 wave Tasks A–F (forked/conditional stages, run-until, URL sharing, hidden samplers, R/Python
 code panels, serialization polish) all shipped. Possible follow-ons:
-- **Save / open a session to a `.prism` file** — a full roadmap is written up in
-  `.claude/plans/file-structure.md` (7 phases, sized for parallel work). Persists what Share
-  deliberately omits: the dataset, drawn samples, tracked stats, collected rows, and plot view
-  state. Not started.
+- **Save / open a session to a `.prism` file** — ✅ **shipped** (all 7 phases in
+  `.claude/plans/file-structure.md`). `⬇ Save` / `📂 Open` in the page header persist what Share
+  deliberately omits — the dataset, drawn samples, tracked stats, collected rows, and per-plot view
+  state — as plain, inspectable JSON (`src/lib/persist.js`; own `PRISM_FILE_VERSION`, independent of
+  share.js). A hidden sampler stays veiled (reuses its stored salt/verifier). A `beforeunload` guard
+  warns on unsaved edits; a migration runner is wired (empty at v1). See the plan for the envelope
+  schema and correctness traps (id preservation through `migratePipeline`, `Set` serialization).
 - **Without-replacement fidelity in generated code** (currently flagged-but-with-replacement).
 - **Multi-condition stop rules** (run-until is single-condition v1; no AND/OR yet).
 - Trackability for the ruler's **residual** case; the divider on num×num scatter (both
