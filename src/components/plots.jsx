@@ -259,8 +259,9 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
 // difference of group means. When trackable, a "＋ track" affordance authors that
 // difference as a Phase 5 derived column via `onTrackDiff`.
 //   pts: [{ value, spec, label }, { value, spec, label }] — A then B, in data units.
-function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, snapCandidates, fmt, trackable, onTrackDiff }) {
+function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, snapCandidates, fmt, trackable, onTrackDiff, onCutDrag, cutSnap }) {
   const [dragI, setDragI] = useState(-1);
+  const [dragCut, setDragCut] = useState(-1);
   const pxPerUnit = Math.abs(sx(xhi) - sx(xlo)) / (Math.abs(xhi - xlo) || 1);
 
   const setSelecting = on => {
@@ -286,6 +287,25 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
     const next = pts.slice(); next[dragI] = snapped; onChange(next);
   };
   const onUp = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {} setSelecting(false); setDragI(-1); };
+  // When an endpoint is anchored to the divider, its handle sits on top of the divider's own
+  // grab handle (the ruler's full-height hit line covers it), so we offer a ring on the box
+  // that drags the divider directly — the anchored endpoint then follows via `resolveVal`.
+  const onCutDown = k => e => {
+    e.stopPropagation(); e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    setSelecting(true); setDragCut(k);
+  };
+  const onCutMove = e => {
+    if (dragCut < 0 || !onCutDrag) return;
+    const svg = e.currentTarget.ownerSVGElement;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const ratio = W / (rect.width || W);
+    let v = clampVal(inv((e.clientX - rect.left) * ratio), xlo, xhi);
+    v = snapValue(v, cutSnap, pxPerUnit);
+    onCutDrag(dragCut, v);
+  };
+  const onCutUp = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (err) {} setSelecting(false); setDragCut(-1); };
 
   const fmtNum = v => parseFloat(Number(v).toFixed(4));
   const a = pts[0], b = pts[1];
@@ -336,6 +356,16 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
             <text x={x} y={lineY - 1.5} textAnchor="middle" fontSize={11} fontWeight={800} fill="#fff">{i === 0 ? "A" : "B"}</text>
             {/* what this endpoint landed on (measure name or constant value) */}
             <text x={x} y={lineY + 16} textAnchor="middle" fontSize={11} fontWeight={600} fill="var(--ruler-text)">{opLabel(p)}</text>
+            {/* anchored to the divider → a ruler-colored ring on the divider's own grab box
+                (at topY) that drags the divider directly; the endpoint then follows. */}
+            {p.cut != null && onCutDrag && (
+              <g style={{ cursor:"ew-resize", touchAction:"none" }}
+                onPointerDown={onCutDown(p.cut)} onPointerMove={onCutMove} onPointerUp={onCutUp}>
+                <title>Drag the divider</title>
+                <circle cx={x} cy={topY - 4} r={7.5} fill="var(--ruler-line)" fillOpacity={0.18} />
+                <circle cx={x} cy={topY - 4} r={7.5} fill="none" stroke="var(--ruler-line)" strokeWidth={dragCut === p.cut ? 2.5 : 1.8} />
+              </g>
+            )}
           </g>
         );
       })}
@@ -910,6 +940,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // Resolve a stored endpoint to its live value: a measure recomputes from `rows` (so a
   // new single sample moves it), a constant keeps its number; clamp into the domain.
   const resolveVal = pt => {
+    if (pt && pt.cut != null) {                  // follows the live divider cut
+      const v = effCuts[pt.cut];
+      return Number.isFinite(v) ? v : pt.value;  // divider off / gone → keep last value
+    }
     if (!pt || !pt.spec) return pt ? pt.value : NaN;
     const v = computeStat(pt.spec, rows);
     return Number.isFinite(v) ? v : pt.value;
@@ -936,6 +970,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       if (bottomY[v] === undefined || dots[i].y > bottomY[v]) bottomY[v] = dots[i].y;
     });
     Object.keys(bottomY).forEach(k => rulerSnap.push({ value: +k, spec: null, label: null, y: bottomY[k] }));
+    // Divider cut(s): a full-height line has no y, so snapMeasure uses horizontal distance
+    // only — the cut wins everywhere along the line except close to a measure's marker.
+    if (showDivider) effCuts.forEach((c, k) => rulerSnap.push(
+      { value: c, cut: k, spec: null,
+        label: divRange ? (k === 0 ? "low cut" : "high cut") : "cut", y: null }));
   }
   // A stored endpoint set is reusable only if its anchors still reference this plot's
   // variables (else a variable switch left them stale → fall back to fresh defaults).
@@ -1305,7 +1344,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               <RulerOverlay W={W} topY={PT} botY={PT + iH} lineY={PT + 22} sx={sx}
                 inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
                 xlo={divDomain.lo} xhi={divDomain.hi} pts={effPts} onChange={setRulerPts}
-                snapCandidates={rulerSnap} fmt={divDomain.fmt} trackable={trackable} onTrackDiff={onTrackDiff} />
+                snapCandidates={rulerSnap} fmt={divDomain.fmt} trackable={trackable} onTrackDiff={onTrackDiff}
+                cutSnap={showDivider ? divDomain.snap : null}
+                onCutDrag={showDivider ? (k, v) => { const next = effCuts.slice(); next[k] = v; onDivDrag(next); } : null} />
             )}
             {/* Ruler — residual to LS line (scatter) */}
             {showResidRuler && scatterPts && scatterPts.length > 0 && (
@@ -2511,6 +2552,12 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
           );
         })}
 
+        {/* Shared divider cut(s) as ruler snap targets — appended after the group means
+            (which carry a y) so a measure still wins an exact coincident tie at its marker. */}
+        {rulerOn && divOn && divCuts && divCuts.length ? (divCuts.forEach((c, k) => rulerCands.push(
+          { value: c, cut: k, spec: null,
+            label: divCuts.length > 1 ? (k === 0 ? "low cut" : "high cut") : "cut", y: null })), null) : null}
+
         {/* x axis */}
         <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="var(--axis)" strokeWidth={1.5} />
         {ticks.map((t, i) => (
@@ -2531,7 +2578,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
           <RulerOverlay W={W} topY={PT} botY={H - PB} lineY={PT + 22} sx={sx}
             inv={px => lo + ((px - PL) / iW) * (hi - lo)}
             xlo={lo} xhi={hi} pts={rulerPts} onChange={onRulerChange} snapCandidates={rulerCands}
-            fmt={rulerFmt} trackable={trackable} onTrackDiff={onTrackDiff} />
+            fmt={rulerFmt} trackable={trackable} onTrackDiff={onTrackDiff}
+            cutSnap={divOn ? divSnap : null}
+            onCutDrag={divOn && divCuts ? (k, v) => { const next = divCuts.slice(); next[k] = v; onDivChange(next); } : null} />
         )}
       </svg>
       {allCats.length > 10 && (
