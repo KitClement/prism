@@ -4,6 +4,64 @@ import { COLORS, clamp, uid, nextItemLabel } from "../lib/util";
 import { InlineEdit, FillFromData, ReplacementToggle, RangeInput, NumInput } from "./ui";
 import { mkSpinner, mkStacks, mkMixer, convertDevice, stageOutcomes } from "../lib/sampling";
 
+// ── Animation level-of-detail cap ──────────────────────────────────────────────
+// Above this many objects, the animated devices render a bounded, proportional SUBSET
+// (mixer balls / stacks stripes). This is VIEW-ONLY: the draw itself uses the full
+// device (see sampling.js pickStacksIdx / the mixer `avail` filter), so probabilities
+// are unchanged — every ball/card stays equally likely to be picked.
+const ANIM_RENDER_CAP = 400;
+
+// Largest ball radius in [2,12] at which `n` balls fit the bowl grid without overflowing
+// (so nothing has to be clamped to the top edge). Shrinks as n grows, then floors at 2.
+// Searches in 0.1 steps, NOT integers: a coarse search jumps from "just fits" to "way
+// oversized" (e.g. 400 balls need 15 rows at r≈2.9 but fill only ~half the bowl at r=2),
+// leaving the bowl half-empty. A tight fractional fit packs `n` balls up to the top.
+function fitRadius(n, W, H) {
+  if (n <= 0) return 12;
+  for (let s = 120; s >= 20; s--) {
+    const r = s / 10;
+    const gap = r < 6 ? 1 : 2, pitch = r * 2 + gap;
+    const cols = Math.max(1, Math.floor((W - 2) / pitch));
+    const rows = Math.max(1, Math.floor((H - 2) / pitch));
+    if (cols * rows >= n) return r;
+  }
+  return 2;
+}
+
+// Allocate at most `cap` representative slots across label groups, proportional to each
+// group's count (largest-remainder rounding), preserving group order. A non-empty group
+// never fully vanishes. Returns [{label,color}].
+function representativeSlots(groups, cap) {
+  const total = groups.reduce((s, g) => s + g.count, 0);
+  if (total <= 0) return [];
+  if (total <= cap) return groups.flatMap(g => Array.from({ length: g.count }, () => ({ label: g.label, color: g.color })));
+  const exact = groups.map(g => (g.count / total) * cap);
+  const alloc = exact.map(Math.floor);
+  let used = alloc.reduce((a, b) => a + b, 0);
+  const order = groups.map((g, i) => ({ i, frac: exact[i] - alloc[i] })).sort((a, b) => b.frac - a.frac);
+  for (let k = 0; used < cap && k < order.length; k++, used++) alloc[order[k].i]++;
+  groups.forEach((g, i) => {                    // keep every non-empty outcome visible
+    if (g.count > 0 && alloc[i] === 0) {
+      let m = 0; for (let j = 1; j < alloc.length; j++) if (alloc[j] > alloc[m]) m = j;
+      if (alloc[m] > 1) { alloc[m]--; alloc[i] = 1; }
+    }
+  });
+  const out = [];
+  groups.forEach((g, i) => { for (let j = 0; j < alloc[i]; j++) out.push({ label: g.label, color: g.color }); });
+  return out;
+}
+
+// Systematically downsample a shuffled deck of item-indices to at most `cap` entries,
+// preserving the interleaved order and ALWAYS keeping the last element (the picked top card).
+function downsampleDeck(deck, cap) {
+  if (deck.length <= cap) return deck;
+  const step = deck.length / cap;
+  const out = [];
+  for (let k = 0; k < cap - 1; k++) out.push(deck[Math.floor(k * step)]);
+  out.push(deck[deck.length - 1]);
+  return out;
+}
+
 // ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
 // Floor so a slice never fully vanishes (small enough that manual entry stays flexible;
 // borders this thin are hard to grab by drag, but the number box can still set them).
@@ -403,14 +461,21 @@ function StacksDevice({ device, onChange, animState, dataset }) {
   // colors are mixed throughout the deck (not big same-color blocks).
   let stripeData = null;
   if (!cardMode && mergedDeck && mergedDeck.length) {
-    const mergedUnitHS = BAR_MAX_H / mergedDeck.length;
-    // Home stripe height per category (fit tallest stack)
-    const homeUnitHS = BAR_MAX_H / Math.max(maxCount, 1);
+    // Cap the rendered stripe count (perf) — a proportional systematic sample of the
+    // shuffled deck, keeping the interleave and the picked top card.
+    const deck = downsampleDeck(mergedDeck, ANIM_RENDER_CAP);
+    const mergedUnitHS = BAR_MAX_H / deck.length;
+    // Home stripe height from the SHOWN per-category counts (not the real maxCount) so the
+    // bars fill BAR_MAX_H and stripes never collapse to sub-pixel; the downsample preserves
+    // proportions, so relative bar heights still read correctly.
+    const shownCount = {};
+    deck.forEach(idx => { shownCount[idx] = (shownCount[idx] || 0) + 1; });
+    const homeUnitHS = BAR_MAX_H / Math.max(1, ...Object.values(shownCount));
     // Assign each unit a home position (per-category) and a merged slot.
-    // Walk mergedDeck; for each item index track how many of that item we've
+    // Walk the deck; for each item index track how many of that item we've
     // placed so we can compute its home stacking index.
     const homeIdxByItem = {};
-    const stripes = mergedDeck.map((itemIdx, di) => {
+    const stripes = deck.map((itemIdx, di) => {
       const si = (homeIdxByItem[itemIdx] = (homeIdxByItem[itemIdx] || 0));
       homeIdxByItem[itemIdx] = si + 1;
       return {
@@ -423,7 +488,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
         // merged: single column, position by deck order (bottom→top)
         my: BAR_MAX_H - (di + 1) * mergedUnitHS,
         mh: mergedUnitHS,
-        isTop: di === mergedDeck.length - 1,
+        isTop: di === deck.length - 1,
         di,
       };
     });
@@ -604,16 +669,32 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
   animStateRef.current = animState;
   const [rangeOpen, setRangeOpen] = useState(false);
 
-  // Ball radius shrinks so that ALL balls fit inside the bowl area.
-  // Estimate: total ball area should be <= ~55% of bowl area (packing factor).
-  const computeBallR = (n) => {
-    if (n <= 0) return 12;
-    const area = BOWL_W * BOWL_H;
-    const perBall = (area * 0.45) / n;          // available area per ball (packing factor)
-    const rFromArea = Math.sqrt(perBall / Math.PI);
-    return Math.max(3, Math.min(12, Math.floor(rFromArea)));
-  };
-  const ballR = computeBallR(device.balls.length);
+  // Group balls by label (order + color) — reused by the editor list and the
+  // representative renderer below.
+  const ballGroups = useMemo(() => {
+    const g = [], seen = {};
+    device.balls.forEach(b => {
+      if (!seen[b.label]) { seen[b.label] = { label:b.label, color:b.color, count:0 }; g.push(seen[b.label]); }
+      seen[b.label].count++;
+    });
+    return g;
+  }, [device.balls]);
+
+  const totalBalls = device.balls.length;
+  const capped = totalBalls > ANIM_RENDER_CAP;
+  // `slots` are what we actually render. At/under the cap it's the real balls in device
+  // order (so removedSet / surfaceIdx map 1:1). Above the cap it's a shuffled proportional
+  // subset (shuffled so colors interleave in the grid instead of forming solid blocks).
+  const slots = useMemo(() => {
+    if (!capped) return device.balls.map(b => ({ label: b.label, color: b.color }));
+    const s = representativeSlots(ballGroups, ANIM_RENDER_CAP);
+    for (let k = s.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [s[k], s[j]] = [s[j], s[k]]; }
+    return s;
+  }, [device.balls, ballGroups, capped]);
+  const nSlots = slots.length;
+
+  // Ball radius shrinks so the RENDERED slots fit the bowl grid (no top-edge pile-up).
+  const ballR = fitRadius(nSlots, BOWL_W, BOWL_H);
 
   // Compute organized grid positions (default state) — packs all n balls
   const getGridPositions = (n, r) => {
@@ -624,43 +705,88 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
       const y = BOWL_H - r - 2 - row * (r * 2 + gap);
       return {
         x: r + 2 + col * (r * 2 + gap) + (row % 2 === 1 ? r / 2 : 0),
-        y: Math.max(r + 2, y),  // clamp so rows never start above the bowl
+        y: Math.max(r + 2, y),  // safety clamp (with fitRadius, rows already fit)
         vx: 0, vy: 0,
       };
     });
   };
 
-  // Init positions when ball count changes
+  // Init positions when the rendered slot count (or fit radius) changes
   useEffect(() => {
-    const r = computeBallR(device.balls.length);
-    posRef.current = getGridPositions(device.balls.length, r).map(p => ({ ...p, vx:0, vy:0 }));
+    posRef.current = getGridPositions(nSlots, ballR).map(p => ({ ...p, vx:0, vy:0 }));
     setPositions([...posRef.current]);
-  }, [device.balls.length]);
+  }, [nSlots, ballR]);
+
+  // Each ball's STATIC grid home. Rendered left/top is always this; every motion (churn,
+  // rise to the notch, sink, return) is a transform OFFSET from it — so no phase switch ever
+  // jumps the base position, and the end-of-draw return home is one smooth CSS transition
+  // instead of a snap.
+  const homePositions = useMemo(() => getGridPositions(nSlots, ballR), [nSlots, ballR]);
 
   const NOTCH_X = BOWL_W / 2, NOTCH_Y = ballR + 4; // target for surfaced ball
 
+  const removedSet = (animState && animState.removedSet) || new Set();
+  const surfaceIdx = animState && animState.surfaceIdx;
+
+  // Which rendered slots are "removed" (without-replacement). Uncapped: slot i === ball i,
+  // so hide exactly the removed indices. Capped: hide a proportional number of slots per
+  // label (from the end) so the drawn color visibly shrinks — the real pool is unaffected.
+  const hiddenSlots = useMemo(() => {
+    if (!capped) return removedSet;
+    if (!removedSet.size) return new Set();
+    const remByLabel = {};
+    removedSet.forEach(i => { const l = device.balls[i] && device.balls[i].label; if (l != null) remByLabel[l] = (remByLabel[l] || 0) + 1; });
+    const grpCount = {}; ballGroups.forEach(g => { grpCount[g.label] = g.count; });
+    const shownByLabel = {}; slots.forEach((s, i) => { (shownByLabel[s.label] = shownByLabel[s.label] || []).push(i); });
+    const hide = new Set();
+    Object.keys(remByLabel).forEach(l => {
+      const arr = shownByLabel[l] || [];
+      const nHide = Math.min(arr.length, Math.round(remByLabel[l] * arr.length / (grpCount[l] || 1)));
+      for (let k = 0; k < nHide; k++) hide.add(arr[arr.length - 1 - k]);
+    });
+    return hide;
+  }, [capped, removedSet, slots, ballGroups, device.balls]);
+
+  // Which slot rises to the notch. Uncapped: the picked slot itself. Capped: a visible slot
+  // whose label matches the pick (any of that color is interchangeable), else the first
+  // visible slot — so a ball always rises (the true label is on the result badge anyway).
+  const surfaceSlot = useMemo(() => {
+    if (surfaceIdx == null) return -1;
+    if (!capped) return surfaceIdx;
+    const label = device.balls[surfaceIdx] && device.balls[surfaceIdx].label;
+    let firstVisible = -1;
+    for (let i = 0; i < slots.length; i++) {
+      if (hiddenSlots.has(i)) continue;
+      if (firstVisible < 0) firstVisible = i;
+      if (slots[i].label === label) return i;
+    }
+    return firstVisible;
+  }, [surfaceIdx, capped, slots, hiddenSlots, device.balls]);
+
+  // Live ref so the rAF churn loop reads the current removed set without re-subscribing.
+  const hiddenRef = useRef(hiddenSlots); hiddenRef.current = hiddenSlots;
+
   const tick = useCallback(() => {
     const as = animStateRef.current;
-    const surfaceIdx = as && as.surfaceIdx != null ? as.surfaceIdx : -1;
-    const removedSet = (as && as.removedSet) || new Set();
+    const surfacing = !!(as && as.surfaceIdx != null);
+    const hidden = hiddenRef.current;
+    if (surfacing) {
+      // PAUSE the loop during the reveal. The pick's rise to the notch and the rest's sink to
+      // the floor are both CSS transform transitions now (see render), so there's nothing for
+      // JS to move — and stopping the per-frame re-render of all 400 divs frees the main
+      // thread so those compositor transitions play smoothly at large n. The start/stop
+      // effect restarts the loop on the next draw's bounce.
+      frameRef.current = null;
+      return;
+    }
     posRef.current = posRef.current.map((b, i) => {
-      if (removedSet.has(i)) return b;
+      if (hidden.has(i)) return b;
       let { x, y, vx, vy } = b;
-      if (i === surfaceIdx) {
-        // Pull toward notch at top-center
-        vx += (NOTCH_X - x) * 0.18;
-        vy += (NOTCH_Y - y) * 0.18;
-        vx *= 0.75; vy *= 0.75;
-      } else if (surfaceIdx >= 0) {
-        // Others: add gravity to settle toward bottom
-        vy += 0.6;
-        vx *= 0.88;
-        vx += (Math.random() - 0.5) * 0.4;
-      } else {
-        // Bouncing freely
-        vx += (Math.random() - 0.5) * 1.5;
-        vy += (Math.random() - 0.5) * 1.5;
-      }
+      // Bouncing/mixing: strong random turbulence keeps a full bowl churning (balls don't
+      // collide, so they stream through each other and rebound off the walls below). No
+      // gravity here — it would drain the packed bowl to the floor mid-mix.
+      vx += (Math.random() - 0.5) * 2.6;
+      vy += (Math.random() - 0.5) * 2.6;
       vx = clamp(vx, -5, 5); vy = clamp(vy, -5, 5);
       x += vx; y += vy;
       if (x - ballR < 3) { x = ballR + 3; vx = Math.abs(vx) * 0.75; }
@@ -680,6 +806,11 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
     const active = shouldBounce || hasSurface;
     if (active && !isBouncingRef.current) {
       isBouncingRef.current = true;
+      // Kick every ball with a random initial velocity so a packed, filled bowl BURSTS
+      // into motion immediately (a shaken-cage look) instead of easing out of rest — the
+      // old jitter-from-zero read as "barely moving" at large ball counts. The ±10 kick
+      // is clamped to the ±5 cap on the first frame: an instant max-speed scatter.
+      posRef.current = posRef.current.map(b => ({ ...b, vx:(Math.random() - 0.5) * 10, vy:(Math.random() - 0.5) * 10 }));
       frameRef.current = requestAnimationFrame(tick);
     } else if (!active && isBouncingRef.current) {
       isBouncingRef.current = false;
@@ -688,8 +819,7 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
       // null while removedSet holds them (so snapping them home now is invisible), but this
       // guarantees they return to their home slot rather than staying frozen at the notch
       // once the end-of-run cleanup clears removedSet (otherwise they'd pile at top-center).
-      const r = computeBallR(device.balls.length);
-      const grid = getGridPositions(device.balls.length, r);
+      const grid = getGridPositions(nSlots, ballR);
       posRef.current = grid.map(g => ({ ...g, vx:0, vy:0 }));
       setPositions([...posRef.current]);
     }
@@ -697,16 +827,7 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
 
   useEffect(() => () => { if (frameRef.current) cancelAnimationFrame(frameRef.current); }, []);
 
-  const removedSet = (animState && animState.removedSet) || new Set();
-  const surfaceIdx = animState && animState.surfaceIdx;
-
-  // Group balls by label for editor
-  const grouped = [];
-  const seen = {};
-  device.balls.forEach((b, i) => {
-    if (!seen[b.label]) { seen[b.label] = { label:b.label, color:b.color, count:0 }; grouped.push(seen[b.label]); }
-    seen[b.label].count++;
-  });
+  const grouped = ballGroups; // label groups (order + color), for the editor list
 
   return (
     <div>
@@ -725,33 +846,83 @@ function MixerDevice({ device, onChange, animState, dataset, casesEligible }) {
             zIndex:5, pointerEvents:"none",
           }} />
         )}
-        {device.balls.map((ball, i) => {
-          if (removedSet.has(i)) return null;
-          const pos = positions[i] || { x:BOWL_W / 2, y:BOWL_H / 2 };
-          const isSurfaced = surfaceIdx === i;
+        {(() => {
+          const surfacingNow = surfaceSlot >= 0;                 // a pick is being revealed
+          const bouncingNow = !surfacingNow && animState && animState.bouncing;  // churn phase
+          const FLOOR_Y = BOWL_H - ballR - 3;
+          const surfMs = animState && animState.speed === 1 ? 150 : 500;
+          return slots.map((slot, i) => {
+          if (hiddenSlots.has(i)) return null;
+          const home = homePositions[i] || { x:BOWL_W / 2, y:BOWL_H / 2 };
+          const isSurfaced = surfaceSlot === i;
+          // Base left/top is ALWAYS the grid home; the whole animation is one transform offset
+          // from there, so no phase switch jumps the base and the return home is a smooth CSS
+          // ease (not the old left/top snap). Pick → rise to the notch; the rest → sink toward
+          // the floor (lottery separation); churn → the JS bounce offset; idle → 0 (home).
+          let tx = 0, ty = 0, scale = 1;
+          if (isSurfaced) {
+            tx = NOTCH_X - home.x; ty = NOTCH_Y - home.y; scale = 1.5;
+          } else if (surfacingNow) {
+            // Fall from the ball's CURRENT churn spot with a SUBTLE lean in its last direction
+            // of travel — enough that it doesn't stop dead and drop straight down, but small
+            // enough that the fall stays predominantly vertical. A bigger sideways carry made
+            // all 400 balls dart to the walls at once, a visual din that swamped the pick's
+            // rise (so the selection read as an instant jump). `positions[i]` is frozen at the
+            // instant surfacing began, so vx is the churn velocity at freeze; the drift is
+            // capped so a fast-moving ball still only leans, never flings.
+            const p = positions[i] || home;
+            const drift = clamp((p.vx || 0) * 2.5, -8, 8);
+            const targetX = clamp(p.x + drift, ballR + 3, BOWL_W - ballR - 3);
+            tx = targetX - home.x;
+            ty = (FLOOR_Y - home.y) * 0.9;   // sink ~90% to the floor
+          } else if (bouncingNow) {
+            const p = positions[i] || home;
+            tx = p.x - home.x; ty = p.y - home.y;                // churn offset from home
+          }
+          // Per-phase transition. Churn: a short linear pass so rAF frames aren't lagged.
+          // Surface: the pick eases out to the notch (overshoot); the rest ease in to the floor
+          // (gravity-like) over the surface phase (~500ms slow / ~150ms fast) but STAGGERED —
+          // each ball waits a small per-ball delay and falls over a slightly different duration,
+          // so the collapse ripples in as a tumbling cascade instead of one flat wall dropping
+          // at once (softens the "everything suddenly falls" onset, esp. at large n where the
+          // packed bowl shows little pre-fall motion). Idle (draw ended): a gentle ease home.
+          let transition;
+          if (bouncingNow) {
+            transition = "transform 0.06s linear";
+          } else if (isSurfaced) {
+            transition = `transform ${surfMs}ms cubic-bezier(0.22,1,0.36,1), box-shadow 0.2s`;
+          } else if (surfacingNow) {
+            const h = ((i * 2654435761) >>> 0) % 1000 / 1000;   // cheap stable per-ball hash → [0,1)
+            const delay = Math.round(h * surfMs * 0.35);          // staggered onset
+            const dur = Math.round(surfMs * (0.8 + h * 0.4));     // varied fall duration
+            transition = `transform ${dur}ms cubic-bezier(0.55,0,0.85,0.35) ${delay}ms`;
+          } else {
+            transition = "transform 0.35s cubic-bezier(0.4,0,0.2,1), box-shadow 0.25s";
+          }
           return (
-            <div key={ball.id} style={{
+            <div key={"s" + i} style={{
               position:"absolute",
-              left:pos.x - ballR, top:pos.y - ballR,
+              left:home.x - ballR, top:home.y - ballR,
               width:ballR * 2, height:ballR * 2,
-              borderRadius:"50%", background:ball.color,
+              borderRadius:"50%", background:slot.color,
               display:"flex", alignItems:"center", justifyContent:"center",
               fontSize:ballR > 8 ? 9 : 6, fontWeight:700, color:"#fff",
               boxShadow:isSurfaced
-                ? "0 0 0 3px #fff, 0 0 0 6px " + ball.color + ", 0 4px 16px rgba(0,0,0,0.3)"
+                ? "0 0 0 3px #fff, 0 0 0 6px " + slot.color + ", 0 4px 16px rgba(0,0,0,0.3)"
                 : "0 1px 3px rgba(0,0,0,0.2)",
-              transform:isSurfaced ? "scale(1.5)" : "scale(1)",
-              transition:"transform 0.12s, box-shadow 0.12s",
+              transform:`translate(${tx}px, ${ty}px) scale(${scale})`,
+              transition,
               zIndex:isSurfaced ? 15 : 1,
               pointerEvents:"none",
             }}>
-              {ballR >= 8 ? ball.label : ""}
+              {ballR >= 8 ? slot.label : ""}
             </div>
           );
-        })}
+          });
+        })()}
       </div>
       <div style={{ fontSize:12, color:"var(--text-faint)", textAlign:"center", marginBottom:4 }}>
-        {rs ? `${device.balls.length} case${device.balls.length !== 1 ? "s" : ""}` : `${device.balls.length} ball${device.balls.length !== 1 ? "s" : ""}`}
+        {rs ? `${totalBalls} case${totalBalls !== 1 ? "s" : ""}` : `${totalBalls} ball${totalBalls !== 1 ? "s" : ""}`}
       </div>
 
       {rs ? (

@@ -452,9 +452,12 @@ async function runAnimatedSample({ pipeline, sampleSize, runMode, stopRule, spee
         result = dev.balls[pickedIdx].label;
         if (delay > 0) {
           set(dev.id, { bouncing:true, surfaceIdx:null, result:null, removedSet:new Set(removed) });
-          await sleep(delay * 0.55);
+          await sleep(delay * 0.5);
           set(dev.id, { bouncing:true, surfaceIdx:pickedIdx });
-          await sleep(delay * 0.3);
+          // Surface phase gets a bit more time (was 0.3) so the picked ball reaches the
+          // notch and visibly rests there before the result badge shows — matters most at
+          // large n, where fewer frames fire per unit time.
+          await sleep(delay * 0.35);
           set(dev.id, { bouncing:false, surfaceIdx:null, result });
           if (!dev.withReplacement) removed.add(pickedIdx);
           set(dev.id, { removedSet:new Set(removed) });

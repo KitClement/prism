@@ -284,8 +284,54 @@ These were the source of real bugs during development. Preserve them.
 - **Stacks**: with/without replacement. Animation merges the per-category bars into one
   shuffled deck (cards fly together), highlights the top card, then draws it. Uses
   individual cards when ≤80 total units, proportional interleaved stripes above that.
-- **Mixer**: with/without replacement. All balls visible (radius shrinks to fit); picked
-  ball rises to a notch at top-center while others settle.
+- **Mixer**: with/without replacement. All balls visible up to the render cap (radius
+  shrinks to fit); picked ball rises to a notch at top-center while others settle.
+- **Animation render cap (LOD).** `ANIM_RENDER_CAP` (=400, `devices.jsx`) bounds the number
+  of on-screen objects the animation draws. Above it the mixer renders a shuffled
+  proportional **subset** of balls (`representativeSlots`, radius via `fitRadius`) and the
+  stacks merge downsamples the deck (`downsampleDeck`) to ≤cap stripes. `fitRadius` searches
+  in **0.1 steps** (not integers) so the cap-many balls fit *tightly* and **fill the bowl to
+  the top** — a coarse search jumped from "fits 390 at r=3" to "fits 777 at r=2", leaving the
+  bowl half-empty. This is **view-only**: the draw uses the full device (`pickStacksIdx` / the
+  mixer `avail` filter), so probabilities are unchanged — every ball/card stays equally
+  selectable. Captions show only the **true total** (no "showing N" — a filled-looking bowl
+  shouldn't imply some balls can't be picked). In capped mode the surfaced ball is matched by
+  **label** (not index) and without-replacement removal is reflected proportionally per label;
+  under the cap it's exact per-ball (constraint #1 draw logic untouched).
+- **Mixer bounce motion.** The bounce phase (`runAnimatedSample`, `bouncing:true`/no surface)
+  is a gravity-free random churn: the start-of-bounce effect kicks every ball with a random
+  ±10 velocity (clamped to the ±5 cap) so a packed, filled bowl **bursts** into motion instead
+  of easing out of rest, and per-frame turbulence (±2.6) keeps it churning off the walls. No
+  gravity during bounce — it would drain the packed bowl to the floor before a ball surfaces.
+  **Home-relative transform model.** Every ball's rendered `left/top` is **always** its static
+  grid home (`homePositions`); the entire animation is one CSS `transform` **offset** from home,
+  so no phase switch ever jumps the base position. During **bounce** the offset is the JS churn
+  (`positions[i] - home`, a short `0.06s linear` transition so rAF frames aren't lagged). During
+  the **surfacing** phase the rAF loop **pauses** (`tick` returns early, stops re-rendering all
+  400 divs so the main thread is free) and two compositor transitions play (~500ms slow / 150ms
+  fast): the picked ball `translate()`s to the notch (ease-out overshoot); every other ball
+  falls from its **current churn spot** with a **subtle lean** in its last direction of travel
+  (`drift = clamp(p.vx*2.5, ±8)`, then clamped to the walls) while `translateY`ing ~90% of the
+  way to the floor (ease-in, gravity-like) — so it doesn't stop dead and drop straight down, but
+  the fall stays predominantly vertical. (A bigger sideways carry flung all 400 balls to the
+  walls at once, a din that swamped the pick's rise so the selection read as an instant jump.)
+  The fall is **staggered**: each ball waits a small per-ball delay (`hash(i)*surfMs*0.35`) and
+  falls over a slightly varied duration (`surfMs*(0.8..1.2)`), so the collapse ripples in as a
+  tumbling cascade rather than one flat wall dropping at once. The bowl visibly **separates** —
+  the pick alone at top, the rest sunk to the bottom, a lottery-mixer look. (`positions[i]` is
+  frozen at the instant surfacing began, so `vx` is the real churn velocity at freeze.)
+  **Known ceiling (accepted):** at large n the bowl is packed *and* 400 DOM nodes re-render per
+  rAF frame, so there's little visible churn *before* the fall — the DOM-per-ball approach can't
+  animate that many nodes smoothly, and a full bowl has no room to move. The staggered cascade
+  softens the onset but can't manufacture the missing pre-fall motion; the real fix (deferred by
+  choice) is a single-`<canvas>` mixer. When
+  the draw ends the offset returns to 0 with a gentle `0.35s` ease — a **smooth return home**,
+  not a snap. The old model rendered `left/top` from the live bounce positions and reset them to
+  the grid with a plain `setPositions` at the end, which snapped the base coordinate (a jarring
+  "fall then snap back home"); it also kept the 400-div rAF loop re-rendering *through* the
+  surface phase, starving the sink transition at large n. Both are fixed by the home-relative
+  offsets + the surface-phase pause. Phase split is 0.5 bounce / 0.35 surface / 0.15 settle so
+  the pick lands and visibly rests at the notch before the result badge shows.
 - Devices are locked (non-editable, transparent overlay) during sampling.
 
 ## Animation speed
