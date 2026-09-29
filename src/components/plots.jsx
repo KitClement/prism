@@ -899,12 +899,24 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // Report the active divider to a host that wants to mirror it (the Collect plot lifts this
   // into App so the generated inference code uses the real cutoff / framing). `variable` is
   // the current X header; `cuts` are in stat units. Null when the divider is off.
+  // `bounds` are each cut's neighbouring data values, so codegen's `cutLit` can print the shortest
+  // literal that classifies the data like the exact cut (a cut snapped onto a dot must not round
+  // across it). One O(N) scan per cut; keyed as a string so the effect only re-reports on change.
+  const divBounds = showDivider && onDivider ? effCuts.map(c => {
+    let maxBelow = -Infinity, minAtOrAbove = Infinity, maxAtOrBelow = -Infinity, minAbove = Infinity;
+    for (const x of divDomain.values) {
+      if (x < c) { if (x > maxBelow) maxBelow = x; } else if (x < minAtOrAbove) minAtOrAbove = x;
+      if (x > c) { if (x < minAbove) minAbove = x; } else if (x > maxAtOrBelow) maxAtOrBelow = x;
+    }
+    return { maxBelow, minAtOrAbove, maxAtOrBelow, minAbove };
+  }) : null;
+  const divBoundsKey = divBounds ? divBounds.map(b => [b.maxBelow, b.minAtOrAbove, b.maxAtOrBelow, b.minAbove].join(",")).join(";") : "";
   useEffect(() => {
     if (!onDivider) return;
     onDivider(showDivider
-      ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct, band: divRange ? divBand : "middle" }
+      ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct, band: divRange ? divBand : "middle", bounds: divBounds }
       : null);
-  }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, divBand, effCuts.join(",")]);
+  }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, divBand, effCuts.join(","), divBoundsKey]);
 
   // Report active univariate summary overlays (boxplot / mean / ±1 SD) the same way, so the Collect
   // plot can drive code that computes those statistics over the sampling distribution. Only the
@@ -1582,7 +1594,7 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
     if (!onDivider) return;
     if (!d) { onDivider(null); return; }
     const k = headers.indexOf(d.variable);
-    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct, band: d.band });
+    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct, band: d.band, bounds: d.bounds });
   }, [onDivider, headers, columns]);
 
   // Same header→stat-id translation for the summary overlays.

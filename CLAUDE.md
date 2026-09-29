@@ -372,7 +372,12 @@ band exactly on discrete data, which is acceptable) or a **band proportion**
 `mean(vec < lo | vec > hi)` (+ value, the exact complement of the inclusive middle band) or
 **two-sided critical values** `quantile(vec, c(m/2, 1-m/2))` (+ %, m = combined tail mass).
 The two-sided single divider shows both `>= v` / `< v` proportions (disjoint); the on-plot
-left-tail read-out is built inclusively to match. An emittable derived column is now a real frame
+left-tail read-out is built inclusively to match. **Cut literals** are not a plain 4-dp rounding —
+a cut snapped onto a dot (e.g. p̂ = 79/163 = 0.484663) would print as 0.4847 and drop p̂ from
+`>=`. `Plot` reports each cut's neighbouring collected values (`bounds`) with `onDivider`, and
+codegen's `cutLit` emits the shortest decimal (nearest at 4–6 dp, else rounded toward the inclusive
+side) that classifies every collected value exactly like the unrounded cut. So the literal can
+differ by direction (`>= 0.48466` vs `<= 0.4847`) and from the 4-dp value box — intended. An emittable derived column is now a real frame
 column, so the divider reads it directly; it falls back to the placeholder only when the divider is
 off or on an **un-emittable** derived column (a deleted operand).
 

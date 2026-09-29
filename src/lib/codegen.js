@@ -154,6 +154,26 @@ const collectNote = cfg => (cfg.collectedCount > 0 ? "   # samples collected so 
 // operands at inference time), or null (no divider / unresolvable column / off).
 const numLit = v => String(parseFloat(Number(v).toFixed(4)));
 const pctLabel = f => `${parseFloat((f * 100).toFixed(2))}%`;
+// A divider cut as a code literal that classifies the collected values exactly like the tool's
+// (unrounded) cut. A plain 4-dp `numLit` can cross a data value — a cut snapped onto p̂ = 79/163 =
+// 0.484663 would print as 0.4847 and drop p̂ itself from `>=`. `b` holds the cut's neighbouring
+// collected values (reported by Plot): a literal L is safe for a LOWER inclusive bound (x >= L)
+// iff L ∈ (maxBelow, minAtOrAbove], for an UPPER one (x <= L) iff L ∈ [maxAtOrBelow, minAbove).
+// Try nearest rounding at 4–6 dp, then rounding toward the inclusive side from 4 dp up. The
+// neighbours come from the current collection, so a fresh simulation could in principle land a
+// value in the gap — but the snapped value itself always stays on the correct side.
+function cutLit(v, side, b) {
+  if (!b) return numLit(v);
+  const ok = side === "upper"
+    ? L => L >= b.maxAtOrBelow && L < b.minAbove
+    : L => L > b.maxBelow && L <= b.minAtOrAbove;
+  for (let dp = 4; dp <= 6; dp++) { const L = parseFloat(v.toFixed(dp)); if (ok(L)) return String(L); }
+  for (let dp = 4; dp <= 15; dp++) {
+    const f = 10 ** dp, L = (side === "upper" ? Math.ceil(v * f) : Math.floor(v * f)) / f;
+    if (ok(L)) return String(L);
+  }
+  return String(v);
+}
 // A tracked column's display name → a valid R/Python identifier (non-word chars → "_",
 // leading digit prefixed). Falls back to "derived" when there's no usable name.
 const safeVarName = s => { const v = String(s || "").trim().replace(/[^A-Za-z0-9_]/g, "_").replace(/^(\d)/, "_$1"); return v || "derived"; };
@@ -165,7 +185,8 @@ function dividerInfo(cfg, stats) {
   const frame = { cuts, range: d.range && cuts.length >= 2,
     dir: d.dir === "left" || d.dir === "right" ? d.dir : "none",
     by: d.by === "pct" ? "pct" : "value", pct: typeof d.pct === "number" ? d.pct : 0.05,
-    band: d.band === "tails" ? "tails" : "middle" };
+    band: d.band === "tails" ? "tails" : "middle",
+    bounds: Array.isArray(d.bounds) && d.bounds.length === cuts.length && cuts.length === d.cuts.length ? d.bounds : null };
   const match = stats.find(({ s }) => s.id === d.statId);
   if (match) return { ...frame, id: match.id };
   // A derived column is plotted: emit it from its operands (which must be enabled plain stats).
@@ -193,9 +214,11 @@ function dividerExprs(vec, div, lang) {
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
   const outside = (a, b) => (R ? `mean(${vec} < ${a} | ${vec} > ${b})` : `((${vec} < ${a}) | (${vec} > ${b})).mean()`);
   const quant = a => (R ? `quantile(${vec}, ${a})` : `${vec}.quantile(${a})`);
+  const bd = i => (div.bounds ? div.bounds[i] : null);
 
   if (div.range) {
-    const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
+    const i0 = div.cuts[0] <= div.cuts[1] ? 0 : 1, i1 = 1 - i0;
+    const a = cutLit(div.cuts[i0], "lower", bd(i0)), b = cutLit(div.cuts[i1], "upper", bd(i1));
     if (div.band === "tails") {
       if (div.by === "pct") {
         // Two-sided critical values: the cutoffs enclosing the central 1-m band (m = combined tail mass).
@@ -220,10 +243,10 @@ function dividerExprs(vec, div, lang) {
       const q = numLit(div.dir === "right" ? 1 - div.pct : div.pct);
       return [`${quant(q)}   # critical value (~${pctLabel(div.pct)} ${div.dir} tail)`];
     }
-    const v = numLit(div.cuts[0]);
+    const v = cutLit(div.cuts[0], div.dir === "right" ? "lower" : "upper", bd(0));
     return div.dir === "right" ? [`${ge(v)}   # p-value (upper tail)`] : [`${le(v)}   # p-value (lower tail)`];
   }
-  const v = numLit(div.cuts[0]);
+  const v = cutLit(div.cuts[0], "lower", bd(0));
   return [`${ge(v)}   # P(stat >= ${v})`, `${lt(v)}   # P(stat < ${v})`];
 }
 // Translate a derived column's token array (lib/expr.js) into a code expression over the collected
