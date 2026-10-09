@@ -153,7 +153,7 @@ export default function App() {
   const boundsKey = b => (b ? b.map(x => [x.maxBelow, x.minAtOrAbove, x.maxAtOrBelow, x.minAbove].join(",")).join(";") : "");
   const onCollectDivider = useCallback(d => {
     setDividerState(prev => {
-      const same = prev === d || (prev && d && prev.statId === d.statId && prev.range === d.range &&
+      const same = prev === d || (prev && d && prev.statId === d.statId && prev.mode === d.mode && prev.range === d.range &&
         prev.dir === d.dir && prev.by === d.by && prev.pct === d.pct && prev.band === d.band &&
         prev.cuts.length === d.cuts.length && prev.cuts.every((v, i) => v === d.cuts[i]) &&
         boundsKey(prev.bounds) === boundsKey(d.bounds));

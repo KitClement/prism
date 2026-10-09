@@ -6,12 +6,14 @@ import { numericSummary, kdeCurve, lsFit, statLabel, statKey, computeStat, FN_OP
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, snapMeasure, regions, conservativeBand } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
 // match the proportion-valued collected statistics (e.g. 0.851, not 85%).
 const fmtP = v => (Number.isFinite(v) ? v.toFixed(3) : "—");
+// Most cuts a multi-divider may carry (k cuts → k+1 bins); beyond this the read-outs crowd.
+const MAX_CUTS = 9;
 
 // ── Click-to-track helpers ─────────────────────────────────────────────────────
 // A statistic is promoted into Collect Statistics by clicking the number that
@@ -92,13 +94,18 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
 // sides; range → highlight the middle band (`band="middle"`) or the two outer regions
 // (`band="tails"`) between the two lines. `dir` ("left"/"right"/"none") focuses one tail for
 // a one-sided cut.
-function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none", band = "middle" }) {
+function DividerShades({ topY, botY, sx, xlo, xhi, cuts, dir = "none", band = "middle", multi = false }) {
   const xL = sx(xlo), xR = sx(xhi);
   // Clamp cut pixels to the plate so an off-window cut yields an empty outer band rather
   // than a rect that overshoots the axis (the true value still drives the read-out/code).
   const cx = v => clamp(sx(v), Math.min(xL, xR), Math.max(xL, xR));
   const shades = [];
-  if (cuts.length === 1) {
+  if (multi) {
+    // Multi bins: tint every other region so adjacent bins read as separate bands.
+    const edges = [xL, ...[...cuts].sort((a, b) => a - b).map(cx), xR];
+    for (let j = 1; j < edges.length - 1; j += 2)
+      shades.push(<rect key={"b" + j} x={edges[j]} y={topY} width={Math.max(0, edges[j + 1] - edges[j])} height={botY - topY} fill="#6366f1" fillOpacity={0.08} />);
+  } else if (cuts.length === 1) {
     const xv = cx(cuts[0]);
     if (dir === "left") shades.push(<rect key="lt" x={xL} y={topY} width={Math.max(0, xv - xL)} height={botY - topY} fill="#3b82f6" fillOpacity={0.14} />);
     else if (dir === "right") shades.push(<rect key="ge" x={xv} y={topY} width={Math.max(0, xR - xv)} height={botY - topY} fill="#f59e0b" fillOpacity={0.14} />);
@@ -157,6 +164,17 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
   const clampPx = p => (p < pxMin ? pxMin : p > pxMax ? pxMax : p);
   const lo = Math.min(xlo, xhi), hi = Math.max(xlo, xhi);
   const offOf = v => (v < lo ? -1 : v > hi ? 1 : 0);
+  // Many cuts can crowd: when two labels sit within 40px, fan them apart sideways — the left
+  // one hangs off its line to the left, the right one to the right — at the same height (there
+  // is no room above: the plot's top edge borders the controls row).
+  const anchorOf = {};
+  {
+    const order = cuts.map((v, i) => [clampPx(sx(v)), i]).sort((a, b) => a[0] - b[0]);
+    order.forEach(([x, i], k) => {
+      const near = j => j >= 0 && j < order.length && Math.abs(order[j][0] - x) < 40;
+      anchorOf[i] = near(k + 1) ? "end" : near(k - 1) ? "start" : "middle";
+    });
+  }
 
   // Direction arrow for a one-sided single divider: a short horizontal arrow at mid-height
   // pointing into the shaded tail (blue ◂ left, orange ▸ right).
@@ -195,7 +213,7 @@ function DividerLines({ W, topY, botY, sx, inv, xlo, xhi, cuts, onChange, snapCa
               </g>
             )}
             {/* the cut value (true, unclamped), directly above the grab handle */}
-            {fmt && <text x={x} y={topY - 12} textAnchor="middle" fontSize={12} fontWeight={700}
+            {fmt && <text x={x + (anchorOf[i] === "end" ? -3 : anchorOf[i] === "start" ? 3 : 0)} y={topY - 12} textAnchor={anchorOf[i]} fontSize={12} fontWeight={700}
               fill={off !== 0 ? "#6366f1" : "var(--accent-ink)"}>{off !== 0 ? (off > 0 ? "» " : "« ") + fmt(v) : fmt(v)}</text>}
             {/* grab handle at the top of the line */}
             <rect x={x - 5} y={topY - 9} width={10} height={9} rx={2} fill="#6366f1" stroke="#fff" strokeWidth={1} />
@@ -218,8 +236,8 @@ function regionSpec(r, fn, base) {
     condVal: base.condVal || "",
     lo: r.lo === -Infinity ? null : r.lo,
     hi: r.hi === Infinity ? null : r.hi,
-    loOpen: r.key === "gt",
-    hiOpen: r.key === "lt",
+    loOpen: r.loOpen ?? r.key === "gt",
+    hiOpen: r.hiOpen ?? r.key === "lt",
   };
 }
 
@@ -608,7 +626,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // count / proportion read-outs are themselves off until toggled (like the categorical
   // # Count / % Percent labels).
   const [divOn, setDivOn] = useState(() => iv?.divOn ?? false);
-  const [divRange, setDivRange] = useState(() => iv?.divRange ?? false);
+  // "single" (one cut) | "range" (a 2-cut band) | "multi" (k cuts → k+1 bins, exploratory).
+  // Older saved views only carry the boolean `divRange`.
+  const [divMode, setDivMode] = useState(() => iv?.divMode ?? (iv?.divRange ? "range" : "single"));
+  const divRange = divMode === "range", divMulti = divMode === "multi";
   const [divCuts, setDivCuts] = useState(() => iv?.divCuts ?? []);
   const [divShowCount, setDivShowCount] = useState(() => iv?.divShowCount ?? false);
   const [divShowPct, setDivShowPct] = useState(() => iv?.divShowPct ?? false);
@@ -642,10 +663,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   useEffect(() => {
     if (!onViewChange) return;
     onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
-      expandCats, divOn, divRange, divCuts, divShowCount, divShowPct,
+      expandCats, divOn, divMode, divCuts, divShowCount, divShowPct,
       divDir, divBy, divPct, divBand, rulerOn });
   }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
-      expandCats, divOn, divRange, divCuts.join(","), divShowCount, divShowPct,
+      expandCats, divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
       divDir, divBy, divPct, divBand, rulerOn]);
 
   const plotRef = useRef(null);
@@ -823,9 +844,18 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const showDivider = divOn && !!divDomain;
   // The percentage drives the cut only when there's a tail/middle to target (a single
   // direction, or range mode) — a two-sided single divider is always value-driven.
-  const pctActive = divBy === "pct" && (divRange || divDir !== "none");
+  // Multi mode is exploratory (no tail/middle framing), so it is always value-driven.
+  const divSingle = divMode === "single";
+  const pctActive = divBy === "pct" && (divRange || (divSingle && divDir !== "none"));
   let effCuts = [];
-  if (showDivider) {
+  if (showDivider && divMulti) {
+    // Multi: keep the user's cuts (2..MAX_CUTS, finite); else 3 equal-width cuts over the data.
+    const ok = v => typeof v === "number" && isFinite(v);
+    const { lo, hi } = divDomain;
+    effCuts = divCuts.length >= 2 && divCuts.length <= MAX_CUTS && divCuts.every(ok) ? divCuts
+      : divDomain.values.length ? evenCuts(divDomain.values, 3, "width")
+      : [1, 2, 3].map(j => lo + j * (hi - lo) / 4);
+  } else if (showDivider) {
     const { lo, hi } = divDomain, want = divRange ? 2 : 1;
     if (pctActive && divDomain.values.length) {
       const vals = divDomain.values, m = divPct;
@@ -866,25 +896,59 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     if (isNaN(p)) return;
     setDivPct(clampVal(p, 0.0001, 0.9999)); setDivBy("pct"); // stored as a proportion (0–1)
   };
+  // Multi-mode cut editing. A new cut splits the widest gap among the sorted cuts and the
+  // data's min/max (so it lands somewhere visible and useful); removal keeps at least 2.
+  const addCut = () => {
+    if (effCuts.length >= MAX_CUTS) return;
+    let mn = Infinity, mx = -Infinity;
+    for (const x of divDomain.values) { if (x < mn) mn = x; if (x > mx) mx = x; }
+    if (!isFinite(mn)) { mn = divDomain.lo; mx = divDomain.hi; }
+    const pts = [mn, ...[...effCuts].sort((a, b) => a - b), mx];
+    let best = 0;
+    for (let j = 1; j < pts.length - 1; j++) if (pts[j + 1] - pts[j] > pts[best + 1] - pts[best]) best = j;
+    setDivCuts([...effCuts, (pts[best] + pts[best + 1]) / 2]); setDivBy("value");
+  };
+  const removeCut = i => {
+    if (effCuts.length <= 2) return;
+    setDivCuts(effCuts.filter((_, j) => j !== i)); setDivBy("value");
+  };
+  const spaceCuts = how => {
+    if (!divDomain.values.length) return;
+    setDivCuts(evenCuts(divDomain.values, effCuts.length, how, quantile)); setDivBy("value");
+  };
+  const switchDivMode = m => { if (m === divMode) return; setDivMode(m); setDivCuts([]); setDivBy("value"); };
   // Overall regions for the univariate on-plot read-out (num × cat read-outs are
   // computed per-group inside SplitDotPlots).
-  const divRegions = showDivider ? regions(divDomain.values, effCuts) : null;
+  const divRegions = !showDivider ? null
+    : divMulti ? binRegions(divDomain.values, effCuts) : regions(divDomain.values, effCuts);
   // The single divider's focused region when a tail direction is chosen (right → the ≥ side,
   // left → the < side); null for two-sided / range. Drives the one-tail read-out + the linked
   // % box (its proportion is what "tail %" shows in value mode).
-  const divDirected = showDivider && !divRange && divDir !== "none";
+  const divDirected = showDivider && divSingle && divDir !== "none";
   // The focused tail is always inclusive of the cut: right → x ≥ v ("ge", already inclusive);
   // left → x ≤ v (built here so it matches the generated p-value `mean(vec <= v)`, not the
-  // strict "lt" region). Range middle → the central band; range tails → the two outer regions
-  // combined (lt + gt), so the box/read-out reflect combined tail mass.
+  // strict "lt" region). Range middle → the central band; range tails → the two outer regions,
+  // each INCLUSIVE of its cut (x ≤ lo, x ≥ hi — a two-sided p-value counts the observed
+  // statistic, matching the generated `mean(vec <= lo | vec >= hi)`), combined so the box /
+  // read-out reflect combined tail mass.
+  const divTailRegions = divRegions && divRange && divBand === "tails" ? (() => {
+    const lo = Math.min(effCuts[0], effCuts[1]), hi = Math.max(effCuts[0], effCuts[1]);
+    const vals = divDomain.values, total = vals.length, prop = n => (total ? n / total : NaN);
+    const nLo = vals.filter(x => x <= lo).length, nHi = vals.filter(x => x >= hi).length;
+    return [
+      { key: "le", lo: -Infinity, hi: lo, n: nLo, p: prop(nLo) },
+      { key: "geHi", lo: hi, hi: Infinity, n: nHi, p: prop(nHi) },
+    ];
+  })() : null;
   const focusRegion = !divRegions ? null
-    : divRange ? (divBand === "tails"
+    : divRange ? (divTailRegions
         ? (() => {
-            const lt = divRegions.find(r => r.key === "lt"), gt = divRegions.find(r => r.key === "gt");
-            const n = (lt ? lt.n : 0) + (gt ? gt.n : 0), total = divDomain.values.length;
+            const lo = divTailRegions[0].hi, hi = divTailRegions[1].lo, total = divDomain.values.length;
+            const n = divDomain.values.filter(x => x <= lo || x >= hi).length; // union (a value counts once)
             return { key: "tails", n, p: total ? n / total : NaN };
           })()
         : divRegions.find(r => r.key === "mid"))
+    : !divSingle ? null
     : divDir === "right" ? divRegions.find(r => r.key === "ge")
     : divDir === "left" ? (() => {
         const v = effCuts[0], total = divDomain.values.length;
@@ -895,7 +959,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const shownPct = divBy === "pct" ? divPct : (focusRegion ? focusRegion.p : NaN);
   const divProps = { divOn: showDivider, divCuts: effCuts, onDivChange: onDivDrag,
     divSnap: showDivider ? divDomain.snap : null, divShowCount, divShowPct,
-    divFmt: showDivider ? divDomain.fmt : null };
+    divFmt: showDivider ? divDomain.fmt : null, divMulti };
   // Report the active divider to a host that wants to mirror it (the Collect plot lifts this
   // into App so the generated inference code uses the real cutoff / framing). `variable` is
   // the current X header; `cuts` are in stat units. Null when the divider is off.
@@ -914,9 +978,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   useEffect(() => {
     if (!onDivider) return;
     onDivider(showDivider
-      ? { variable: xVar, cuts: effCuts, range: divRange, dir: divRange ? "none" : divDir, by: divBy, pct: divPct, band: divRange ? divBand : "middle", bounds: divBounds }
+      ? { variable: xVar, cuts: effCuts, mode: divMode, range: divRange, dir: divSingle ? divDir : "none", by: divBy, pct: divPct, band: divRange ? divBand : "middle", bounds: divBounds }
       : null);
-  }, [onDivider, showDivider, xVar, divRange, divDir, divBy, divPct, divBand, effCuts.join(","), divBoundsKey]);
+  }, [onDivider, showDivider, xVar, divMode, divDir, divBy, divPct, divBand, effCuts.join(","), divBoundsKey]);
 
   // Report active univariate summary overlays (boxplot / mean / ±1 SD) the same way, so the Collect
   // plot can drive code that computes those statistics over the sampling distribution. Only the
@@ -986,7 +1050,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     // only — the cut wins everywhere along the line except close to a measure's marker.
     if (showDivider) effCuts.forEach((c, k) => rulerSnap.push(
       { value: c, cut: k, spec: null,
-        label: divRange ? (k === 0 ? "low cut" : "high cut") : "cut", y: null }));
+        label: divMulti ? "cut " + (k + 1) : divRange ? (k === 0 ? "low cut" : "high cut") : "cut", y: null }));
   }
   // A stored endpoint set is reusable only if its anchors still reference this plot's
   // variables (else a variable switch left them stale → fall back to fresh defaults).
@@ -1091,11 +1155,20 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       {/* Divider controls (Phase 6) — the read-outs themselves live on the plot */}
       {showDivider && (
         <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
-          <ChkLabel checked={divRange} onChange={v => { setDivRange(v); setDivBy("value"); }} label="↔ Range (band)" />
+          {/* Divider mode: Single (one cut) | Range (a band) | Multi (k cuts → k+1 bins). Switching
+              re-seeds the cuts for the new mode and returns to value mode. */}
+          <div style={{ display:"flex", border:"1px solid var(--border-2)", borderRadius:6, overflow:"hidden" }}>
+            {[["single", "Single"], ["range", "↔ Range"], ["multi", "⫴ Multi"]].map(([val, lab]) => (
+              <button key={val} onClick={() => switchDivMode(val)}
+                style={{ padding:"3px 9px", border:"none", borderLeft: val === "single" ? "none" : "1px solid var(--border)",
+                  background: divMode === val ? "#6366f1" : "var(--surface)", color: divMode === val ? "#fff" : "var(--text-2)",
+                  fontSize:12, fontWeight:600, cursor:"pointer" }}>{lab}</button>
+            ))}
+          </div>
           {/* Single-divider tail direction: Both (two-sided) | ◂ Left | Right ▸. A tail focuses
               one side (arrow + one proportion → p-value / critical value). Switching framing
               returns to value mode so the % box re-reads the live proportion. */}
-          {!divRange && (
+          {divSingle && (
             <div style={{ display:"flex", border:"1px solid var(--border-2)", borderRadius:6, overflow:"hidden" }}>
               {[["none", "Both"], ["left", "◂ Left"], ["right", "Right ▸"]].map(([val, lab]) => (
                 <button key={val} onClick={() => { setDivDir(val); setDivBy("value"); }}
@@ -1118,15 +1191,29 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             </div>
           )}
           {effCuts.map((v, i) => (
-            <label key={i} style={ctrlLbl}>{divRange ? (i === 0 ? "low" : "high") : "at"}
+            <label key={i} style={ctrlLbl}>{divMulti ? i + 1 : divRange ? (i === 0 ? "low" : "high") : "at"}
               <NumInput step="any" value={v} round={4}
                 onChange={n => setCut(i, n)} style={{ ...iSm, width:72, marginLeft:4 }} />
+              {divMulti && effCuts.length > 2 && (
+                <button onClick={() => removeCut(i)} style={btnX} title="Remove this cut">×</button>
+              )}
             </label>
           ))}
+          {/* Multi: add a cut (splits the widest gap) and respace all cuts at once — equal-width
+              bins, or equal-count bins at the j/(k+1) quantiles. No tail/middle framing here. */}
+          {divMulti && (
+            <>
+              {effCuts.length < MAX_CUTS && <button onClick={addCut} style={btnPlus}>＋ cut</button>}
+              <span style={ctrlLbl}>Spacing
+                <button onClick={() => spaceCuts("width")} style={{ ...btnNav, marginLeft:4 }} title="Bins of equal width across the data">Equal width</button>
+                <button onClick={() => spaceCuts("count")} style={{ ...btnNav, marginLeft:4 }} title="Cuts at quantiles, so each bin holds about the same number of values">Equal count</button>
+              </span>
+            </>
+          )}
           {/* Linked percentage: range → middle %, single tail → tail %. Editing it snaps the
               cut(s) to the empirical quantile (→ critical value / CI); reading it shows the
               proportion at the current cut (→ p-value). Hidden for a two-sided single divider. */}
-          {(divRange || divDir !== "none") && (
+          {(divRange || (divSingle && divDir !== "none")) && (
             <label style={{ ...ctrlLbl, color: divBy === "pct" ? "var(--accent-ink)" : undefined }}>{divRange ? (divBand === "tails" ? "tails" : "middle") : "tail"}
               <NumInput step="any" min="0" max="1" round={3}
                 value={isNaN(shownPct) ? "" : shownPct}
@@ -1251,7 +1338,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
             {freqAxis && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>Frequency</text>}
             {/* divider shading — painted BEHIND the dots so dots stay visible + clickable */}
-            {showDivider && <DividerShades topY={PT} botY={PT + iH} sx={sx} xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} dir={divRange ? "none" : divDir} band={divRange ? divBand : "middle"} />}
+            {showDivider && <DividerShades topY={PT} botY={PT + iH} sx={sx} xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} dir={divSingle ? divDir : "none"} band={divRange ? divBand : "middle"} multi={divMulti} />}
             {/* dots — one per row; click toggles linked highlighting (D1) */}
             {dots.map((d, i) => {
               const sel = isSel(d.id);
@@ -1343,10 +1430,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 <DividerLines W={W} topY={PT} botY={PT + iH} sx={sx}
                   inv={px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo)}
                   xlo={divDomain.lo} xhi={divDomain.hi} cuts={effCuts} onChange={onDivDrag}
-                  snapCandidates={divDomain.snap} fmt={divDomain.fmt} dir={divRange ? "none" : divDir} />
+                  snapCandidates={divDomain.snap} fmt={divDomain.fmt} dir={divSingle ? divDir : "none"} />
                 {/* Directional single divider shows only the focused tail; its Count / Proportion
-                    read-outs follow their checkboxes (no auto-on), matching the usual regions. */}
-                <RegionLabels regions={divDirected && focusRegion ? [focusRegion] : divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}
+                    read-outs follow their checkboxes (no auto-on), matching the usual regions.
+                    Range + Tails shows just the two inclusive tails (≤ lo, ≥ hi). */}
+                <RegionLabels regions={divDirected && focusRegion ? [focusRegion] : divTailRegions || divRegions} sx={sx} xL={sx(divDomain.lo)} xR={sx(divDomain.hi)}
                   y={PT + 9} showCount={divShowCount} showPct={divShowPct} total={divDomain.values.length}
                   base={{ variable: xVar }} trackProps={trackProps} />
               </>
@@ -1594,7 +1682,7 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
     if (!onDivider) return;
     if (!d) { onDivider(null); return; }
     const k = headers.indexOf(d.variable);
-    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range, dir: d.dir, by: d.by, pct: d.pct, band: d.band, bounds: d.bounds });
+    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, mode: d.mode, range: d.range, dir: d.dir, by: d.by, pct: d.pct, band: d.band, bounds: d.bounds });
   }, [onDivider, headers, columns]);
 
   // Same header→stat-id translation for the summary overlays.
@@ -2279,7 +2367,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
+function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, divMulti, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const selectable = !!onToggleSelect;
   const isSel = id => !!(selectedIds && selectedIds.has(id));
@@ -2555,7 +2643,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
                   count / proportion are conditioned on this group (collectable in Sample
                   Results); the "Other" bucket has no clean target, so it stays plain. */}
               {divOn && divCuts && divCuts.length > 0 && (divShowCount || divShowPct) && (
-                <RegionLabels regions={regions(groupNums, divCuts)} sx={sx} xL={PL} xR={W - PR}
+                <RegionLabels regions={divMulti ? binRegions(groupNums, divCuts) : regions(groupNums, divCuts)} sx={sx} xL={PL} xR={W - PR}
                   y={top + 10} showCount={divShowCount} showPct={divShowPct} total={groupNums.length}
                   base={{ variable: numVar, condVar: catVar, condVal: String(cat) }}
                   trackProps={cat === OTHER_CAT ? { ...tp, trackable: false } : tp} />
@@ -2568,7 +2656,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
             (which carry a y) so a measure still wins an exact coincident tie at its marker. */}
         {rulerOn && divOn && divCuts && divCuts.length ? (divCuts.forEach((c, k) => rulerCands.push(
           { value: c, cut: k, spec: null,
-            label: divCuts.length > 1 ? (k === 0 ? "low cut" : "high cut") : "cut", y: null })), null) : null}
+            label: divMulti ? "cut " + (k + 1) : divCuts.length > 1 ? (k === 0 ? "low cut" : "high cut") : "cut", y: null })), null) : null}
 
         {/* x axis */}
         <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="var(--axis)" strokeWidth={1.5} />

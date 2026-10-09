@@ -209,7 +209,8 @@ Both are off by default and gated to plots where they make sense.
     A **range** carries a `Middle | Tails` framing (`divBand`, analogous to the single-line
     direction): **middle** highlights the central band (a CI), **tails** highlights the two
     outer regions (a two-sided p-value) and its proportion box shows/drives the **combined tail
-    mass** — complementary to the middle (a 0.05 tails box ⇒ a 0.95 central band). A range (either
+    mass** — each tail **inclusive** of its cut (`x ≤ lo`, `x ≥ hi`, like the one-sided tails; the
+    on-plot labels show just those two tails, not the middle) — complementary to the middle (a 0.05 tails box ⇒ a 0.95 central band). A range (either
     framing) uses `measure.js` `conservativeBand` for the central band: the **smallest achievable
     central band that covers ≥ the target** — so a 0.95 middle (or 0.05 tails) yields an interval
     covering *at least* 0.95 (conservative; discrete data rarely lands exactly on the nominal
@@ -224,6 +225,17 @@ Both are off by default and gated to plots where they make sense.
     → critical value, range/middle+value → band proportion, range/middle+prop → CI,
     range/tails+value → combined two-sided tail proportion, range/tails+prop → two-sided critical
     values (see codegen note below).
+  - **Multi mode** (`divMode` `"single"|"range"|"multi"`, a segmented control; replaces the old
+    `divRange` boolean — a saved view with only `divRange:true` still opens as Range): 2–9
+    (`MAX_CUTS`) free cuts split the axis into k+1 bins, each **left-closed / right-open**
+    (`c_j ≤ x < c_j+1`, R's `cut(right = FALSE)`) via `measure.js` `binRegions`, which carries
+    explicit `loOpen`/`hiOpen` so a tracked bin's `countBetween`/`propBetween` spec reproduces it.
+    `＋ cut` splits the widest gap; `×` stops at 2; **Equal width** / **Equal count** respace all
+    cuts (`evenCuts`, count uses the interpolating `quantile`). Exploratory only — no tail/middle/%
+    framing (`focusRegion` is null); alternate bins get a faint tint and crowded cut labels fan
+    sideways. On the Collect plot codegen emits a **frequency table** (`table(cut(vec, c(-Inf, …,
+    Inf), right = FALSE)) / length(vec)` / `pd.cut(...).value_counts(normalize=True, sort=False)`)
+    with each cut as a `cutLit(…, "lower")` literal, **deduped** (both `cut`s reject repeated breaks).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
   *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
@@ -369,7 +381,8 @@ split by `band` — for **middle**: a **CI** (+ %) as the plain percentile inter
 `conservativeBand` — the student-facing code stays a simple one-liner that won't match the drawn
 band exactly on discrete data, which is acceptable) or a **band proportion**
 `mean(vec >= lo & vec <= hi)` (+ value); for **tails**: a **two-sided p-value**
-`mean(vec < lo | vec > hi)` (+ value, the exact complement of the inclusive middle band) or
+`mean(vec <= lo | vec >= hi)` (+ value, inclusive of both cuts — a p-value counts the observed
+statistic; the cut literals round toward the tails, the opposite side from the middle band) or
 **two-sided critical values** `quantile(vec, c(m/2, 1-m/2))` (+ %, m = combined tail mass).
 The two-sided single divider shows both `>= v` / `< v` proportions (disjoint); the on-plot
 left-tail read-out is built inclusively to match. **Cut literals** are not a plain 4-dp rounding —

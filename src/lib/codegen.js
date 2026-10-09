@@ -182,7 +182,8 @@ function dividerInfo(cfg, stats) {
   if (!d || !d.cuts || !d.cuts.length || d.statId == null) return null;
   const cuts = d.cuts.map(Number).filter(v => !isNaN(v));
   if (!cuts.length) return null;
-  const frame = { cuts, range: d.range && cuts.length >= 2,
+  const multi = d.mode === "multi" && cuts.length >= 2;
+  const frame = { cuts, multi, range: !multi && d.range && cuts.length >= 2,
     dir: d.dir === "left" || d.dir === "right" ? d.dir : "none",
     by: d.by === "pct" ? "pct" : "value", pct: typeof d.pct === "number" ? d.pct : 0.05,
     band: d.band === "tails" ? "tails" : "middle",
@@ -200,7 +201,8 @@ function dividerInfo(cfg, stats) {
 //                   A plain percentile interval for the set %, NOT the conservative band the
 //                   tool draws — the student-facing code stays simple (won't match the visual
 //                   band exactly on discrete data, which is fine).
-//   range + tails  + value → combined two-sided tail proportion P(x < lo) + P(x > hi) (a two-sided p-value)
+//   range + tails  + value → combined two-sided tail proportion P(x ≤ lo) + P(x ≥ hi) (a two-sided p-value,
+//                   inclusive of both cuts — a p-value counts the observed statistic)
 //   range + tails  + pct   → two-sided critical values `quantile(c(m/2, 1-m/2))` (m = combined tail mass)
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
 //   tail  + pct   → critical value: the (1-m) percentile (right) / m percentile (left)
@@ -212,10 +214,20 @@ function dividerExprs(vec, div, lang) {
   const lt = v => (R ? `mean(${vec} < ${v})` : `(${vec} < ${v}).mean()`);
   const le = v => (R ? `mean(${vec} <= ${v})` : `(${vec} <= ${v}).mean()`); // left tail is inclusive
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
-  const outside = (a, b) => (R ? `mean(${vec} < ${a} | ${vec} > ${b})` : `((${vec} < ${a}) | (${vec} > ${b})).mean()`);
+  const outside = (a, b) => (R ? `mean(${vec} <= ${a} | ${vec} >= ${b})` : `((${vec} <= ${a}) | (${vec} >= ${b})).mean()`);
   const quant = a => (R ? `quantile(${vec}, ${a})` : `${vec}.quantile(${a})`);
   const bd = i => (div.bounds ? div.bounds[i] : null);
 
+  if (div.multi) {
+    // Multi bins: a frequency table over left-closed bins (c_j ≤ x < c_j+1), matching the
+    // tool's `binRegions`. Each cut is the inclusive LOWER edge of the bin above it.
+    const order = div.cuts.map((c, i) => i).sort((i, j) => div.cuts[i] - div.cuts[j]);
+    // R's cut() / pd.cut reject repeated breaks; a duplicate cut is only an empty bin in the
+    // tool, so dropping it leaves every proportion unchanged.
+    const lits = [...new Set(order.map(i => cutLit(div.cuts[i], "lower", bd(i))))];
+    if (R) return [`table(cut(${vec}, c(-Inf, ${lits.join(", ")}, Inf), right = FALSE)) / length(${vec})   # proportion in each region`];
+    return [`pd.cut(${vec}, [-float("inf"), ${lits.join(", ")}, float("inf")], right=False).value_counts(normalize=True, sort=False)   # proportion in each region`];
+  }
   if (div.range) {
     const i0 = div.cuts[0] <= div.cuts[1] ? 0 : 1, i1 = 1 - i0;
     const a = cutLit(div.cuts[i0], "lower", bd(i0)), b = cutLit(div.cuts[i1], "upper", bd(i1));
@@ -226,7 +238,10 @@ function dividerExprs(vec, div, lang) {
         const args = R ? `c(${lo}, ${hi})` : `[${lo}, ${hi}]`;
         return [`${quant(args)}   # two-sided critical values (~${pctLabel(div.pct)} in tails)`];
       }
-      return [`${outside(a, b)}   # two-sided p-value P(stat < ${a} or stat > ${b})`];
+      // Inclusive of both cuts (a p-value counts the observed statistic): lo is an UPPER inclusive
+      // bound (x <= lo) and hi a LOWER one (x >= hi), so the literal sides flip vs. the middle band.
+      const lo = cutLit(div.cuts[i0], "upper", bd(i0)), hi = cutLit(div.cuts[i1], "lower", bd(i1));
+      return [`${outside(lo, hi)}   # two-sided p-value P(stat <= ${lo} or stat >= ${hi})`];
     }
     if (div.by === "pct") {
       // CI: the middle-m percentile interval for the set % (a plain percentile interval — not

@@ -103,3 +103,33 @@ export function regions(values, cuts) {
     { key: "gt", lo: hi, hi: Infinity, n: above, p: prop(above) },
   ];
 }
+
+// Multi-divider bins: k cuts → k+1 regions, each left-closed / right-open (c_j ≤ x < c_j+1,
+// the outer two unbounded) — R's `cut(right = FALSE)`. Unlike `regions`, every region carries
+// explicit `loOpen`/`hiOpen` so a tracked bin spec reproduces it exactly. One sort + one sweep.
+export function binRegions(values, cuts) {
+  const cs = [...cuts].sort((a, b) => a - b), total = values.length;
+  const xs = [...values].sort((a, b) => a - b);
+  const prop = n => (total ? n / total : NaN);
+  const out = [];
+  let i = 0;
+  for (let j = 0; j <= cs.length; j++) {
+    const hi = j < cs.length ? cs[j] : Infinity, start = i;
+    while (i < xs.length && xs[i] < hi) i++;
+    const n = i - start;
+    out.push({ key: "b" + j, lo: j ? cs[j - 1] : -Infinity, hi, n, p: prop(n), loOpen: false, hiOpen: hi !== Infinity });
+  }
+  return out;
+}
+
+// k evenly spaced cuts over `values`: equal-WIDTH steps across [min, max], or equal-COUNT
+// cuts at the j/(k+1) quantiles (`quantile` passed in — the interpolating one from stats.js,
+// constraint #5 — so this module stays dependency-free). Discrete data may yield duplicate
+// cuts; that only produces an empty bin.
+export function evenCuts(values, k, how, quantile) {
+  if (!values.length) return [];
+  const xs = [...values].sort((a, b) => a - b), mn = xs[0], mx = xs[xs.length - 1];
+  return Array.from({ length: k }, (_, j) => how === "count"
+    ? quantile(xs, (j + 1) / (k + 1))
+    : mn + (j + 1) * (mx - mn) / (k + 1));
+}
