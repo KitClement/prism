@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { toCanvas } from "html-to-image";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
-import { colorAt, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
+import { colorAt, clamp, toNum, minutesToTime, colKind, sortCats, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
 import { numericSummary, kdeCurve, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
@@ -622,6 +622,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const [showPct, setShowPct] = useState(() => iv?.showPct ?? false);
   // Collapse high-cardinality categorical axes (>10 categories)
   const [expandCats, setExpandCats] = useState(() => iv?.expandCats ?? false);
+  // Headers the student chose to plot AS CATEGORIES although they're detected numeric (0/1
+  // indicators, a handful of years). View-only: it changes the plot mode, never the data or
+  // the device-derived kinds App uses to validate tracked stats. An array so it's JSON-safe.
+  const [asCat, setAsCat] = useState(() => iv?.asCat ?? []);
+  const toggleAsCat = h => setAsCat(a => (a.includes(h) ? a.filter(x => x !== h) : [...a, h]));
   // Divider measurement tool (Phase 6): off by default; opt-in per plot. The on-plot
   // count / proportion read-outs are themselves off until toggled (like the categorical
   // # Count / % Percent labels).
@@ -664,9 +669,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     if (!onViewChange) return;
     onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
       expandCats, divOn, divMode, divCuts, divShowCount, divShowPct,
-      divDir, divBy, divPct, divBand, rulerOn });
+      divDir, divBy, divPct, divBand, rulerOn, asCat });
   }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
-      expandCats, divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
+      expandCats, asCat.join("\u0001"), divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
       divDir, divBy, divPct, divBand, rulerOn]);
 
   const plotRef = useRef(null);
@@ -678,11 +683,19 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // authoritative `varKinds` (derived from device outcomes) so a column's kind is fixed
   // up front and can't flip when a rare non-numeric draw appears; EDA passes none and
   // falls back to inferring from the rows via colKind (its data is a static upload).
-  const colInfo = useMemo(() => {
+  // `detected` keeps that kind; `colInfo` applies the student's as-categories override on
+  // top (plain numeric only — a time column keeps its time axis).
+  const detected = useMemo(() => {
     const map = {};
     headers.forEach(h => { map[h] = (varKinds && varKinds[h]) || colKind(rows, h); });
     return map;
   }, [rows, headers, varKinds]);
+  const canAsCat = h => !!(detected[h] && detected[h].numeric && !detected[h].time);
+  const colInfo = useMemo(() => {
+    const map = { ...detected };
+    asCat.forEach(h => { if (canAsCat(h)) map[h] = { numeric:false, time:false }; });
+    return map;
+  }, [detected, asCat.join("\u0001")]);
 
   // Keep X/Y valid as the available columns change (callbacks into the parent's state)
   useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
@@ -828,7 +841,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     const mn = Math.min(...nums), mx = Math.max(...nums), range = (mx - mn) || 1, pad = range * 0.05;
     const catCount = {};
     rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
-    const allCats = Object.keys(catCount).sort();
+    const allCats = sortCats(Object.keys(catCount));
     const cats = collapseCats(allCats, catCount, expandCats).shown;
     const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
     const groupOf = v => catSet.has(v) ? v : OTHER_CAT;
@@ -1117,12 +1130,28 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     onTrack: () => { if (catSel.length === 2) onTrackDiff({ spec: catSel[0] }, { spec: catSel[1] }); },
   } : null;
 
+  // A numeric-detected variable can be flipped to plot as categories (and back): "123" while
+  // numeric, "Aa" (highlighted) while treated as categories. Hidden for cat/time columns.
+  const asCatChip = h => {
+    if (!canAsCat(h)) return null;
+    const on = asCat.includes(h);
+    return (
+      <button onClick={() => toggleAsCat(h)} aria-pressed={on}
+        title={on ? `Plotting ${nm(h)} as categories — click to treat as numeric` : `Treat ${nm(h)} as categories (e.g. 0/1 codes or years)`}
+        style={{ padding:"2px 7px", marginLeft:-4, border:"1px solid var(--border-2)", borderRadius:6,
+          background: on ? "#6366f1" : "var(--surface)", color: on ? "#fff" : "var(--text-2)",
+          fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>{on ? "Aa" : "123"}</button>
+    );
+  };
+
   return (
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
       <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
         <Sel label="X" value={xVar} onChange={setXVar} options={headers} labels={headers.map(nm)} />
+        {asCatChip(xVar)}
         <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar).map(nm)]} />
+        {yVar !== "none" && asCatChip(yVar)}
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
@@ -2148,7 +2177,7 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) { (rowsByCat[v] = rowsByCat[v] || []).push(r); } });
   const counts = {};
   Object.keys(rowsByCat).forEach(c => { counts[c] = rowsByCat[c].length; });
-  const allCats = Object.keys(counts).sort();
+  const allCats = sortCats(Object.keys(counts));
   const total = allCats.reduce((a, c) => a + counts[c], 0);
   const { shown } = collapseCats(allCats, counts, expanded);
   const namedSet = new Set(shown.filter(c => c !== OTHER_CAT));
@@ -2247,7 +2276,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
     if (xc !== "" && xc !== undefined) xCount[xc] = (xCount[xc] || 0) + 1;
     if (yc !== "" && yc !== undefined) yCount[yc] = (yCount[yc] || 0) + 1;
   });
-  const allX = Object.keys(xCount).sort(), allY = Object.keys(yCount).sort();
+  const allX = sortCats(Object.keys(xCount)), allY = sortCats(Object.keys(yCount));
   const X = collapseCats(allX, xCount, expanded), Y = collapseCats(allY, yCount, expanded);
   const xCats = X.shown, yCats = Y.shown;
   const xSet = new Set(xCats.filter(c => c !== OTHER_CAT));
@@ -2378,7 +2407,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
   // Collapse high-cardinality grouping variable into top 10 + "Other"
   const catCount = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
-  const allCats = Object.keys(catCount).sort();
+  const allCats = sortCats(Object.keys(catCount));
   const { shown: cats, isCollapsed } = collapseCats(allCats, catCount, expanded);
   const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
   const groupOf = v => catSet.has(v) ? v : OTHER_CAT;

@@ -171,6 +171,17 @@ cat×cat grid, num×cat split, num×num scatter). It builds scales/stacking from
 `varKinds` (from `deviceVarKind`) so a var's num/cat kind comes from the device's declared
 outcomes, not re-inferred per sample.
 
+**Numeric-as-categories override.** Next to the X/Y selectors, a numeric-detected (non-time)
+variable shows a `123`/`Aa` chip that flips it to plot as categories (0/1 codes, a few years),
+so it can form side-by-side dot plots or a two-way table. It is **view-only** (`asCat`, a
+per-header array in Plot's view state, saved with `.prism` views): `Plot` keeps the `detected`
+kind and layers the override into `colInfo`, the single place every plot mode branches on.
+App's device-derived kinds (and so tracked-stat invalidation) are untouched; click-tracked
+`proportion`/group specs still match because `computeStat` compares as strings and codegen's
+`lit()` prints numeric labels as bare numbers. Category axes order via `util.js` `sortCats`
+(numeric when every label is a number — 1, 2, …, 10 — else lexical); the divider's num×cat
+domain and `SplitDotPlots` must keep using the same ordering.
+
 ### Sample Results & Collect Statistics (the overhaul)
 - **Click-to-track.** Only a statistic whose number is currently on the plot is
   collectable (gated on the `onTrackStat` prop, so EDA shows no track UI). Clicking a value

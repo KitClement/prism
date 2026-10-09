@@ -114,6 +114,14 @@ function colKind(rows, col) {
   return { numeric, time: numeric && timeCount > plainNum };
 }
 
+// Order category labels: numerically when every label is a finite number (so a numeric
+// column plotted as categories reads 1, 2, …, 10 — not 1, 10, 2), else lexically.
+function sortCats(keys) {
+  return keys.every(k => String(k).trim() !== "" && Number.isFinite(Number(k)))
+    ? [...keys].sort((a, b) => Number(a) - Number(b))
+    : [...keys].sort();
+}
+
 // Collapse a list of categories to the top `limit` by count plus an aggregated
 // "Other" bucket. Returns the displayed categories and whether collapsing happened.
 const OTHER_CAT = "Other";
@@ -167,4 +175,4 @@ function nextItemLabel(labels) {
   return `New${k}`;
 }
 
-export { uid, clamp, sleep, COLORS, COLORS_CB, colorAt, setColorBlindPalette, parseCSV, fitDotR, parseTimeToMinutes, minutesToTime, toNum, colKind, OTHER_CAT, collapseCats, nextItemLabel };
+export { uid, clamp, sleep, COLORS, COLORS_CB, colorAt, setColorBlindPalette, parseCSV, fitDotR, parseTimeToMinutes, minutesToTime, toNum, colKind, sortCats, OTHER_CAT, collapseCats, nextItemLabel };
