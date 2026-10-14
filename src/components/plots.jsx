@@ -543,6 +543,32 @@ function cropCanvas(canvas, pad = 8) {
 // whitespace. Clipboard-image write needs a secure context (localhost / https) + the click
 // gesture; if unsupported we surface an error rather than throwing. Nodes tagged
 // `data-no-capture` (always the button itself; optionally caller-marked controls) are excluded.
+// Rows scrolled out of view inside a scroll box are excluded too (pruneScrolledOut): a mixer
+// filled from a continuous column can list thousands of ball types in a 120px box, and
+// html-to-image would clone + style-inline every hidden row, freezing the tab before failing.
+// Temporarily tag (data-no-capture) every direct child of a scroll container inside `root`
+// that lies wholly outside the container's visible box; returns the tagged elements so the
+// caller can untag them. The clone resets scrollTop to 0, so the rows that were visible land
+// at the top of the box and the PNG still shows what was on screen.
+function pruneScrolledOut(root) {
+  const tagged = [];
+  root.querySelectorAll("*").forEach(el => {
+    const vOver = el.scrollHeight > el.clientHeight + 1, hOver = el.scrollWidth > el.clientWidth + 1;
+    if (!vOver && !hOver) return;
+    const cs = getComputedStyle(el), scrolls = v => v === "auto" || v === "scroll";
+    if (!((vOver && scrolls(cs.overflowY)) || (hOver && scrolls(cs.overflowX)))) return;
+    const box = el.getBoundingClientRect();
+    for (const ch of el.children) {
+      if (ch.dataset.noCapture === "1") continue;
+      const r = ch.getBoundingClientRect();
+      if (r.bottom <= box.top || r.top >= box.bottom || r.right <= box.left || r.left >= box.right) {
+        ch.setAttribute("data-no-capture", "1"); tagged.push(ch);
+      }
+    }
+  });
+  return tagged;
+}
+
 export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", title = "Copy this plot as an image to the clipboard", style }) {
   const [msg, setMsg] = useState("");      // transient status: "ok" | "err" | ""
   const copy = async () => {
@@ -561,19 +587,22 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
     const checkboxes = Array.from(node.querySelectorAll('input[type="checkbox"]'));
     const prevChecked = checkboxes.map(c => c.hasAttribute("checked"));
     checkboxes.forEach(c => { if (c.checked) c.setAttribute("checked", ""); else c.removeAttribute("checked"); });
+    const pruned = pruneScrolledOut(node);
     try {
       // Match the on-screen theme so the PNG isn't transparent when pasted into Word.
       const bgc = getComputedStyle(document.documentElement).getPropertyValue("--surface").trim() || "#fff";
       const filter = n => !(n && n.dataset && n.dataset.noCapture === "1");
-      const canvas = await toCanvas(node, { pixelRatio: 2, backgroundColor: bgc, skipFonts: true, cacheBust: true, filter, ...options });
-      const blob = await new Promise(res => cropCanvas(canvas).toBlob(res, "image/png"));
-      if (!blob) { fail(); return; }
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      const blobP = toCanvas(node, { pixelRatio: 2, backgroundColor: bgc, skipFonts: true, cacheBust: true, filter, ...options })
+        .then(canvas => new Promise((res, rej) => cropCanvas(canvas).toBlob(b => b ? res(b) : rej(new Error("toBlob")), "image/png")));
+      // Hand the clipboard a Promise<Blob> and start the write now, inside the click gesture,
+      // so a slow rasterize can't outlive the user activation the write needs.
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blobP })]);
       setMsg("ok"); setTimeout(() => setMsg(""), 2200);
     } catch { fail(); }
     finally {
       node.classList.remove("capturing-image");
       checkboxes.forEach((c, i) => { if (prevChecked[i]) c.setAttribute("checked", ""); else c.removeAttribute("checked"); });
+      pruned.forEach(el => el.removeAttribute("data-no-capture"));
     }
   };
   // The wrapper is tagged data-no-capture so the button never appears in an image of a region
