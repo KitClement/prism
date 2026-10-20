@@ -45,7 +45,10 @@ dependency-light and self-contained (no chart lib, no state lib).
     plain `for`-loop (not `lapply` / a list comprehension). The **single** + **collect** sections mirror the
     *tracked-stat table*: one entry per enabled stat (nothing until one is enabled), and the
     collect loop's `N` is `collectedCount` (samples collected so far, default 1000 before any).
-    R is base R; Python is **pandas/numpy** (and **statsmodels** for regression).
+    R is base R; Python is **pandas/numpy** (and **statsmodels** for regression). Python never
+    emits `.values`: a group stat reads `sample.loc[sample["g"] == val, "v"]` (both paths), and
+    when the compact path needs the per-sample `sample` frame (a group or regression stat) each
+    device draw chains `.reset_index(drop=True)` so the separately drawn Series align row-for-row.
   - `scale.js` — `makeScale` (axis scale builder) + `stackDots` (tallest-column dot
     stacking). Shared by every plot.
   - `expr.js` — derived-statistic engine: `lexExpr`/`evalExpr`/`validateExpr`,

@@ -418,15 +418,18 @@ function popDefPy(col, dev) {
   const colVals = (isPool(dev) && !allOnes) ? `np.repeat(${vec(labels, "py")}, [${weights.join(", ")}])` : vec(labels, "py");
   return `pop_${col} = pd.DataFrame({${key(col)}: ${colVals}})`;
 }
-// The whole-sample draw expression for one device (compact path).
-function drawVec(col, dev, lang) {
+// The whole-sample draw expression for one device (compact path). `resetIndex` (Python only) chains
+// `.reset_index(drop=True)` so separately drawn devices share the index 0…n-1 and can be combined
+// into the `sample` frame — passed only when that frame is built.
+function drawVec(col, dev, lang, resetIndex = false) {
+  const ri = resetIndex ? ".reset_index(drop=True)" : "";
   const src = devSource(dev);
   if (src) { const rep = dev.withReplacement !== false; return lang === "r"
     ? `${col} <- sample(${srcCol(src, "df", "r")}, n${rep ? ", replace = TRUE" : ""})`
-    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=${rep ? "True" : "False"})`; }
+    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=${rep ? "True" : "False"})${ri}`; }
   const { labels, weights, uniform, replace } = outcomeSpec(dev);
   const pool = isPool(dev), allOnes = weights.every(w => w === 1);
-  if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}[${key(col)}].sample(n, replace=True)`;
+  if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}[${key(col)}].sample(n, replace=True)${ri}`;
   if (lang === "r") {
     if (labels.length === 1) return `${col} <- rep(${lit(labels[0])}, n)`;   // avoids R's sample(c(5),n) 1:5 trap, valid WR & WoR
     if (pool) {
@@ -437,18 +440,18 @@ function drawVec(col, dev, lang) {
     const prob = uniform ? "" : `, prob = c(${weights.join(", ")})`;   // spinner: weighted, always WR
     return `${col} <- sample(${vec(labels, "r")}, n, replace = TRUE${prob})`;
   }
-  if (pool) return `${col} = pop_${col}[${key(col)}].sample(n, replace=${replace ? "True" : "False"})`;
+  if (pool) return `${col} = pop_${col}[${key(col)}].sample(n, replace=${replace ? "True" : "False"})${ri}`;
   const w = uniform ? "" : `, weights=[${weights.join(", ")}]`;   // spinner: weighted, always WR
-  return `${col} = pop_${col}[${key(col)}].sample(n, replace=True${w})`;
+  return `${col} = pop_${col}[${key(col)}].sample(n, replace=True${w})${ri}`;
 }
 // Python compact: each device is drawn as its own vector (one line per device, via `drawVec`),
-// then those vectors are assembled into one per-sample DataFrame `sample` so every statistic is
-// computed with familiar pandas/df syntax (reusing the split path's `pyStatAssign`). `.values`
-// strips each draw's random index so the columns align by position (without it a multi-column
-// DataFrame misaligns into NaN). `statDfLinePy` builds the post-loop sampling-distribution
+// then — when a group or regression stat needs it — assembled into one per-sample DataFrame
+// `sample`. The draws carry `.reset_index(drop=True)` in that case (drawVec's `resetIndex`), so
+// the columns align row-for-row (each `.sample()` keeps random population labels, which would
+// misalign / error when combined). `statDfLinePy` builds the post-loop sampling-distribution
 // `samp_dist` from the collected stat lists. Shared by genCompact + genIntegrated.
 function sampleFrameLinePy(cfg, names) {
-  const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}.values`);
+  const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}`);
   return `sample = pd.DataFrame({${cells.join(", ")}})`;
 }
 const statDfLinePy = stats => `samp_dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`;
@@ -461,9 +464,9 @@ function compactCol(s, names) {
 }
 // True when any compact statistic needs statsmodels (Python regression import).
 const compactNeedsSm = stats => stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
-// True when the Python compact path needs the per-sample `sample` DataFrame: only regression
-// (smf.ols wants a frame). Plain + group stats compute off the bare device Series, mirroring R.
-const compactNeedsFrame = compactNeedsSm;
+// True when the Python compact path needs the per-sample `sample` DataFrame: regression (smf.ols
+// wants a frame) or a group stat (read with `sample.loc[...]`). Plain stats use the bare Series.
+const compactNeedsFrame = stats => compactNeedsSm(stats) || stats.some(({ s }) => s.condVar);
 // True when the Python compact path references numpy — only `np.repeat` in popDefPy (a pool
 // device with unequal counts). Without it the bare-Series stats are pure pandas, so the
 // `import numpy as np` line would be dead; gate it on this.
@@ -480,19 +483,20 @@ function compactStatExpr(s, names) {
   }
   return vStat(s, compactCol(s, names), "r");
 }
-// Python compact, mirroring `compactStatExpr`: assignment line(s) for one statistic off the bare
-// device Series. Plain → `vStat(series)`; group (condVar) → a positional boolean mask
-// (`series[(group == val).values]`) so the cross-device subset aligns by position without a frame
-// (the numpy bool array indexes positionally, sidestepping each `.sample()`'s mismatched index);
-// regression → `smf.ols` over the `sample` frame (built only when regression is present). `target`
-// wraps the value into its assignment (`id = …` single / `id.append(…)` collect loop).
+// Python compact, mirroring `compactStatExpr`: assignment line(s) for one statistic. Plain →
+// `vStat(series)` off the bare device Series; group (condVar) → `vStat` over
+// `sample.loc[sample["group"] == val, "var"]`; regression → `smf.ols` over the `sample` frame
+// (built only when a group/regression stat is present). `target` wraps the value into its
+// assignment (`id = …` single / `id.append(…)` collect loop).
 function compactStatLinesPy(s, id, names, target) {
   if (s.fn === "slope" || s.fn === "intercept")
     return [target(pyStatExpr(s, names[s.variable], names[s.variable2], "sample"))];
   const v = names[s.variable];
-  const col = s.condVar ? `${v}[(${names[s.condVar]} == ${lit(s.condVal)}).values]` : v;
+  const col = s.condVar ? pyLocCol("sample", names[s.condVar], s.condVal, v) : v;
   return [target(vStat(s, col, "py"))];
 }
+// `D.loc[D["g"] == val, "v"]` — one variable of a data frame, subset to one group.
+const pyLocCol = (D, g, val, v) => `${D}.loc[${D}[${key(g)}] == ${lit(val)}, ${key(v)}]`;
 // The inline statistic expression over the drawn column `v` (an R vector / a pandas Series).
 function vStat(s, v, lang) {
   if (lang === "r") {
@@ -576,7 +580,7 @@ function genCompact(cfg, names, lang) {
   if (anySource(cfg)) sampler.push(`df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push(`n = ${cfg.sampleSize}`);
   cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) sampler.push(pd); });
-  cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py")));
+  cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py", needsFrame)));
   if (needsFrame) sampler.push(sampleFrameLinePy(cfg, names));
 
   const single = mk("single");
@@ -589,7 +593,7 @@ function genCompact(cfg, names, lang) {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
-    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py")));
+    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py", needsFrame)));
     if (needsFrame) collect.push("    " + sampleFrameLinePy(cfg, names));
     stats.forEach(({ s, id }) => compactStatLinesPy(s, id, names, e => `${id}.append(${e})`).forEach(t => collect.push("    " + t)));
     collect.push(statDfLinePy(stats));
@@ -750,9 +754,12 @@ function rStatValue(s, names, D = "df") {
 }
 // Per-stat assignment line(s) over Python data-frame `D`, at indent `ind`. `target(expr)` wraps
 // the computed value into its assignment (`id = …` for the single sample, `id.append(…)` inside
-// the collect loop). A group (condVar) stat slices `sub` first, mirroring computeStat.
+// the collect loop). A group (condVar) stat reads `D.loc[D["g"] == val, "v"]` in one line; only a
+// conditional regression (needs the whole subset frame) slices `sub` first. Mirrors computeStat.
 function pyStatAssign(s, id, names, D, ind, target) {
   const v = names[s.variable], v2 = names[s.variable2];
+  if (s.condVar && s.fn !== "slope" && s.fn !== "intercept")
+    return [`${ind}${target(vStat(s, pyLocCol(D, names[s.condVar], s.condVal, v), "py"))}`];
   if (s.condVar) return [`${ind}sub = ${D}[${D}[${key(names[s.condVar])}] == ${lit(s.condVal)}]`,
     `${ind}${target(pyStatExpr(s, v, v2, "sub"))}`];
   return [`${ind}${target(pyStatExpr(s, v, v2, D))}`];
@@ -969,7 +976,7 @@ function genIntegrated(cfg, names, lang) {
     push(lang === "r" ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
     stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
     push(lang === "r" ? "for (i in 1:N) {" : "for i in range(N):", "collect");
-    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang), "sampler"));
+    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang, needsFrame), "sampler"));
     if (lang === "py" && needsFrame) push(ind + sampleFrameLinePy(cfg, names), "sampler");
     stats.forEach(({ s, id }) => {
       if (lang === "r") push(ind + `${id}[i] <- ${compactStatExpr(s, names)}`, "single");
