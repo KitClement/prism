@@ -200,6 +200,20 @@ num×cat divider, whose shared `levelsOf` keeps interval order, **draws empty bi
 top-10 "Other" collapse. View-only: while a binned variable is on an axis, click-to-track is off
 (`binnedInView`), since App can't recompute a binned spec per sample; no generated code.
 
+**Y-only plot (X = none).** X's selector has a `— none —` option. With X none, `Plot` maps the props
+(`xVar: xVarIn, yVar: yVarIn`) to an **effective** univariate case on the Y variable (`yOnly`;
+effective `xVar` = Y, `yVar` = "none") above every hook, so stat toggles, click-to-track specs
+(plain `{fn, variable}`) and overlays are the ordinary univariate ones. Only the drawing differs: a
+numeric Y renders `SplitDotPlots` `orientation="v"` with `catVar={null}` (one group, no category
+labels, dots stacking sideways off a numeric y axis); a categorical Y uses `UniCatPlot`. The divider
+and ruler are off in Y-only. Y never pairs with X none as "none": picking X = none with no Y moves
+the old X onto Y (`pickX`), and Y's selector drops its none option meanwhile.
+
+**Second linked EDA plot.** `EDAPlot`'s **＋ Add plot** mounts a second `Plot` (its own X/Y/toggles,
+state `second = {xVar, yVar, plot}`, saved in the EDA view blob, null when removed) sharing the same
+`selectedIds`/`toggleId`, so a click in either plot or a table row highlights the case everywhere.
+Column/formula renames follow it like the first plot's X/Y. The table highlights only plot 1's X/Y.
+
 ### Sample Results & Collect Statistics (the overhaul)
 - **Click-to-track.** Only a statistic whose number is currently on the plot is
   collectable (gated on the `onTrackStat` prop, so EDA shows no track UI). Clicking a value

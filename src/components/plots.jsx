@@ -782,7 +782,14 @@ const levelsOf = (levels, v, counts) => {
   return L;
 };
 
-function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
+function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
+  // X = "none" with a Y: a Y-only plot. Everything below treats it as the univariate case on
+  // the Y variable (the effective `xVar`), so stats/overlays/specs are the plain univariate
+  // ones; only the drawing differs (a vertical dot plot). `yOnly` never pairs with Y = none —
+  // the effect below moves a variable onto Y — but until it runs, fall back to the first column.
+  const yOnly = xVarIn === "none";
+  const xVar = yOnly ? (yVarIn !== "none" ? yVarIn : headers[0] || "") : xVarIn;
+  const yVar = yOnly ? "none" : yVarIn;
   // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
   // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
   // there and every label renders unchanged.
@@ -938,8 +945,13 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, wid
   }, [detected, asCat.join("\u0001"), binned]);
 
   // Keep X/Y valid as the available columns change (callbacks into the parent's state)
-  useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
-  useEffect(() => { if (yVar !== "none" && (!headers.includes(yVar) || yVar === xVar)) setYVar("none"); }, [headers.join(","), xVar]);
+  useEffect(() => { if (headers.length && xVarIn !== "none" && !headers.includes(xVarIn)) setXVar(headers[0]); }, [headers.join(",")]);
+  useEffect(() => {
+    if (yOnly) { if (headers.length && !headers.includes(yVarIn)) setYVar(headers[0]); return; }
+    if (yVarIn !== "none" && (!headers.includes(yVarIn) || yVarIn === xVarIn)) setYVar("none");
+  }, [headers.join(","), xVarIn, yVarIn]);
+  // Picking X = none with no Y moves the current X onto Y, so the same variable turns upright.
+  const pickX = v => { if (v === "none" && yVarIn === "none") setYVar(xVarIn); setXVar(v); };
 
   if (!rows.length) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data yet.</div>;
   if (!xVar) return null;
@@ -1079,7 +1091,7 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, wid
   // with the numeric variable on X (horizontal split plot). Off for scatter (deferred),
   // cat × cat, uni-cat, and numeric-on-Y. The cut values live in data units and are
   // shared with the child SplitDotPlots so a single line spans all groups.
-  const dividerAvailable = (!bivariate && xNumeric) || (bivariate && xNumeric && !yNumeric);
+  const dividerAvailable = (!bivariate && xNumeric && !yOnly) || (bivariate && xNumeric && !yNumeric);
   let divDomain = null;
   if (dividerAvailable && !bivariate) {
     divDomain = { lo: xS.lo, hi: xS.hi, values: xNums, fmt: fmtX,
@@ -1272,7 +1284,7 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, wid
   const rulerAxisAvail = dividerAvailable;
   const rulerResidAvail = bivariate && xNumeric && yNumeric && !!yS;
   const rulerCatDiffAvail = (bivariate && !xNumeric && !yNumeric) || (!bivariate && !xNumeric);
-  const rulerAvailable = rulerAxisAvail || rulerResidAvail || rulerCatDiffAvail;
+  const rulerAvailable = !yOnly && (rulerAxisAvail || rulerResidAvail || rulerCatDiffAvail);
   const showRuler = rulerOn && rulerAxisAvail && !!divDomain; // mechanic 1 (axis)
   const showResidRuler = rulerOn && rulerResidAvail;          // mechanic 2 (residual)
   const showCatRuler = rulerOn && rulerCatDiffAvail;          // mechanic 3 (cat difference)
@@ -1534,10 +1546,12 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, wid
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
       <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
-        <Sel label="X" value={xVar} onChange={setXVar} options={headers} labels={headers.map(nm)} />
-        {asCatChip(xVar)}{binChip(xVar)}
-        <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar).map(nm)]} />
-        {yVar !== "none" && asCatChip(yVar)}{yVar !== "none" && binChip(yVar)}
+        <Sel label="X" value={xVarIn} onChange={pickX} options={["none", ...headers]} labels={["— none —", ...headers.map(nm)]} />
+        {!yOnly && asCatChip(xVar)}{!yOnly && binChip(xVar)}
+        {yOnly
+          ? <Sel label="Y" value={xVar} onChange={setYVar} options={headers} labels={headers.map(nm)} />
+          : <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar).map(nm)]} />}
+        {yOnly ? <>{asCatChip(xVar)}{binChip(xVar)}</> : yVar !== "none" && <>{asCatChip(yVar)}{binChip(yVar)}</>}
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
@@ -1735,6 +1749,13 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, wid
             orientation={xNumeric ? "h" : "v"}
             showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals} showDensity={showDensity}
             expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps} {...divProps} {...rulerProps} />;
+        }
+        // MODE 2b: Y only (X = none), numeric → one vertical dot plot (the split plot's
+        // vertical layout with a single group: dots stack sideways off a numeric y axis)
+        if (yOnly && xNumeric) {
+          return <SplitDotPlots rows={rows} catVar={null} numVar={xVar} nameOf={nameOf} R={R} width={W} isTime={xTime}
+            orientation="v" showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals} showDensity={showDensity}
+            {...trackProps} {...selProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
@@ -2215,10 +2236,19 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
   // Raw plot-toggle blob reported up from the inner Plot; combined with this host's
   // xVar/yVar/selectedIds and reported to App for Save/Open (Phase 4).
   const [plotView, setPlotView] = useState(() => initialView?.plot ?? null);
+  // An optional second plot of the same data (its own X/Y and toggles) sharing the
+  // selection, so clicking a dot in either plot or a table row highlights it everywhere —
+  // e.g. compare where the same cases fall on two variables. `second` is its saved
+  // { xVar, yVar, plot } (null = only one plot).
+  const [second, setSecond] = useState(() => initialView?.second ?? null);
+  const setX2 = v => setSecond(s => s && { ...s, xVar: typeof v === "function" ? v(s.xVar) : v });
+  const setY2 = v => setSecond(s => s && { ...s, yVar: typeof v === "function" ? v(s.yVar) : v });
+  const setPlot2 = useCallback(v => setSecond(s => s && { ...s, plot: v }), []);
+  const addSecond = () => setSecond({ xVar: headers[1] || headers[0] || "", yVar: "none", plot: null });
   useEffect(() => {
     if (!onViewChange) return;
-    onViewChange({ xVar, yVar, selectedIds: [...selectedIds], plot: plotView });
-  }, [onViewChange, xVar, yVar, selectedIds, plotView]);
+    onViewChange({ xVar, yVar, selectedIds: [...selectedIds], plot: plotView, second });
+  }, [onViewChange, xVar, yVar, selectedIds, plotView, second]);
   const toggleId = id => {
     const adding = !selectedIds.has(id);
     setSelectedIds(prev => {
@@ -2252,6 +2282,11 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
     if (nh.length === headers.length) {
       const i = headers.indexOf(xVar); if (i >= 0 && nh[i] !== xVar) setXVar(nh[i]);
       const j = headers.indexOf(yVar); if (j >= 0 && nh[j] !== yVar) setYVar(nh[j]);
+      if (second) {
+        const a = headers.indexOf(second.xVar), b = headers.indexOf(second.yVar);
+        if (a >= 0 && nh[a] !== second.xVar) setX2(nh[a]);
+        if (b >= 0 && nh[b] !== second.yVar) setY2(nh[b]);
+      }
     }
     onChange(nh, nr);
   };
@@ -2260,6 +2295,8 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
     const ren = Object.fromEntries(fList.map(f => { const n = next.find(x => x.id === f.id); return [f.name, n ? n.name : null]; }));
     if (ren[xVar]) setXVar(ren[xVar]);
     if (ren[yVar]) setYVar(ren[yVar]);
+    if (second && ren[second.xVar]) setX2(ren[second.xVar]);
+    if (second && ren[second.yVar]) setY2(ren[second.yVar]);
     onFormulasChange(next);
   };
   if (!rows.length && !editable) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data loaded.</div>;
@@ -2275,10 +2312,25 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
           <FormulaPanel formulas={fList} results={fResults} colNames={headers} onChange={handleFormulas} />
         )}
       </div>
-      {/* RIGHT: shared interactive plot */}
-      <Plot rows={plotRows} headers={plotHeaders} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        selectedIds={selectedIds} onToggleSelect={toggleId}
-        initialView={initialView?.plot} onViewChange={setPlotView} />
+      {/* RIGHT: shared interactive plot(s) — a second plot links through the same selection */}
+      <div style={{ flex:"2 1 460px", minWidth:320 }}>
+        <Plot rows={plotRows} headers={plotHeaders} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
+          selectedIds={selectedIds} onToggleSelect={toggleId}
+          initialView={initialView?.plot} onViewChange={setPlotView} />
+        {second ? (
+          <div style={{ marginTop:14, paddingTop:12, borderTop:"1px solid var(--border)" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+              <span style={{ fontSize:12, color:"var(--text-3)" }}>Plot 2 — click a dot in either plot (or a table row) to highlight that case in both.</span>
+              <button onClick={() => setSecond(null)} style={btnNav} title="Remove the second plot">× Remove plot</button>
+            </div>
+            <Plot rows={plotRows} headers={plotHeaders} xVar={second.xVar} yVar={second.yVar} setXVar={setX2} setYVar={setY2}
+              selectedIds={selectedIds} onToggleSelect={toggleId}
+              initialView={second.plot} onViewChange={setPlot2} />
+          </div>
+        ) : rows.length > 0 && (
+          <button onClick={addSecond} style={{ ...btnNav, marginTop:10 }} title="Add a second plot of this data; selections highlight in both">＋ Add plot</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -2926,15 +2978,20 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
   const isSel = id => !!(selectedIds && selectedIds.has(id));
   // Per-group tracking spec: a numeric stat conditioned on this group (null for the
   // "Other" bucket or when the plot isn't trackable).
-  const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
+  // catVar null = a single group holding every row (the Y-only plot): plain univariate specs.
+  const single = !catVar;
+  const grpSpec = (cat, fn) => !(trackable && cat !== OTHER_CAT) ? null
+    : single ? { fn, variable:numVar } : { fn, variable:numVar, condVar:catVar, condVal:String(cat) };
   const tp = { trackable, trackedKeys, onTrackStat };
   // Collapse high-cardinality grouping variable into top 10 + "Other"
   const catCount = {};
-  rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
-  const allCats = levelsOf(levels, catVar, catCount);
-  const { shown: cats, isCollapsed } = collapseCats(allCats, catCount, expanded || !!(levels && levels[catVar]));
+  const ALL = "all";
+  if (single) catCount[ALL] = rows.length;
+  else rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
+  const allCats = single ? [ALL] : levelsOf(levels, catVar, catCount);
+  const { shown: cats, isCollapsed } = single ? { shown: allCats, isCollapsed: false } : collapseCats(allCats, catCount, expanded || !!(levels && levels[catVar]));
   const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
-  const groupOf = v => catSet.has(v) ? v : OTHER_CAT;
+  const groupOf = v => single ? ALL : catSet.has(v) ? v : OTHER_CAT;
 
   // Shared numeric scale across all groups for fair comparison (time-aware)
   const allNums = rows.map(r => toNum(r[numVar])).filter(v => !isNaN(v));
@@ -2958,7 +3015,8 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
     return (
       <div style={{ width: width ? width : "100%" }}>
         <svg width={W} height={H} role={trackable ? undefined : "img"}
-          aria-label={"Split dot plot of " + nm(numVar) + " by " + nm(catVar) + " — " + cats.length + " groups"}
+          aria-label={single ? "Dot plot of " + nm(numVar) + " — " + allNums.length + " values"
+            : "Split dot plot of " + nm(numVar) + " by " + nm(catVar) + " — " + cats.length + " groups"}
           style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
           {/* horizontal gridlines + y-axis ticks */}
           {ticks.map((t, i) => <line key={"g"+i} x1={PL} y1={sy(t)} x2={W - PR} y2={sy(t)} stroke="var(--grid)" strokeWidth={1} />)}
@@ -2979,7 +3037,9 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
             const binCounts = {};
             groupNums.forEach(v => { const k = binOf(v); binCounts[k] = (binCounts[k] || 0) + 1; });
             const widest = Math.max(1, ...Object.values(binCounts));
-            const xData = x0 + colW * 0.46;        // data baseline; dots to the right, overlays to the left
+            // data baseline; dots to the right, overlays to the left (a lone group keeps its
+            // overlays near the axis and gives the dots the rest of the width)
+            const xData = single ? x0 + Math.min(colW * 0.46, 70) : x0 + colW * 0.46;
             const dotAreaW = (x0 + colW) - xData - 4;
             const hsp = Math.min(dotR * 2 + 1, (dotAreaW - dotR) / widest);
             const stacks = {};
@@ -3050,13 +3110,13 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
                   );
                 })()}
                 {/* category label */}
-                <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{cat}</text>
-                <text x={center} y={PT + iH + 28} textAnchor="middle" fontSize={12} fill="var(--text-3)">n={groupNums.length}</text>
+                {!single && <text x={center} y={PT + iH + 16} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{cat}</text>}
+                <text x={center} y={PT + iH + (single ? 16 : 28)} textAnchor="middle" fontSize={12} fill="var(--text-3)">n={groupNums.length}</text>
               </g>
             );
           })}
           <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
-          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{nm(catVar)}</text>
+          {!single && <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{nm(catVar)}</text>}
           <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
         </svg>
         {allCats.length > 10 && (
