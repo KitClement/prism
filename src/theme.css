@@ -52,6 +52,9 @@
 
   /* ruler (teal) overlay: lines, text, and soft pill/label backgrounds */
   --ruler-line: #0d9488;
+  /* moving-mean window (orange): band, mean bar, trace, text */
+  --meter-line: #c2410c;
+  --meter-soft: rgba(251, 146, 60, 0.13);
   --ruler-text: #0f766e;
   --ruler-soft: #ccfbf1;
   --xsel-head:  #c7d2fe;  /* selected x-column header fill                */
@@ -104,6 +107,8 @@
   --dot-outline:#cbd5e1;  /* hairline boundary on plotted data dots (10.9)*/
 
   --ruler-line: #2dd4bf;
+  --meter-line: #fb923c;
+  --meter-soft: rgba(251, 146, 60, 0.16);
   --ruler-text: #5eead4;
   --ruler-soft: #123b38;
   --xsel-head:  #39406b;

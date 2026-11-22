@@ -148,6 +148,29 @@ export function clipLine(m, b, xlo, xhi, ylo, yhi) {
   return [{ x: a, y: m * a + b }, { x: c, y: m * c + b }];
 }
 
+// ── Moving mean (scatter) ─────────────────────────────────────────────────────────
+// Points { x, y } sorted by x, with prefix sums of y, so any window's mean is two binary
+// searches. `windowStats(i, lo, hi)` → { n, mean } over the points with lo ≤ x ≤ hi (closed:
+// a point on an edge counts). `trace(w, xlo, xhi, steps)` → the mean of y in a window of
+// width w centred at each of `steps + 1` evenly spaced x's in [xlo, xhi] ({ x, y }, y null
+// where the window is empty, so a drawn trace breaks across gaps).
+export function movingMean(pts) {
+  const ps = pts.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y)).sort((a, b) => a.x - b.x);
+  const xs = ps.map(p => p.x), cum = [0];
+  ps.forEach(p => cum.push(cum[cum.length - 1] + p.y));
+  const lower = v => { let a = 0, b = xs.length; while (a < b) { const m = (a + b) >> 1; if (xs[m] < v) a = m + 1; else b = m; } return a; };
+  const upper = v => { let a = 0, b = xs.length; while (a < b) { const m = (a + b) >> 1; if (xs[m] <= v) a = m + 1; else b = m; } return a; };
+  const windowStats = (lo, hi) => {
+    const i = lower(lo), j = upper(hi), n = Math.max(0, j - i);
+    return { n, mean: n ? (cum[j] - cum[i]) / n : NaN };
+  };
+  const trace = (w, xlo, xhi, steps = 160) => Array.from({ length: steps + 1 }, (_, k) => {
+    const x = xlo + (k / steps) * (xhi - xlo), s = windowStats(x - w / 2, x + w / 2);
+    return { x, y: s.n ? s.mean : null };
+  });
+  return { windowStats, trace };
+}
+
 // ── Numeric binning (a numeric variable as interval categories) ──────────────────
 // Equal-width bins with "nice" edges, left-closed / right-open except the last, which also
 // holds its upper edge when the max lands on it ({ n } only: a typed width keeps every bin

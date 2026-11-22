@@ -266,6 +266,20 @@ early returns. The line itself shows no residual sums — those are the student'
 scatter ruler (below). View-only — not trackable, no generated code. `lsFit` now
 also returns correlation `r` (shown beside R² on the LS label; not yet in `FN_OPTS`).
 
+**Moving mean** (num×num, `MovingMeanOverlay` in `plots.jsx`, TinkerPlots' color meter). A **Moving
+mean** toggle (beside Ref line) draws a translucent orange vertical window `[c − w/2, c + w/2]`
+(closed — a point on an edge counts): rings mark the points inside, a bar sits at their **mean y**,
+and a label reads `mean y = … (n = k)` (or "no points in the window"). Drag the top tab or the mean bar
+to slide it, either edge to resize it symmetrically; the controls row has typed centre/width, a
+**Trace** checkbox and Reset (centred, 1/5 of the x range). Trace leaves a **trail as you drag**: the
+moving mean (dashed, at the current width, broken where a window is empty) is drawn only over the range
+of centres the window has been dragged across (`mmSwept {x, y, lo, hi}`, Plot-local, not saved — typing
+a centre doesn't extend it, and slides with Trace off aren't recorded); any **width change** (edge drag
+or typed), Reset, or re-ticking Trace clears it, so a trail is always at one width. Math is `measure.js` `movingMean(pts)` (sorted x +
+prefix sums → `windowStats(lo, hi)` / `trace(w, xlo, xhi)`). View state `mmOn`, `mmWin {x, y, c, w}`
+(keyed to the variables, like `refLine`), `mmTrace` persists via `onViewChange`. The band body passes
+clicks through to the dots; it renders below the ruler and ref line. View-only — not trackable, no code.
+
 **Scatter ruler + Measure All** (TinkerPlots-style residual exploration, `ScatterRuler` in
 `plots.jsx`). On num×num the Ruler is the numeric A/B ruler turned upright: it appears by default
 as two full-width **dotted guides** A and B (at 2/3 and 1/3 of the y range) joined by a vertical bar

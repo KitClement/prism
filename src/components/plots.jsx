@@ -6,7 +6,7 @@ import { numericSummary, kdeCurve, lsFit, ladFit, statLabel, statKey, computeSta
 import { validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand, clipLine, makeBins, MAX_BINS } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand, clipLine, makeBins, MAX_BINS, movingMean } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 import { FormulaPanel, FormulaMenu, DERIVED_FN_GROUPS } from "./formulas";
 import { renameInFormula, fmtFormulaVal } from "../lib/formula";
@@ -597,6 +597,81 @@ function RefLineOverlay({ line, xc, box, sx, toPy, invX, invY, W, onChange }) {
   );
 }
 
+// ── Moving mean window (num × num scatter) ──────────────────────────────────────
+// A vertical band of width `w` centred at x = `c` (data units). The points inside get an
+// orange ring and a bar marks their mean y, labelled with n; `trace` (optional, [{px, py|null}])
+// draws the moving mean across the whole x range. The band's body lets clicks through to the
+// dots; drag its top tab (or the body of the mean bar) to slide it, either edge to resize it.
+function MovingMeanOverlay({ c, w, area, sx, invX, W, inside, meanPy, label, trace, clipId, onChange }) {
+  const drag = useRef(null); // { kind: "move" | "edge", off }
+  const svgPx = e => {
+    const svg = e.currentTarget.ownerSVGElement || e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    return (e.clientX - rect.left) * (W / (rect.width || W));
+  };
+  const down = kind => e => {
+    e.stopPropagation(); e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {}
+    drag.current = { kind, off: invX(svgPx(e)) - c };
+  };
+  const move = e => {
+    const d = drag.current;
+    if (!d) return;
+    const x = invX(svgPx(e));
+    if (d.kind === "move") onChange({ c: x - d.off, w });
+    else onChange({ c, w: Math.abs(x - c) * 2 });
+  };
+  const up = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (x) {} drag.current = null; };
+  const grip = kind => ({ onPointerDown: down(kind), onPointerMove: move, onPointerUp: up, onPointerCancel: up });
+  const col = "var(--meter-line)";
+  const x1 = Math.max(area.x, sx(c - w / 2)), x2 = Math.min(area.x + area.w, sx(c + w / 2));
+  const top = area.y, bot = area.y + area.h, tabH = 16;
+  const path = trace ? trace.reduce((acc, p, i) => {
+    if (p.py == null) return acc;
+    const prev = i > 0 && trace[i - 1].py != null;
+    return acc + (prev ? "L" : "M") + p.px.toFixed(1) + " " + p.py.toFixed(1) + " ";
+  }, "") : "";
+  const lw = label.length * 6.3 + 10, lx = clampVal((x1 + x2) / 2 - lw / 2, area.x, area.x + area.w - lw);
+  return (
+    <g>
+      <defs><clipPath id={clipId}><rect x={area.x} y={area.y} width={area.w} height={area.h} /></clipPath></defs>
+      {path && <path d={path} fill="none" stroke={col} strokeWidth={2} strokeOpacity={0.75} strokeDasharray="5 3"
+        clipPath={"url(#" + clipId + ")"} style={{ pointerEvents:"none" }} />}
+      {x2 > x1 && (
+        <g>
+          <rect x={x1} y={top} width={x2 - x1} height={bot - top} fill="var(--meter-soft)" style={{ pointerEvents:"none" }} />
+          {inside.map((p, i) => <circle key={i} cx={p.px} cy={p.py} r={6.5} fill="none" stroke={col} strokeWidth={1.6} style={{ pointerEvents:"none" }} />)}
+          {meanPy != null && (
+            <g style={{ cursor:"ew-resize", touchAction:"none" }} {...grip("move")}>
+              <line x1={x1} y1={meanPy} x2={x2} y2={meanPy} stroke="transparent" strokeWidth={12} />
+              <line x1={x1} y1={meanPy} x2={x2} y2={meanPy} stroke={col} strokeWidth={3} />
+              <title>Mean of y in the window — drag to slide the window</title>
+            </g>
+          )}
+          {/* top tab: slide the window */}
+          <g style={{ cursor:"ew-resize", touchAction:"none" }} {...grip("move")}>
+            <rect x={x1} y={top} width={x2 - x1} height={tabH} fill={col} fillOpacity={0.85} />
+            <path d={`M${(x1 + x2) / 2 - 6} ${top + 8} l4 -3.5 v7 Z M${(x1 + x2) / 2 + 6} ${top + 8} l-4 -3.5 v7 Z`} fill="#fff" />
+            <title>Drag to slide the window</title>
+          </g>
+          {/* edges: resize (symmetric about the centre) */}
+          {[x1, x2].map((ex, k) => (
+            <g key={k} style={{ cursor:"col-resize", touchAction:"none" }} {...grip("edge")}>
+              <line x1={ex} y1={top} x2={ex} y2={bot} stroke="transparent" strokeWidth={12} />
+              <line x1={ex} y1={top} x2={ex} y2={bot} stroke={col} strokeWidth={1.5} />
+              <title>Drag to widen or narrow the window</title>
+            </g>
+          ))}
+        </g>
+      )}
+      <g style={{ pointerEvents:"none" }}>
+        <rect x={lx} y={top + tabH + 3} width={lw} height={17} rx={3} fill="var(--surface)" stroke={col} strokeWidth={1} />
+        <text x={lx + 5} y={top + tabH + 15.5} fontSize={12} fontWeight={800} fill={col}>{label}</text>
+      </g>
+    </g>
+  );
+}
+
 // ── Cat-difference connector (Phase 6c, mechanic 3) ─────────────────────────────
 // The categorical plots are HTML, so the ruler's "line between the two things" is an
 // absolutely-positioned SVG overlay that measures the two selected numbers (tagged with
@@ -868,6 +943,19 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   // (the line resets, flat at the mean of y).
   const [refOn, setRefOn] = useState(() => iv?.refOn ?? false);
   const [refLine, setRefLine] = useState(() => iv?.refLine ?? null);
+  // Moving mean window (num × num scatter): off by default. `mmWin` is { x, y, c, w } — the
+  // variables it was placed for plus its centre and width in x units (ignored for other
+  // variables: it resets to the middle, 1/5 of the x range wide). `mmTrace` draws the
+  // moving mean across the whole x range.
+  const [mmOn, setMmOn] = useState(() => iv?.mmOn ?? false);
+  const [mmWin, setMmWin] = useState(() => iv?.mmWin ?? null);
+  const [mmTrace, setMmTrace] = useState(() => iv?.mmTrace ?? false);
+  // The trail: the range of centres the window has been dragged across ({ x, y, lo, hi },
+  // keyed to the variables; not saved). With Trace on, the moving mean is drawn only over
+  // that range, so it appears as the window is dragged. A width change, Reset or re-ticking
+  // Trace clears it; slides with Trace off aren't recorded.
+  const [mmSwept, setMmSwept] = useState(null);
+  const mmClipId = "mclip" + useId().replace(/:/g, "");
 
   // Measure All: draw one more residual every `dt` ms until all `measN` points are done.
   // A new sample (rows) or turning the ruler off ends the sweep. Above the early returns.
@@ -888,10 +976,10 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
     if (!onViewChange) return;
     onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
       expandCats, divOn, divMode, divCuts, divShowCount, divShowPct,
-      divDir, divBy, divPct, divBand, rulerOn, asCat, bins, refOn, refLine, measFn, measOf, measOpt });
+      divDir, divBy, divPct, divBand, rulerOn, asCat, bins, refOn, refLine, measFn, measOf, measOpt, mmOn, mmWin, mmTrace });
   }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
       expandCats, asCat.join("\u0001"), JSON.stringify(bins), divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
-      divDir, divBy, divPct, divBand, rulerOn, refOn, refLine, measFn, measOf, measOpt]);
+      divDir, divBy, divPct, divBand, rulerOn, refOn, refLine, measFn, measOf, measOpt, mmOn, mmWin, mmTrace]);
 
   const plotRef = useRef(null);
   const bodyRef = useRef(null);            // wraps just the plot body (no controls) for image copy
@@ -1370,6 +1458,36 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   const setRefIntercept = n => { if (Number.isFinite(n) && refEff) setRef({ yc: n + refEff.m * refXc, m: refEff.m }); };
   const f3 = v => (Number.isFinite(v) ? parseFloat(v.toFixed(3)) : "—");
 
+  // Moving mean window (scatter): mean of y over the points whose x lies in [c − w/2, c + w/2].
+  const showMM = mmOn && refAvail && valid.length > 0;
+  let mmEff = null, mmStats = null, mmInside = null, mmTracePts = null;
+  if (showMM) {
+    const span = xS.hi - xS.lo || 1;
+    const fresh = !mmWin || mmWin.x !== xVar || mmWin.y !== yVar || !Number.isFinite(mmWin.c) || !(mmWin.w > 0);
+    mmEff = fresh ? { c: (xS.lo + xS.hi) / 2, w: span / 5 } : { c: clampVal(mmWin.c, xS.lo, xS.hi), w: Math.min(mmWin.w, span) };
+    const pts = valid.map((r, i) => ({ px: dots[i].x, py: dots[i].y, x: toNum(r[xVar]), y: toNum(r[yVar]) }))
+      .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+    const mm = movingMean(pts), lo = mmEff.c - mmEff.w / 2, hi = mmEff.c + mmEff.w / 2;
+    mmStats = mm.windowStats(lo, hi);
+    mmInside = pts.filter(p => p.x >= lo && p.x <= hi);
+    const sw = mmSwept && mmSwept.x === xVar && mmSwept.y === yVar ? mmSwept : null;
+    if (mmTrace && sw && sw.hi > sw.lo) mmTracePts = mm.trace(mmEff.w, sw.lo, sw.hi, Math.max(2, Math.round(160 * (sw.hi - sw.lo) / span))).map(p => ({ px: sx(p.x), py: p.y == null ? null : toPy(p.y) }));
+  }
+  const setMM = v => setMmWin({ x: xVar, y: yVar, c: v.c, w: v.w });
+  const setMMDrag = v => {
+    const span = xS.hi - xS.lo || 1;
+    const c = clampVal(v.c, xS.lo, xS.hi), w = clampVal(v.w, span / 100, span);
+    setMM({ c, w });
+    // A width change restarts the trail (its old stretch was traced at the old width). A slide
+    // extends it over every centre passed, but only while Trace is on — no pre-traced trail.
+    if (mmEff && w !== mmEff.w) { setMmSwept(null); return; }
+    if (!mmTrace) return;
+    const c0 = mmEff ? mmEff.c : c;
+    setMmSwept(s => s && s.x === xVar && s.y === yVar
+      ? { ...s, lo: Math.min(s.lo, c0, c), hi: Math.max(s.hi, c0, c) }
+      : { x: xVar, y: yVar, lo: Math.min(c0, c), hi: Math.max(c0, c) });
+  };
+
   // Mechanic 2 (scatter ruler): two endpoints A and B on the y axis, like the numeric ruler
   // turned upright — each a full-width dotted guide, read-out A − B. The line it can snap to
   // is the ref line when shown, else the LS line when shown, else none. With no stored ruler
@@ -1572,6 +1690,7 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
           <ChkLabel checked={showLS} onChange={setShowLS} label="LS Line" />
         )}
         {refAvail && <ChkLabel checked={refOn} onChange={setRefOn} label="Ref line" />}
+        {refAvail && <ChkLabel checked={mmOn} onChange={setMmOn} label="Moving mean" />}
         {showCatToggles && (
           <>
             <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
@@ -1687,6 +1806,21 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
             {optAvail && <ChkLabel checked={measOpt} onChange={setMeasOpt} label="Show optimal" />}
           </>)}
           <button onClick={() => { setSweepSt(null); setSRuler(null); }} style={btnNav} title="Put A and B back where they started">Reset ruler</button>
+        </div>
+      )}
+
+      {/* Moving mean — window centre/width, trace, reset */}
+      {showMM && (
+        <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
+          <span style={{ color:"var(--meter-line)", fontWeight:700 }}>Window</span>
+          <label style={ctrlLbl}>centre
+            <NumInput step="any" value={mmEff.c} round={4} onChange={n => Number.isFinite(n) && setMM({ c: n, w: mmEff.w })} style={{ ...iSm, width:72, marginLeft:4 }} />
+          </label>
+          <label style={ctrlLbl}>width
+            <NumInput step="any" min={0} value={mmEff.w} round={4} onChange={n => { if (n > 0) { setMM({ c: mmEff.c, w: n }); setMmSwept(null); } }} style={{ ...iSm, width:72, marginLeft:4 }} />
+          </label>
+          <ChkLabel checked={mmTrace} onChange={v => { setMmTrace(v); setMmSwept(null); }} label="Trace" />
+          <button onClick={() => { setMmWin(null); setMmSwept(null); }} style={btnNav} title="Reset: centred, 1/5 of the x range wide; clears the trace">Reset</button>
         </div>
       )}
 
@@ -1913,6 +2047,13 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
                 snapCandidates={rulerSnap} fmt={divDomain.fmt} trackable={trackable} onTrackDiff={onTrackDiff}
                 cutSnap={showDivider ? divDomain.snap : null}
                 onCutDrag={showDivider ? (k, v) => { const next = effCuts.slice(); next[k] = v; onDivDrag(next); } : null} />
+            )}
+            {/* Moving mean window (scatter) — below the ruler and the ref line */}
+            {showMM && (
+              <MovingMeanOverlay c={mmEff.c} w={mmEff.w} area={{ x: PL, y: PT, w: iW, h: iH }} sx={sx} invX={invX} W={W}
+                inside={mmInside} meanPy={mmStats.n ? toPy(mmStats.mean) : null} trace={mmTracePts} clipId={mmClipId}
+                label={mmStats.n ? "mean y = " + f3(mmStats.mean) + "  (n = " + mmStats.n + ")" : "no points in the window"}
+                onChange={setMMDrag} />
             )}
             {/* Scatter ruler, base layer: dotted guides + Measure All residuals */}
             {showResidRuler && (
