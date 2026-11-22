@@ -19,7 +19,7 @@ dependency-light and self-contained (no chart lib, no state lib).
 - **`src/lib/`** (pure, no React)
   - `util.js` — `parseCSV`, `colKind` (num/cat/time detection), `toNum`,
     `parseTimeToMinutes`, `collapseCats`, `COLORS`, `uid`, …
-  - `stats.js` — `quantile` (interpolating), `numericSummary`, `lsFit`, `computeStat`,
+  - `stats.js` — `quantile` (interpolating), `numericSummary`, `lsFit`, `ladFit` (exact LAD line), `computeStat`,
     `statLabel`, `FN_OPTS`, `NUMERIC_FNS`.
   - `sampling.js` — the **stage** model (`mkStage`/`toStages`/`migratePipeline`+`rekeyStats`/
     `rekeyStopRule`, `selectBranch`, `stageVarKind`/`stageOutcomes`), the shared draw helpers
@@ -62,7 +62,7 @@ dependency-light and self-contained (no chart lib, no state lib).
   - `plots.jsx` — `Plot` (the unified controls+body primitive), `EDAPlot`,
     `SampleResults`, `DistributionPlot`, `DataTable`/`CollectTable`, `CatCatGrid`,
     `SplitDotPlots`, `UniCatPlot`, the measurement overlays `DividerLines` / `RulerOverlay`
-    / `ResidualOverlay` / `MeasureConnector`, plus the derived-statistic builder
+    / `ScatterRuler` / `RefLineOverlay` / `MeasureConnector`, plus the derived-statistic builder
     `DerivedBuilder`.
   - `devices.jsx` — `StageCard` (wraps a stage; renders forked branch sub-cards +
     `BranchConditionEditor`), `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
@@ -218,6 +218,52 @@ domain and `SplitDotPlots` must keep using the same ordering.
   vanished; pure relabels propagate seamlessly (`propagateRenames`). See Resolved
   decision #2 in `.claude/plans/plan.md`.
 
+### Movable reference line (num × num scatter)
+A **Ref line** toggle (next to LS Line, scatter only) places a student-controlled line
+`ŷ = m·x + b` (`RefLineOverlay` in `plots.jsx`). It **pivots at the plot's horizontal centre**
+(`xc` = midpoint of the x-domain): the centre handle — or grabbing the line anywhere — drags
+it up/down (its height `yc` at the pivot); either end handle rotates it about the pivot (slope
+= pointer relative to the pivot, so any slope is reachable). View state `refLine {x, y, yc, m}`
+is keyed to the variables it was placed for (a variable switch falls back to the default: flat
+at the mean of y); `refOn`/`refLine` persist via `onViewChange`. The row above the plot has typed
+slope/intercept inputs and **Match LS** / **Match LAD** / **Reset** (`measure.js` `clipLine` clips the
+drawn segment). `stats.js` `ladFit` is exact: it walks two-point lines (the best line through a point is
+the weighted median of slopes to it, weights |Δx|) like R's Barrodale–Roberts simplex, until no rotation
+lowers Σ|r|. **Ties** (LAD is non-unique) resolve to the **average of every optimal two-point line**,
+which is optimal too (the optimal set is convex) and doesn't depend on row order. R's `rq`/`lad` instead
+return whichever corner their pivoting reaches, so a tied case may differ from R (same Σ|r|). The fit is
+cached at module level (`ladCache`, keyed on `rows` + the variables), because it sits below Plot's
+early returns. The line itself shows no residual sums — those are the student's to measure with the
+scatter ruler (below). View-only — not trackable, no generated code. `lsFit` now
+also returns correlation `r` (shown beside R² on the LS label; not yet in `FN_OPTS`).
+
+**Scatter ruler + Measure All** (TinkerPlots-style residual exploration, `ScatterRuler` in
+`plots.jsx`). On num×num the Ruler is the numeric A/B ruler turned upright: it appears by default
+as two full-width **dotted guides** A and B (at 2/3 and 1/3 of the y range) joined by a vertical bar
+near the right edge, reading **`A − B`**. Drag either guide (anywhere along it, or its handle on the
+bar); while dragging, an end snaps to a **data point** within 10px (2-D), else to the **residual foot**
+on the active line under/over the other end's dot (12px — it beats a plain line snap so the residual
+is exact), else to the **active line** at the pointer's x within 8px (the ref line when shown, else
+the LS line when shown), else stays free; a ring marks a snapped anchor and each handle labels its
+value (`y =`, `ŷ =`, or free). State `sRuler {xv, yv, bx, ends:[{pt, line, x, y}×2]}` is Plot-local,
+not persisted, and keyed to the variables (a switch, or **Reset ruler**, restores the default). Ends
+resolve live (`resolveRuler`): a point end follows its point, a line end follows the line, so moving
+the line updates the reading; the bar sits at a point end's x, else a line end's, else `bx`. A line end
+whose partner is on a point always resolves to the **foot at that point's x**, wherever along the line
+it was snapped (with dense points, snap to the line somewhere clear). So one end on a point + the
+other on the line = **residual mode** (label `residual = y − ŷ`). **Measure All** is enabled only
+in residual mode: it draws every point's residual one at a time (`sweepSt {start, count, dt}`, a
+`setTimeout` effect above the early returns, `dt = clamp(2000/n, 15, 60)` ms) in x order starting
+at the ruler's point and **wrapping** past the right edge. Once all are drawn, an on-plot value shows
+**Sum / Mean / Median** of the **raw / absolute / squared** residuals (two `Sel`s; `measFn`/`measOf`
+persist), with squares drawn when Squared is chosen. For sum/mean of **squared** or **absolute**
+residuals a **Show optimal** checkbox (`measOpt`, persisted, off by default; hidden for raw and
+median, which have no optimal line) adds a red comparison: the **LS** line's value for squared, the
+**LAD** line's for absolute, labelled "smallest possible". It works for either measured line and
+doesn't depend on the LS Line toggle (the LAD line is never drawn). Any ruler edit, a new sample
+(`rows`), or turning the Ruler off ends the sweep; moving the line keeps it and updates live. The
+guides' grab strips + measured residuals render **below** the ref line, the bar/handles **above** it.
+
 ### Plot measurement tools (divider + ruler)
 Two opt-in tools share one measurement-overlay foundation on `Plot` (`lib/measure.js`).
 Both are off by default and gated to plots where they make sense.
@@ -265,7 +311,7 @@ Both are off by default and gated to plots where they make sense.
     with each cut as a `cutLit(…, "lower")` literal, **deduped** (both `cut`s reject repeated breaks).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
-  *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
+  *vertical Δy / residual* (num×num scatter, `y − ŷ` to the ref or LS line — see Scatter ruler above), and *difference of two measures*
   (cat×cat proportions via `MeasureConnector`). A "＋ track" affordance authors a Phase-5
   derived column (`A − B`) that backfills and plots. Endpoints anchored to a measure
   recompute live from the current data.

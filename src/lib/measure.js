@@ -133,3 +133,17 @@ export function evenCuts(values, k, how, quantile) {
     ? quantile(xs, (j + 1) / (k + 1))
     : mn + (j + 1) * (mx - mn) / (k + 1));
 }
+
+// ── Reference line (scatter) ────────────────────────────────────────────────────
+// The part of y = m·x + b inside the box [xlo, xhi] × [ylo, yhi], as two data points
+// (left end first), or null when the line misses the box.
+export function clipLine(m, b, xlo, xhi, ylo, yhi) {
+  let a = xlo, c = xhi;
+  if (m === 0) { if (b < ylo || b > yhi) return null; }
+  else {
+    const x1 = (ylo - b) / m, x2 = (yhi - b) / m;
+    a = Math.max(a, Math.min(x1, x2)); c = Math.min(c, Math.max(x1, x2));
+    if (!(a <= c)) return null;
+  }
+  return [{ x: a, y: m * a + b }, { x: c, y: m * c + b }];
+}

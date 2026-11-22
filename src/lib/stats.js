@@ -71,7 +71,97 @@ function lsFit(pairs) {
   const ssTot = pairs.reduce((a, p) => a + (p.y - my) ** 2, 0);
   const ssRes = pairs.reduce((a, p) => a + (p.y - (slope * p.x + intercept)) ** 2, 0);
   const r2 = ssTot === 0 ? 1 : 1 - ssRes / ssTot;
-  return { slope, intercept, r2 };
+  // correlation r: the square root of R², signed like the slope
+  const r = Math.sign(slope) * Math.sqrt(Math.max(0, r2));
+  return { slope, intercept, r2, r };
+}
+
+// Least-absolute-deviations line: minimizes Σ|y − (m·x + b)|. Exact.
+// Some optimal line always passes through two data points (a "vertex"), and the best line
+// through a fixed point i has slope = the weighted median of the slopes (y_j − y_i)/(x_j − x_i),
+// weights |x_j − x_i| (`bestThrough`, O(n log n)). So, like the simplex method R's
+// quantreg::rq / L1pack::lad use, the fit walks vertex to vertex: from the current line, try
+// rotating it about each data point on it; move while that strictly lowers the sum, and stop
+// when no rotation does. The objective is convex, so that vertex is a global minimum.
+// **Ties** (LAD is not always unique): the optimal lines form a convex set whose corners are
+// two-point lines. The fit explores all of them (rotations that keep the minimum, capped at 200)
+// and returns their **average**. That average is optimal too (convexity) and doesn't depend on
+// row order, like the midpoint median of an even sample. R's simplex instead returns whichever
+// corner its pivoting reaches, and only warns "solution may be nonunique".
+// Returns { slope, intercept, sae, unique } or null (fewer than 2 distinct x values).
+function ladFit(pairs) {
+  const n = pairs.length;
+  if (n < 2) return null;
+  const X = Float64Array.from(pairs, p => p.x), Y = Float64Array.from(pairs, p => p.y);
+  let yAbs = 0;
+  for (let j = 0; j < n; j++) yAbs += Math.abs(Y[j]);
+  const sae = L => { let a = 0; for (let j = 0; j < n; j++) a += Math.abs(Y[j] - (L.m * X[j] + L.b)); return a; };
+  const lineAt = (i, m) => ({ m, b: Y[i] - m * X[i] });
+  const yScale = yAbs / n + 1;
+  // The data points on line L, one per distinct x (points on a line sharing an x coincide, so
+  // they give the same rotation; with discrete data hundreds can sit on the line).
+  const onLine = L => {
+    const out = [], seen = new Set();
+    for (let j = 0; j < n; j++)
+      if (!seen.has(X[j]) && Math.abs(Y[j] - (L.m * X[j] + L.b)) <= 1e-9 * yScale) { seen.add(X[j]); out.push(j); }
+    return out;
+  };
+  const S = new Float64Array(n), Wt = new Float64Array(n), idx = new Uint32Array(n);
+  // The optimal slopes [lo, hi] for lines through point i (lo === hi unless tied), or null.
+  const bestThrough = i => {
+    let c = 0, W = 0;
+    for (let j = 0; j < n; j++) {
+      const dx = X[j] - X[i];
+      if (dx === 0) continue;
+      S[c] = (Y[j] - Y[i]) / dx; Wt[c] = Math.abs(dx); idx[c] = c; W += Wt[c]; c++;
+    }
+    if (!c) return null;
+    const ord = idx.subarray(0, c).sort((a, q) => S[a] - S[q]);
+    let cum = 0;
+    for (let k = 0; k < c; k++) {
+      cum += Wt[ord[k]];
+      if (cum >= W / 2 - 1e-12 * W) {
+        const lo = S[ord[k]];
+        // Cumulative weight exactly half: every slope up to the next one ties.
+        const hi = Math.abs(cum - W / 2) <= 1e-12 * W && k + 1 < c ? S[ord[k + 1]] : lo;
+        return { lo, hi };
+      }
+    }
+    return null;
+  };
+  // Start from the point with the median x (usually few steps from the optimum).
+  const byX = Array.from({ length: n }, (_, j) => j).sort((a, q) => X[a] - X[q]);
+  const i0 = byX[n >> 1], r0 = bestThrough(i0);
+  if (!r0) return null;
+  let cur = lineAt(i0, r0.lo), cv = sae(cur);
+  const tol = () => 1e-9 * (cv + yAbs + 1);
+  for (let it = 0; it < 4 * n + 10; it++) {
+    let moved = false;
+    for (const k of onLine(cur)) {
+      const r = bestThrough(k);
+      if (!r) continue;
+      const L = lineAt(k, r.lo), v = sae(L);
+      if (v < cv - tol()) { cur = L; cv = v; moved = true; break; }
+    }
+    if (!moved) break;
+  }
+  // Every optimal corner, reached by the rotations that keep the minimum.
+  const same = (a, c) => Math.abs(a.m - c.m) <= 1e-9 * (Math.abs(a.m) + 1) && Math.abs(a.b - c.b) <= 1e-9 * (Math.abs(a.b) + 1);
+  const opt = [cur], queue = [cur];
+  while (queue.length && opt.length < 200) {
+    const L = queue.pop();
+    for (const k of onLine(L)) {
+      const r = bestThrough(k);
+      if (!r || sae(lineAt(k, r.lo)) > cv + tol()) continue;
+      for (const m of r.hi === r.lo ? [r.lo] : [r.lo, r.hi]) {
+        const L2 = lineAt(k, m);
+        if (!opt.some(o => same(o, L2))) { opt.push(L2); queue.push(L2); }
+      }
+    }
+  }
+  const slope = opt.reduce((a, o) => a + o.m, 0) / opt.length;
+  const intercept = opt.reduce((a, o) => a + o.b, 0) / opt.length;
+  return { slope, intercept, sae: sae({ m: slope, b: intercept }), unique: opt.length === 1 };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -165,4 +255,4 @@ const FN_OPTS = [{ v:"mean", l:"Mean" }, { v:"sd", l:"SD" }, { v:"median", l:"Me
 // value and work on any kind, so they are excluded.
 const NUMERIC_FNS = new Set(["mean", "sd", "median", "min", "max", "q1", "q3", "slope", "intercept", "countBetween", "propBetween"]);
 
-export { quantile, numericSummary, kdeCurve, lsFit, computeStat, statLabel, statKey, FN_OPTS, NUMERIC_FNS };
+export { quantile, numericSummary, kdeCurve, lsFit, ladFit, computeStat, statLabel, statKey, FN_OPTS, NUMERIC_FNS };

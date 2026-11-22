@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from "react";
 import { toCanvas } from "html-to-image";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { colorAt, clamp, toNum, minutesToTime, colKind, sortCats, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
-import { numericSummary, kdeCurve, lsFit, statLabel, statKey, computeStat, quantile } from "../lib/stats";
+import { numericSummary, kdeCurve, lsFit, ladFit, statLabel, statKey, computeStat, quantile } from "../lib/stats";
 import { validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand, clipLine } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 import { FormulaPanel, FormulaMenu, DERIVED_FN_GROUPS } from "./formulas";
 import { renameInFormula, fmtFormulaVal } from "../lib/formula";
@@ -409,50 +409,190 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
   );
 }
 
-// ── Residual overlay (Phase 6c, mechanic 2) ────────────────────────────────────
-// Scatter-plot ruler: pick a data point and read its vertical residual to the LS line
-// (y − ŷ). One endpoint is the point, the other its foot on the line at the same x.
-// Visual-only — the measured point has no stable cross-repetition identity, so its
-// trackability is deferred. Drawn inside the scatter <svg>; a transparent capture rect
-// lets a click/drag select the nearest point.
-function ResidualOverlay({ scatterPts, ls, sx, toPy, xlo, xhi, W, area, sel, onSel, fmtY }) {
-  const [drag, setDrag] = useState(false);
-  const pick = (e) => {
+// One cached LAD fit (Plot's "Match LAD" and the absolute-residual comparison): the last
+// rows array + variable pair it was fit for. Module-level because it sits below Plot's early
+// returns, where a hook can't go.
+const ladCache = { rows: null, key: null, fit: null };
+
+// ── Scatter ruler (mechanic 2) ──────────────────────────────────────────────────
+// The numeric ruler turned upright for the num × num scatter: two endpoints A and B on the
+// y axis, each a full-width dotted guide, read-out A − B. Drag either guide (anywhere along
+// it, or its handle on the bar); passing the pointer over a dot snaps it to that point's y,
+// over the line snaps it to the line, and a ring marks the anchor. One end on a point and the
+// other on the line under/over it reads that point's residual, y − ŷ — the starting residual
+// for "Measure All". Rendered in two layers so the ref line's handles sit between them:
+// `layer="base"` holds the guides' grab strips and the measured residuals (so the ref line's
+// handles win where they overlap a guide); `layer="top"` the bar, its handles, rings, labels.
+// `res` is the resolved ruler { x, ends:[{ y, x, kind }] }; `onDrag(k, px, py)` moves end k.
+function ScatterRuler({ layer, res, residMode, line, measured, measSq, nPts = 0, sx, toPy, W, area, clipId, onDrag, fmtY }) {
+  const drag = useRef(null); // end index being dragged
+  const [active, setActive] = useState(-1);
+  const svgPt = e => {
     const svg = e.currentTarget.ownerSVGElement || e.currentTarget;
     const rect = svg.getBoundingClientRect();
     const ratio = W / (rect.width || W);
-    const cx = (e.clientX - rect.left) * ratio, cy = (e.clientY - rect.top) * ratio;
-    let best = -1, bd = Infinity;
-    scatterPts.forEach((p, i) => { const d = Math.hypot(p.px - cx, p.py - cy); if (d < bd) { bd = d; best = i; } });
-    if (best >= 0) onSel(best);
+    return { px: (e.clientX - rect.left) * ratio, py: (e.clientY - rect.top) * ratio };
   };
-  const down = e => { e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {} setDrag(true); pick(e); };
-  const move = e => { if (drag) pick(e); };
-  const up = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (x) {} setDrag(false); };
+  const down = k => e => {
+    e.stopPropagation(); e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {}
+    drag.current = k; setActive(k);
+  };
+  const move = e => { if (drag.current == null) return; const { px, py } = svgPt(e); onDrag(drag.current, px, py); };
+  const up = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (x) {} drag.current = null; setActive(-1); };
+  const grip = k => ({ onPointerDown: down(k), onPointerMove: move, onPointerUp: up, onPointerCancel: up });
+  const col = "var(--ruler-line)";
+  if (!res) return null;
+  const ys = res.ends.map(e => toPy(e.y));
 
-  const lineY1 = toPy(ls.slope * xlo + ls.intercept), lineY2 = toPy(ls.slope * xhi + ls.intercept);
-  const p = (sel != null && sel >= 0 && sel < scatterPts.length) ? scatterPts[sel] : null;
-  let footY = null, resid = NaN, midY = null;
-  if (p) { const yhat = ls.slope * p.x + ls.intercept; footY = toPy(yhat); resid = p.y - yhat; midY = (p.py + footY) / 2; }
-  const lbl = p ? "y − ŷ = " + fmtY(resid) : "";
+  if (layer === "base") {
+    // Residual squares: the fill stays light and fades further as the point count grows (the
+    // outline stays solid, so each square still reads) so a big
+    // dataset's overlapping squares don't turn into a solid block (0.3 at ≤ 20 points,
+    // ~0.1 at 200, floor 0.06).
+    const sqA = clampVal(0.3 * Math.sqrt(20 / Math.max(nPts, 1)), 0.06, 0.3);
+    return (
+      <g>
+        <defs><clipPath id={clipId}><rect x={area.x} y={area.y} width={area.w} height={area.h} /></clipPath></defs>
+        {line && measured && measured.length > 0 && (
+          <g clipPath={"url(#" + clipId + ")"} style={{ pointerEvents:"none" }}>
+            {measured.map(p => {
+              const yh = line.m * p.x + line.b, footY = toPy(yh), r = p.y - yh;
+              if (!Number.isFinite(footY)) return null;
+              const side = Math.abs(footY - p.py);
+              // Grow the square away from the line: with r and m the same sign the line rises
+              // to the right of a point above it, so the square goes left (and vice versa).
+              const left = (r > 0) === (line.m > 0);
+              return (
+                <g key={p.i}>
+                  {measSq && side > 0.5 && <rect x={left ? p.px - side : p.px} y={Math.min(p.py, footY)} width={side} height={side}
+                    fill="var(--ruler-soft)" fillOpacity={sqA} stroke={col} strokeOpacity={0.7} strokeWidth={0.9} />}
+                  <line x1={p.px} y1={p.py} x2={p.px} y2={footY} stroke={col} strokeWidth={1.5} strokeDasharray="3 2" />
+                  <circle cx={p.px} cy={footY} r={2} fill={col} />
+                </g>
+              );
+            })}
+          </g>
+        )}
+        {ys.map((y, k) => (
+          <g key={k} style={{ cursor:"ns-resize", touchAction:"none" }} {...grip(k)}>
+            <line x1={area.x} y1={y} x2={area.x + area.w} y2={y} stroke="transparent" strokeWidth={14} />
+            <line x1={area.x} y1={y} x2={area.x + area.w} y2={y} stroke={col} strokeWidth={active === k ? 2.5 : 1.5} strokeDasharray="2 3" />
+            <title>Drag {k === 0 ? "A" : "B"} — over a dot or the line to snap to it</title>
+          </g>
+        ))}
+      </g>
+    );
+  }
+
+  const x = sx(res.x);
+  const opLabel = e => (e.kind === "pt" ? "y = " : e.kind === "line" ? "ŷ = " : "") + fmtY(e.y);
+  let lbl = "A − B = " + fmtY(res.ends[0].y - res.ends[1].y);
+  if (residMode) {
+    const pe = res.ends.find(e => e.kind === "pt"), le = res.ends.find(e => e.kind === "line");
+    lbl = "residual = y − ŷ = " + fmtY(pe.y - le.y);
+  }
+  const bw = lbl.length * 6.2 + 10, midY = (ys[0] + ys[1]) / 2;
+  const flip = x + 12 + bw > area.x + area.w;
+  const bx = flip ? x - 12 - bw : x + 12;
+  return (
+    <g>
+      <line x1={x} y1={ys[0]} x2={x} y2={ys[1]} stroke={col} strokeWidth={1.5} style={{ pointerEvents:"none" }} />
+      {res.ends.map((e, k) => {
+        const y = ys[k], big = active === k;
+        const ring = e.kind === "free" ? null : { x: sx(e.x), y };
+        return (
+          <g key={k} style={{ cursor:"ns-resize", touchAction:"none" }} {...grip(k)}>
+            {ring && (
+              <g style={{ pointerEvents:"none" }}>
+                <circle cx={ring.x} cy={ring.y} r={big ? 8 : 6.5} fill="none" stroke={col} strokeWidth={big ? 2.5 : 1.8} />
+                <circle cx={ring.x} cy={ring.y} r={1.6} fill={col} />
+              </g>
+            )}
+            <line x1={x - 5} y1={y} x2={x + 5} y2={y} stroke={col} strokeWidth={2} />
+            <rect x={x - 19} y={y - 6} width={12} height={12} rx={2} fill={col} stroke="#fff" strokeWidth={1} />
+            <text x={x - 13} y={y + 4} textAnchor="middle" fontSize={10} fontWeight={800} fill="#fff" style={{ pointerEvents:"none" }}>{k === 0 ? "A" : "B"}</text>
+            <text x={x - 23} y={y + 4} textAnchor="end" fontSize={11} fontWeight={600} fill="var(--ruler-text)" style={{ pointerEvents:"none" }}>{opLabel(e)}</text>
+          </g>
+        );
+      })}
+      <g style={{ pointerEvents:"none" }}>
+        <rect x={bx} y={midY - 9} width={bw} height={17} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
+        <text x={bx + 5} y={midY + 4} fontSize={12} fontWeight={800} fill="var(--ruler-text)">{lbl}</text>
+      </g>
+    </g>
+  );
+}
+
+// ── Movable reference line (scatter) ────────────────────────────────────────────
+// A student-placed line y = m·x + b on the num × num scatter, pivoting on a fixed point at
+// the horizontal centre of the plot (x = xc). The centre handle — or the line itself —
+// drags it up and down (changes the height yc at the pivot); either end handle rotates it
+// about the pivot, so any slope is reachable by dragging. The line is stored as { yc, m }
+// in data units. Residuals to it are measured with the scatter ruler (ScatterRuler).
+function RefLineOverlay({ line, xc, box, sx, toPy, invX, invY, W, onChange }) {
+  const drag = useRef(null); // { kind: "shift" | "rotate", startY, startYc }
+  const { yc, m } = line;
+  const b = yc - m * xc;
+  const seg = clipLine(m, b, box.xlo, box.xhi, box.ylo, box.yhi);
+  const svgPt = e => {
+    const svg = e.currentTarget.ownerSVGElement || e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const ratio = W / (rect.width || W);
+    return { px: (e.clientX - rect.left) * ratio, py: (e.clientY - rect.top) * ratio };
+  };
+  const down = kind => e => {
+    e.stopPropagation(); e.preventDefault();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (x) {}
+    drag.current = { kind, startY: invY(svgPt(e).py), startYc: yc };
+  };
+  const move = e => {
+    const d = drag.current;
+    if (!d) return;
+    const { px, py } = svgPt(e);
+    if (d.kind === "shift") {
+      const ny = clampVal(d.startYc + (invY(py) - d.startY), box.ylo, box.yhi);
+      onChange({ yc: ny, m });
+    } else {
+      // Slope from the pivot to the pointer; ignore the pointer while it is right on the
+      // pivot's vertical (the slope would blow up).
+      if (Math.abs(px - sx(xc)) < 4) return;
+      onChange({ yc, m: (invY(py) - yc) / (invX(px) - xc) });
+    }
+  };
+  const up = e => { try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (x) {} drag.current = null; };
+  const handlers = kind => ({ onPointerDown: down(kind), onPointerMove: move, onPointerUp: up, onPointerCancel: up });
+  if (!seg) return null;
+
+  const p1 = { x: sx(seg[0].x), y: toPy(seg[0].y) }, p2 = { x: sx(seg[1].x), y: toPy(seg[1].y) };
+  const cx = sx(xc), cy = toPy(yc);
+  // End handles sit just inside the visible ends of the line, pulled toward the pivot.
+  const inset = (p, q) => {
+    const dx = q.x - p.x, dy = q.y - p.y, L = Math.hypot(dx, dy) || 1, k = Math.min(14, L / 3) / L;
+    return { x: p.x + dx * k, y: p.y + dy * k };
+  };
+  const h1 = inset(p1, { x: cx, y: cy }), h2 = inset(p2, { x: cx, y: cy });
+  const col = "var(--purple-ink)";
 
   return (
     <g>
-      {/* transparent capture area for click/drag selection */}
-      <rect x={area.x} y={area.y} width={area.w} height={area.h} fill="transparent"
-        style={{ cursor:"crosshair", touchAction:"none" }}
-        onPointerDown={down} onPointerMove={move} onPointerUp={up} />
-      {/* the LS line the residual is measured to */}
-      <line x1={sx(xlo)} y1={lineY1} x2={sx(xhi)} y2={lineY2} stroke="var(--ruler-line)" strokeWidth={1.6} />
-      {p && (
-        <g>
-          <line x1={p.px} y1={p.py} x2={p.px} y2={footY} stroke="var(--ruler-line)" strokeWidth={2} strokeDasharray="3 2" />
-          <circle cx={p.px} cy={footY} r={3} fill="#fff" stroke="var(--ruler-line)" strokeWidth={1.6} />
-          <circle cx={p.px} cy={p.py} r={6} fill="none" stroke="var(--ruler-line)" strokeWidth={2} />
-          <rect x={p.px + 7} y={midY - 8} width={lbl.length * 5 + 8} height={14} rx={3} fill="var(--ruler-soft)" stroke="#5eead4" strokeWidth={1} />
-          <text x={p.px + 11} y={midY + 2} fontSize={12} fontWeight={800} fill="var(--ruler-text)">{lbl}</text>
-        </g>
-      )}
+      {/* the line, with a wide invisible stroke so grabbing it anywhere shifts it */}
+      <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke={col} strokeWidth={2.25} style={{ pointerEvents:"none" }} />
+      <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={14}
+        style={{ cursor:"ns-resize", touchAction:"none" }} {...handlers("shift")}>
+        <title>Drag to move the line up or down</title>
+      </line>
+      {[h1, h2].map((h, i) => (
+        <circle key={i} cx={h.x} cy={h.y} r={6} fill="var(--surface)" stroke={col} strokeWidth={2}
+          style={{ cursor:"grab", touchAction:"none" }} {...handlers("rotate")}>
+          <title>Drag to change the slope (the line turns about its centre point)</title>
+        </circle>
+      ))}
+      <g style={{ cursor:"ns-resize", touchAction:"none" }} {...handlers("shift")}>
+        <circle cx={cx} cy={cy} r={7} fill={col} stroke="var(--surface)" strokeWidth={1.5} />
+        <path d={`M${cx} ${cy - 4.5} l-2.5 3 h5 Z M${cx} ${cy + 4.5} l-2.5 -3 h5 Z`} fill="var(--surface)" />
+        <title>Drag to move the line up or down (it pivots here)</title>
+      </g>
     </g>
   );
 }
@@ -686,10 +826,36 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // tracked as a derived column.
   const [rulerOn, setRulerOn] = useState(() => iv?.rulerOn ?? false);
   const [rulerPts, setRulerPts] = useState([]);
-  // Mechanic 2 (residual): which scatter point is measured. Mechanic 3 (cat difference):
-  // up to two clicked stat specs whose difference the ruler reports.
-  const [residSel, setResidSel] = useState(null);
+  // Mechanic 2 (scatter): the vertical ruler { xv, yv, x, ends:[{ pt, line, y }×2] } — the
+  // variables it was drawn for, its x, and each end anchored to a data point (`pt`, an index
+  // into the plotted points), to the active line (`line`), or free at `y`. `sweepSt` is the
+  // "Measure All" sweep { start, count, dt } (start = the ruler's point; count grows on a
+  // timer), and `measFn` / `measOf` pick the summary shown once every residual is drawn.
+  // Mechanic 3 (cat difference): up to two clicked stat specs whose difference is reported.
+  const [sRuler, setSRuler] = useState(null);
+  const [sweepSt, setSweepSt] = useState(null);
+  const [measFn, setMeasFn] = useState(() => iv?.measFn ?? "sum");
+  const [measOf, setMeasOf] = useState(() => iv?.measOf ?? "raw");
+  const [measOpt, setMeasOpt] = useState(() => iv?.measOpt ?? false); // "Show optimal" (LS / LAD)
+  const measN = useRef(0);
+  const rulerClipId = "rclip" + useId().replace(/:/g, "");
   const [catSel, setCatSel] = useState([]);
+  // Movable reference line (num × num scatter): off by default. `refLine` is
+  // { x, y, yc, m } — the variables it was placed for, plus its height at the plot's
+  // centre pivot and its slope, in data units. A line for other variables is ignored
+  // (the line resets, flat at the mean of y).
+  const [refOn, setRefOn] = useState(() => iv?.refOn ?? false);
+  const [refLine, setRefLine] = useState(() => iv?.refLine ?? null);
+
+  // Measure All: draw one more residual every `dt` ms until all `measN` points are done.
+  // A new sample (rows) or turning the ruler off ends the sweep. Above the early returns.
+  useEffect(() => {
+    if (!sweepSt || sweepSt.count >= measN.current) return;
+    const t = setTimeout(() => setSweepSt(m => m && { ...m, count: m.count + 1 }), sweepSt.dt);
+    return () => clearTimeout(t);
+  }, [sweepSt]);
+  useEffect(() => { setSweepSt(null); }, [rows]);
+  useEffect(() => { if (!rulerOn) setSweepSt(null); }, [rulerOn]);
 
   // Report the raw view state up so a host can persist it (Save/Open). Mirrors the proven
   // onDivider/onOverlays pattern but stays separate — different purpose, different data. It
@@ -700,10 +866,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     if (!onViewChange) return;
     onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
       expandCats, divOn, divMode, divCuts, divShowCount, divShowPct,
-      divDir, divBy, divPct, divBand, rulerOn, asCat });
+      divDir, divBy, divPct, divBand, rulerOn, asCat, refOn, refLine, measFn, measOf, measOpt });
   }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
       expandCats, asCat.join("\u0001"), divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
-      divDir, divBy, divPct, divBand, rulerOn]);
+      divDir, divBy, divPct, divBand, rulerOn, refOn, refLine, measFn, measOf, measOpt]);
 
   const plotRef = useRef(null);
   const bodyRef = useRef(null);            // wraps just the plot body (no controls) for image copy
@@ -795,10 +961,18 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const fmtX = xTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
 
   // LS fit for bivariate numeric
-  let ls = null;
+  let ls = null, lad = () => null;
   if (bivariate && xNumeric && yNumeric) {
     const pairs = rows.map(r => ({ x: toNum(r[xVar]), y: toNum(r[yVar]) })).filter(p => !isNaN(p.x) && !isNaN(p.y));
     ls = lsFit(pairs);
+    // The LAD fit, computed only when asked for (Match LAD / the absolute-residual comparison)
+    // and cached per data + variables, so dragging the ref line doesn't refit every frame.
+    lad = () => {
+      if (ladCache.rows !== rows || ladCache.key !== JSON.stringify([xVar, yVar])) {
+        ladCache.rows = rows; ladCache.key = JSON.stringify([xVar, yVar]); ladCache.fit = ladFit(pairs);
+      }
+      return ladCache.fit;
+    };
   }
 
   const sx = v => PL + xS.scale(v);
@@ -1050,7 +1224,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // (mechanic 2, num × num scatter), and difference-of-two-clicked-measures (mechanic 3,
   // categorical plots).
   const rulerAxisAvail = dividerAvailable;
-  const rulerResidAvail = bivariate && xNumeric && yNumeric && !!ls;
+  const rulerResidAvail = bivariate && xNumeric && yNumeric && !!yS;
   const rulerCatDiffAvail = (bivariate && !xNumeric && !yNumeric) || (!bivariate && !xNumeric);
   const rulerAvailable = rulerAxisAvail || rulerResidAvail || rulerCatDiffAvail;
   const showRuler = rulerOn && rulerAxisAvail && !!divDomain; // mechanic 1 (axis)
@@ -1116,20 +1290,132 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const rulerProps = { rulerOn: showRuler, rulerPts: effPts, onRulerChange: setRulerPts,
     rulerFmt: showRuler ? divDomain.fmt : null, rulerShowBox: showBox, onTrackDiff };
 
-  // Mechanic 2 (residual): scatter points in pixel + data space, with the measured point
-  // defaulting to the largest |residual| so the tool shows something on enable.
   const toPy = v => PT + iH - (yS ? yS.scale(v) : 0);
-  let scatterPts = null, residIdx = -1, residual = NaN;
+
+  // Movable reference line (num × num scatter). The pivot is the horizontal centre of the
+  // plot (x = xc); a stored line for other variables is replaced by the default — flat at
+  // the mean of y. Residual sums run over every plotted point.
+  const refAvail = bivariate && xNumeric && yNumeric && !!yS;
+  const showRef = refOn && refAvail && valid.length > 0;
+  let refEff = null, refPts = null, refXc = NaN;
+  if (showRef) {
+    refXc = (xS.lo + xS.hi) / 2;
+    refPts = valid.map((r, i) => ({ px: dots[i].x, py: dots[i].y, x: toNum(r[xVar]), y: toNum(r[yVar]) }))
+      .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+    const fresh = !refLine || refLine.x !== xVar || refLine.y !== yVar || !Number.isFinite(refLine.yc) || !Number.isFinite(refLine.m);
+    const meanY = refPts.reduce((a, p) => a + p.y, 0) / (refPts.length || 1);
+    refEff = fresh ? { yc: meanY, m: 0 } : { yc: clampVal(refLine.yc, yS.lo, yS.hi), m: refLine.m };
+  }
+  const setRef = l => setRefLine({ x: xVar, y: yVar, yc: l.yc, m: l.m });
+  // Typed slope / intercept: the intercept moves the line's height at the pivot.
+  const setRefSlope = n => { if (Number.isFinite(n) && refEff) setRef({ yc: refEff.yc - refEff.m * refXc + n * refXc, m: n }); };
+  const setRefIntercept = n => { if (Number.isFinite(n) && refEff) setRef({ yc: n + refEff.m * refXc, m: refEff.m }); };
+  const f3 = v => (Number.isFinite(v) ? parseFloat(v.toFixed(3)) : "—");
+
+  // Mechanic 2 (scatter ruler): two endpoints A and B on the y axis, like the numeric ruler
+  // turned upright — each a full-width dotted guide, read-out A − B. The line it can snap to
+  // is the ref line when shown, else the LS line when shown, else none. With no stored ruler
+  // (or one for other variables) it opens as a generic Δy: A at 2/3 of the y range, B at 1/3.
+  // Each end is anchored to a data point (`pt`, an index into the plotted points), to the line
+  // at some x (`line`, `x`), or free at `y`, and resolves live: a point end follows its point,
+  // a line end follows the line (so moving the line updates the reading). Residual mode = one
+  // end on a point and the other on the line directly under/over it (same x).
+  let sPts = null, sLine = null, sRes = null, residMode = false, sweep = null, measDone = false;
+  const invX = px => xS.lo + ((px - PL) / iW) * (xS.hi - xS.lo);
+  const invY = py => yS.lo + ((PT + iH - py) / iH) * (yS.hi - yS.lo);
+  const rulerDefault = () => ({ xv: xVar, yv: yVar, bx: xS.lo + 0.85 * (xS.hi - xS.lo),
+    ends: [{ pt: null, line: false, y: yS.lo + 2 * (yS.hi - yS.lo) / 3 }, { pt: null, line: false, y: yS.lo + (yS.hi - yS.lo) / 3 }] });
+  const rawRuler = () => (sRuler && sRuler.xv === xVar && sRuler.yv === yVar) ? sRuler : rulerDefault();
+  const resolveRuler = r => {
+    // A line end whose partner is on a point always reads that point's residual: wherever it
+    // was snapped onto the line, it resolves to the foot at the point's x (handy when the
+    // points are dense near the line — snap to it somewhere clear instead).
+    const ptOf = e => (e.pt != null && sPts[e.pt]) ? sPts[e.pt] : null;
+    const ends = r.ends.map((e, k) => {
+      const p = ptOf(e);
+      if (p) return { y: p.y, x: p.x, kind: "pt" };
+      if (e.line && sLine) {
+        const op = ptOf(r.ends[1 - k]), x = op ? op.x : e.x;
+        return { y: sLine.m * x + sLine.b, x, kind: "line" };
+      }
+      return { y: clampVal(e.y, yS.lo, yS.hi), x: null, kind: "free" };
+    });
+    // The bar sits at a point end's x, else a line end's x, else its own resting x.
+    const pe = ends.find(e => e.kind === "pt") || ends.find(e => e.kind === "line");
+    return { x: pe ? pe.x : r.bx, ends };
+  };
   if (showResidRuler) {
-    scatterPts = valid.map((r, i) => ({ px: dots[i].x, py: dots[i].y, x: toNum(r[xVar]), y: toNum(r[yVar]) }));
-    if (scatterPts.length) {
-      const resOf = p => p.y - (ls.slope * p.x + ls.intercept);
-      residIdx = (residSel != null && residSel >= 0 && residSel < scatterPts.length)
-        ? residSel
-        : scatterPts.reduce((best, _, i) => Math.abs(resOf(scatterPts[i])) > Math.abs(resOf(scatterPts[best])) ? i : best, 0);
-      residual = resOf(scatterPts[residIdx]);
+    sPts = valid.map((r, i) => ({ i, px: dots[i].x, py: dots[i].y, x: toNum(r[xVar]), y: toNum(r[yVar]) }))
+      .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+    sPts.forEach((p, k) => { p.i = k; });
+    sLine = showRef ? { m: refEff.m, b: refEff.yc - refEff.m * refXc, who: "ref" }
+      : (showLS && ls ? { m: ls.slope, b: ls.intercept, who: "ls" } : null);
+    sRes = resolveRuler(rawRuler());
+    const pe = sRes.ends.find(e => e.kind === "pt"), le = sRes.ends.find(e => e.kind === "line");
+    residMode = !!(pe && le && Math.abs(pe.x - le.x) <= 1e-9 * (Math.abs(pe.x) + 1));
+    measN.current = sPts.length;
+    // Measure All order: left to right (ties by y), starting at the ruler's point and wrapping.
+    const startPt = residMode ? rawRuler().ends.find(e => e.pt != null).pt : null;
+    if (sweepSt && residMode && sweepSt.start === startPt) {
+      const order = sPts.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+      const k = order.findIndex(p => p.i === startPt);
+      sweep = order.slice(k).concat(order.slice(0, k)).slice(0, sweepSt.count);
+      measDone = sweepSt.count >= sPts.length;
     }
   }
+  // Where a dragged end lands with the pointer at (px, py): the closest of a data dot (within
+  // 10px), the line's foot under/over the other end's dot (within 12px — the residual spot),
+  // or the line itself (within 8px vertically, at the pointer's x); else free at the
+  // pointer's height. `other` is the other end's stored anchor.
+  const snapEnd = (px, py, other) => {
+    const lineY = x => sLine.m * x + sLine.b;
+    let best = { pt: null, line: false, y: clampVal(invY(py), yS.lo, yS.hi) }, bd = Infinity;
+    sPts.forEach((p, k) => { const d = Math.hypot(p.px - px, p.py - py); if (d < 10 && d < bd) { bd = d; best = { pt: k, line: false, y: p.y }; } });
+    if (sLine) {
+      // The residual foot under/over the other end's dot wins over a plain line snap nearby,
+      // so landing on the line close to that dot always reads the exact residual.
+      const op = other && other.pt != null ? sPts[other.pt] : null;
+      const fd = op ? Math.hypot(op.px - px, toPy(lineY(op.x)) - py) : Infinity;
+      if (fd < 12 && fd < bd) { bd = fd; best = { pt: null, line: true, x: op.x, y: lineY(op.x) }; }
+      else {
+        const x = clampVal(invX(px), xS.lo, xS.hi), d = Math.abs(toPy(lineY(x)) - py);
+        if (d < 8 && d < bd) { bd = d; best = { pt: null, line: true, x, y: lineY(x) }; }
+      }
+    }
+    return best;
+  };
+  // Dragging an end ends a Measure All sweep. (A line end paired with a point end follows that
+  // point's x in `resolveRuler`, so moving the point end to a new dot needs no fix-up here.)
+  const onRulerDrag = (k, px, py) => {
+    setSweepSt(null);
+    const r = rawRuler();
+    const ends = r.ends.slice();
+    ends[k] = snapEnd(px, py, ends[1 - k]);
+    setSRuler({ ...r, ends });
+  };
+  const startMeasure = () => {
+    const n = sPts ? sPts.length : 0;
+    if (!residMode || !n) return;
+    setSweepSt({ start: rawRuler().ends.find(e => e.pt != null).pt, count: 1, dt: Math.round(clampVal(2000 / n, 15, 60)) });
+  };
+  // The summary once every residual is drawn: Sum / Mean / Median of the raw, absolute, or
+  // squared residuals, for the measured line and (when measuring to the ref line with LS
+  // Line on) the LS line for comparison.
+  const residSummary = (m, b) => {
+    const v = sPts.map(p => { const r = p.y - (m * p.x + b); return measOf === "abs" ? Math.abs(r) : measOf === "sq" ? r * r : r; });
+    if (!v.length) return NaN;
+    if (measFn === "mean") return v.reduce((a, c) => a + c, 0) / v.length;
+    if (measFn === "median") return quantile(v.slice().sort((a, c) => a - c), 0.5);
+    return v.reduce((a, c) => a + c, 0);
+  };
+  const measLabel = (measFn === "sum" ? "Sum" : measFn === "mean" ? "Mean" : "Median") + " of "
+    + (measOf === "abs" ? "absolute " : measOf === "sq" ? "squared " : "") + "residuals";
+  const measVal = measDone && sLine ? residSummary(sLine.m, sLine.b) : NaN;
+  // "Show optimal": the sum / mean of squared residuals is smallest for the LS line, of absolute
+  // residuals for the LAD line. A median (or raw residuals) has no such line, so no toggle.
+  const optAvail = measDone && measFn !== "median" && (measOf === "sq" || measOf === "abs");
+  const optFit = optAvail && measOpt ? (measOf === "sq" ? ls : lad()) : null;
+  const measOptVal = optFit ? residSummary(optFit.slope, optFit.intercept) : NaN;
 
   // Mechanic 3 (cat difference): up to two clicked stat specs; their live difference.
   const measureSelect = spec => setCatSel(prev => {
@@ -1202,6 +1488,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         {bivariate && xNumeric && yNumeric && (
           <ChkLabel checked={showLS} onChange={setShowLS} label="LS Line" />
         )}
+        {refAvail && <ChkLabel checked={refOn} onChange={setRefOn} label="Ref line" />}
         {showCatToggles && (
           <>
             <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
@@ -1301,11 +1588,40 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         </div>
       )}
 
-      {/* Ruler — residual read-out (mechanic 2, scatter; visual only) */}
+      {/* Ruler — vertical Δy ruler on the scatter (mechanic 2): Measure All + the summary */}
       {showResidRuler && (
         <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
-          <span style={{ color:"var(--ruler-text)", fontWeight:700 }}>residual y − ŷ = {scatterPts && scatterPts.length ? parseFloat(residual.toFixed(3)) : "—"}</span>
-          <span style={{ color:"var(--text-3)" }}>click or drag to a point — the bar shows its vertical distance to the LS line</span>
+          {!sLine && <span style={{ color:"var(--text-3)" }}>Turn on Ref line (or LS Line) to measure residuals.</span>}
+          {sLine && (
+            <button onClick={startMeasure} disabled={!residMode || !!(sweepSt && !measDone && sweep)} style={{ ...btnNav, opacity: residMode ? 1 : 0.5 }}
+              title={residMode ? "Measure every point's residual, left to right from this one" : "Put one end on a data point and the other on the line first"}>
+              Measure All</button>
+          )}
+          {sLine && !residMode && <span style={{ color:"var(--text-3)" }}>Drag A over a data point and B onto the {sLine.who === "ref" ? "reference" : "LS"} line above or below it to measure that point's residual.</span>}
+          {measDone && (<>
+            <Sel label="Summary" value={measFn} onChange={setMeasFn} options={["sum","mean","median"]} labels={["Sum","Mean","Median"]} />
+            <Sel label="Of" value={measOf} onChange={setMeasOf} options={["raw","abs","sq"]} labels={["Residuals","Absolute residuals","Squared residuals"]} />
+            {optAvail && <ChkLabel checked={measOpt} onChange={setMeasOpt} label="Show optimal" />}
+          </>)}
+          <button onClick={() => { setSweepSt(null); setSRuler(null); }} style={btnNav} title="Put A and B back where they started">Reset ruler</button>
+        </div>
+      )}
+
+      {/* Reference line — equation inputs, Match LS, Reset */}
+      {showRef && (
+        <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
+          <span style={{ color:"var(--purple-ink)", fontWeight:700 }}>ŷ =</span>
+          <label style={ctrlLbl}>slope
+            <NumInput step="any" value={refEff.m} round={4} onChange={setRefSlope} style={{ ...iSm, width:72, marginLeft:4 }} />
+          </label>
+          <label style={ctrlLbl}>intercept
+            <NumInput step="any" value={refEff.yc - refEff.m * refXc} round={4} onChange={setRefIntercept} style={{ ...iSm, width:72, marginLeft:4 }} />
+          </label>
+          {ls && <button onClick={() => setRef({ yc: ls.slope * refXc + ls.intercept, m: ls.slope })} style={btnNav}
+            title="Put the reference line on the least-squares line">Match LS</button>}
+          {ls && <button onClick={() => { const f = lad(); if (f) setRef({ yc: f.slope * refXc + f.intercept, m: f.slope }); }} style={btnNav}
+            title="Put the reference line on the least-absolute-deviations line (the smallest sum of absolute residuals). When several lines tie, it uses their average, which ties too.">Match LAD</button>}
+          <button onClick={() => setRefLine(null)} style={btnNav} title="Reset: flat at the mean of y">Reset</button>
         </div>
       )}
 
@@ -1439,7 +1755,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                     </g>
                   ) : showVals && (
                     <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={12} fill="var(--red-ink)" fontWeight={700}>
-                      ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
+                      ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))} · r = {parseFloat(ls.r.toFixed(3))}
                     </text>
                   )}
                 </g>
@@ -1508,12 +1824,35 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
                 cutSnap={showDivider ? divDomain.snap : null}
                 onCutDrag={showDivider ? (k, v) => { const next = effCuts.slice(); next[k] = v; onDivDrag(next); } : null} />
             )}
-            {/* Ruler — residual to LS line (scatter) */}
-            {showResidRuler && scatterPts && scatterPts.length > 0 && (
-              <ResidualOverlay scatterPts={scatterPts} ls={ls} sx={sx} toPy={toPy}
-                xlo={xS.lo} xhi={xS.hi} W={W} area={{ x: PL, y: PT, w: iW, h: iH }}
-                sel={residIdx} onSel={setResidSel} fmtY={v => parseFloat(Number(v).toFixed(3))} />
+            {/* Scatter ruler, base layer: dotted guides + Measure All residuals */}
+            {showResidRuler && (
+              <ScatterRuler layer="base" line={sLine} measured={sweep} measSq={measOf === "sq"} nPts={sPts ? sPts.length : 0} sx={sx} toPy={toPy} W={W} res={sRes}
+                area={{ x: PL, y: PT, w: iW, h: iH }} clipId={rulerClipId} onDrag={onRulerDrag} />
             )}
+            {/* Movable reference line (scatter) — above the ruler's capture area */}
+            {showRef && (
+              <RefLineOverlay line={refEff} xc={refXc} box={{ xlo: xS.lo, xhi: xS.hi, ylo: yS.lo, yhi: yS.hi }}
+                sx={sx} toPy={toPy} W={W} invX={invX} invY={invY} onChange={setRef} />
+            )}
+            {/* Scatter ruler, top layer: the ruler and its handles win over the ref line's */}
+            {showResidRuler && (
+              <ScatterRuler layer="top" res={sRes} residMode={residMode} sx={sx} toPy={toPy} W={W}
+                area={{ x: PL, y: PT, w: iW, h: iH }} onDrag={onRulerDrag}
+                fmtY={v => f3(v)} />
+            )}
+            {measDone && Number.isFinite(measVal) && (
+              <text x={PL + 6} y={PT + (showRef ? 29 : 13)} fontSize={12} fontWeight={800} fill="var(--ruler-text)" style={{ pointerEvents:"none" }}>
+                {measLabel} = {f3(measVal)}
+                {Number.isFinite(measOptVal) && <tspan fill="var(--red-ink)" fontWeight={700}>{"   " + (measOf === "sq" ? "LS" : "LAD")
+                  + " line: " + f3(measOptVal) + " (smallest possible)"}</tspan>}
+              </text>
+            )}
+            {showRef && (() => {
+              const bb = refEff.yc - refEff.m * refXc;
+              return <text x={PL + 6} y={PT + 13} fontSize={12} fontWeight={700} fill="var(--purple-ink)" style={{ pointerEvents:"none" }}>
+                ref ŷ = {f3(refEff.m)}x {bb < 0 ? "−" : "+"} {f3(Math.abs(bb))}
+              </text>;
+            })()}
           </svg>
         );
       })()}
