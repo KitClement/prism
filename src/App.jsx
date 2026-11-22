@@ -9,8 +9,10 @@ import { buildSaveFile, parseSaveFile, suggestFilename, downloadJSON } from "./l
 import { StageCard } from "./components/devices";
 import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
 import { generateCode } from "./lib/codegen";
+import { applyFormulas, withFormulas, renameInFormula } from "./lib/formula";
 import { NumInput } from "./components/ui";
-import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable, CopyImageButton } from "./components/plots";
+import { FormulaPanel } from "./components/formulas";
+import { EDAPlot, SampleResults, DerivedBuilder, DistributionPlot, CollectTable, CopyImageButton } from "./components/plots";
 import prismLogo from "./assets/prism-logo.svg";
 import prismLogoCb from "./assets/prism-logo-cb.svg";
 
@@ -23,7 +25,15 @@ const safeConfirm = msg => { try { return window.confirm(msg); } catch { return 
 
 export default function App() {
   // CSV / EDA dataset
-  const [dataset, setDataset] = useState(null); // { headers, rows, name }
+  const [dataset, setDataset] = useState(null); // { headers, rows, name, formulas? }
+  // Dataset formulas (lib/formula.js): column formulas extend the rows; summaries are single
+  // values. The sampler's Fill-from-data / case mixer see the data + column formulas.
+  const edaApplied = useMemo(() => dataset && applyFormulas(dataset.rows, dataset.headers.map(h => ({ key: h, name: h })), dataset.formulas || []), [dataset]);
+  const edaDataset = useMemo(() => {
+    if (!dataset || !edaApplied) return dataset;
+    const fc = edaApplied.results.filter(r => r.kind === "column");
+    return fc.length ? { ...dataset, headers: [...dataset.headers, ...fc.map(r => r.key)], rows: edaApplied.rows } : dataset;
+  }, [dataset, edaApplied]);
   const csvInputRef = useRef(null);              // keyboard-reachable Upload CSV trigger (a11y)
   const prismInputRef = useRef(null);            // keyboard-reachable Open .prism trigger (a11y)
   const samplerRef = useRef(null);               // capture region for the sampler "Copy image" button
@@ -211,6 +221,12 @@ export default function App() {
   // per-run accumulator tags that sample's row with this id so a later track fills the
   // same row instead of starting a new one.
   const [currentSample, setCurrentSample] = useState(null);
+  // Formulas over the sampler's columns (Sample Results). Column formulas are recomputed on
+  // every drawn sample before any statistic, so they're tracked/collected like a device
+  // variable; summary formulas are a single trackable value per sample. `statRows` (defined
+  // with `columns` below) is the ONE place sample rows gain those values — every stat call
+  // goes through it, on both accumulation paths.
+  const [sampleFormulas, setSampleFormulas] = useState([]);
   // Bumped to force a re-render after a guard is declined, so controlled inputs
   // (sample-size box, device fields) snap back to their unchanged state instead of
   // showing the rejected edit.
@@ -222,7 +238,7 @@ export default function App() {
   // the current sample's value into the table at once (its number is visible now).
   // Add a stat spec as a tracked column (no toggle) and seed the current sample's
   // value for it immediately (its number is on the plot now). Dedupes by statLabel.
-  // Shared by click-to-track and the manual stat builder.
+  // Shared by click-to-track and tracked summary formulas.
   const addTrackedStat = spec => {
     if (trackedStats.some(s => statKey(s) === statKey(spec))) return;
     const newStat = { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...spec };
@@ -232,12 +248,12 @@ export default function App() {
       const idx = rows.findIndex(r => r._id === currentSample.id);
       if (idx >= 0) {
         const copy = rows.slice();
-        copy[idx] = { ...copy[idx], [newStat.id]: computeStat(newStat, currentSample.rows) };
+        copy[idx] = { ...copy[idx], [newStat.id]: computeStat(newStat, statRows(currentSample.rows)) };
         return copy;
       }
       // No row for this sample yet (nothing was tracked when it was drawn) — create it
       // now with every tracked stat (including the new one) computed on that sample.
-      const row = { _id: currentSample.id, ...computeStatRow([...trackedStats, newStat], currentSample.rows, computeStat) };
+      const row = { _id: currentSample.id, ...computeStatRow([...trackedStats, newStat], statRows(currentSample.rows), computeStat) };
       return [...rows, row];
     });
   };
@@ -259,11 +275,19 @@ export default function App() {
   // Add a derived column { kind:"derived", tokens, inputs } and backfill its value
   // into every already-collected row at once (operands are existing columns, so no
   // re-sampling is needed). Both accumulation paths compute it for new rows too.
-  const addDerivedStat = (tokens, inputs, name) => {
-    const newStat = { id:uid(), kind:"derived", tokens, inputs };
+  // `id` is optional: the Formulas area pre-assigns one so its draft row keeps its identity
+  // (and the caret) when the draft becomes a real column.
+  const addDerivedStat = (tokens, inputs, name, id) => {
+    const newStat = { id:id || uid(), kind:"derived", tokens, inputs };
     if (name) newStat.name = name;
     setTrackedStats(ts => [...ts, newStat]);
     setCollectRows(rows => rows.map(r => ({ ...r, [newStat.id]: evalExpr(tokens, sid => r[sid]) })));
+  };
+  // Edit a derived column's formula in place and refill it for every collected row (its
+  // operands are already in each row, so no re-sampling).
+  const updateDerivedStat = (id, tokens, inputs) => {
+    setTrackedStats(ts => ts.map(s => s.id === id ? { ...s, tokens, inputs } : s));
+    setCollectRows(rows => rows.map(r => ({ ...r, [id]: evalExpr(tokens, sid => r[sid]) })));
   };
 
   // Track the ruler's A − B as a derived column (Phase 6c). Each operand is either a
@@ -312,10 +336,11 @@ export default function App() {
         const idx = out.findIndex(r => r._id === currentSample.id);
         if (idx >= 0) {
           const patch = {};
-          newPlain.forEach(s => { patch[s.id] = computeStat(s, currentSample.rows); });
+          const sr = statRows(currentSample.rows);
+          newPlain.forEach(s => { patch[s.id] = computeStat(s, sr); });
           out[idx] = { ...out[idx], ...patch };
         } else {
-          out = [...out, { _id: currentSample.id, ...computeStatRow(nextStats.filter(s => s.kind !== "derived"), currentSample.rows, computeStat) }];
+          out = [...out, { _id: currentSample.id, ...computeStatRow(nextStats.filter(s => s.kind !== "derived"), statRows(currentSample.rows), computeStat) }];
         }
       }
       return out.map(r => ({ ...r, [derived.id]: evalExpr(tokens, sid => r[sid]) }));
@@ -333,8 +358,10 @@ export default function App() {
   // variable/variable2/condVar hold a COLUMN id, which for a row-sample stage is
   // `${stage.id}::${headerIndex}`, so a match is the stage id itself OR a column it owns.
   const refMatchesStage = (ref, stageId) => ref === stageId || (typeof ref === "string" && ref.startsWith(stageId + "::"));
+  // A stat over a formula (key "ƒ:…") may read any stage, so it counts as dependent on each.
+  const isFormulaRef = ref => typeof ref === "string" && ref.startsWith("ƒ:");
   const statDependsOn = (s, stageId) =>
-    refMatchesStage(s.variable, stageId) || refMatchesStage(s.variable2, stageId) || refMatchesStage(s.condVar, stageId);
+    [s.variable, s.variable2, s.condVar].some(r => refMatchesStage(r, stageId) || isFormulaRef(r));
   // A tracked stat stays valid only if every device it references still exists.
   // `ids` is the set of live device ids. Derived columns reference statistic columns
   // (not pipeline devices) so they are governed by `dropDependents`/`dropInvalid`.
@@ -419,13 +446,31 @@ export default function App() {
     });
   };
   const clearCollected = () => { setCollectRows([]); setBatchProgress(0); setCurrentSample(null); setCollectSelectedIds(new Set()); };
+  // Edit the Sample Results formulas. A pure rename (the panel rewrites other formulas' text to
+  // follow it) changes no value, so results are kept. Any other change to an existing formula
+  // that a tracked stat reads would mix old and new values in one distribution, so it clears
+  // the collected rows (after a confirm); deleting a formula drops the stats over it.
+  const changeSampleFormulas = next => {
+    const prev = sampleFormulas;
+    const renameAll = t => prev.reduce((acc, o) => {
+      const n = next.find(x => x.id === o.id);
+      return n && n.name !== o.name && o.name && n.name ? renameInFormula(acc, o.name, n.name) : acc;
+    }, t);
+    const changed = prev.some(o => { const n = next.find(x => x.id === o.id); return !n || renameAll(o.text) !== n.text; });
+    const removedKeys = new Set(prev.filter(o => !next.some(x => x.id === o.id)).map(o => "ƒ:" + o.id));
+    const readsFormula = s => [s.variable, s.variable2, s.condVar].some(isFormulaRef);
+    if (changed && collectRows.length && trackedStats.some(readsFormula)) {
+      if (!safeConfirm("Changing a formula that a tracked statistic uses clears the statistics already collected in the table. Continue?")) { rejectEdit(); return; }
+      clearCollected();
+    }
+    if (removedKeys.size) setTrackedStats(ts => dropDependents(ts, ts.filter(s => [s.variable, s.variable2, s.condVar].some(r => removedKeys.has(r))).map(s => s.id)));
+    setSampleFormulas(next);
+  };
+  // Track a summary formula's value (one number per sample), like clicking a plot statistic.
+  const trackFormulaSummary = r => trackStat({ fn: "formula", variable: r.key });
 
   // Manual statistic builder (advanced, hidden by default): authors one stat spec
   // and adds it as a column to the same tracked-stat table — not a separate workflow.
-  const [manualOpen, setManualOpen] = useState(false);
-  const [derivedOpen, setDerivedOpen] = useState(false);
-  const [manualStat, setManualStat] = useState({ fn:"mean", variable:"", target:"", condVar:"", condVal:"", variable2:"" });
-  const addManualStat = () => { if (manualStat.variable) addTrackedStat(manualStat); };
 
   // Output COLUMNS of the pipeline — one per normal stage, MANY for a row-sample stage (one
   // per CSV variable). This is the single source of truth for the plot/table "headers". A normal
@@ -433,15 +478,31 @@ export default function App() {
   const columns = useMemo(() => pipelineColumns(pipeline), [pipeline]);
   // `varIds` are the plot/table headers; `nameOf(id)` resolves the current display name
   // (a stage's varName, or a row-sample column's CSV header), falling back to the id itself.
-  const varIds = columns.map(c => c.id);
-  const nameMap = useMemo(() => Object.fromEntries(columns.map(c => [c.id, c.name])), [columns]);
+  // Sample formulas reference sampler columns by display name; applied rows gain each column
+  // formula under FORMULA_KEY (and each summary's value — see withFormulas).
+  const formulaCols = useMemo(() => columns.map(c => ({ key: c.id, name: c.name })), [columns]);
+  const statRows = useCallback(rows => withFormulas(rows, formulaCols, sampleFormulas).rows, [formulaCols, sampleFormulas]);
+  const sampleApplied = useMemo(() => withFormulas(sampleData, formulaCols, sampleFormulas), [sampleData, formulaCols, sampleFormulas]);
+  const currentSampleStatRows = useMemo(() => currentSample ? statRows(currentSample.rows) : null, [currentSample, statRows]);
+  const sampleFormulaCols = sampleApplied.results.filter(r => r.kind === "column");
+  // Every formula's key (column or summary) — a tracked stat over one stays valid while it exists.
+  const formulaKeys = sampleApplied.results.filter(r => r.kind !== "error").map(r => r.key);
+  const varIds = [...columns.map(c => c.id), ...sampleFormulaCols.map(r => r.key)];
+  const nameMap = useMemo(() => Object.fromEntries([
+    ...columns.map(c => [c.id, c.name]),
+    ...sampleApplied.results.map(r => [r.key, r.name || "formula"]),
+  ]), [columns, sampleApplied]);
   const nameOf = useCallback(id => (id in nameMap ? nameMap[id] : id), [nameMap]);
   // Authoritative num/cat kind for each sampler column, keyed by column id. A normal column's
   // kind comes from the device's DECLARED outcomes (so a plot's type can't flip when a rare
   // non-numeric outcome first appears); a row-sample column uses colKind over its snapshot.
   const varKinds = useMemo(
-    () => Object.fromEntries(columns.map(c => [c.id, c.kind])),
-    [columns]
+    () => Object.fromEntries([
+      ...columns.map(c => [c.id, c.kind]),
+      // A formula column has no declared outcomes; its kind comes from its computed values.
+      ...sampleApplied.results.filter(r => r.kind === "column").map(r => [r.key, { numeric: r.numeric, time: false }]),
+    ]),
+    [columns, sampleApplied]
   );
   // Whether the pipeline is a row-resampling (case) sampler. Gates add-device, run-until, and
   // sharing (the embedded snapshot would bloat/break share links).
@@ -466,11 +527,10 @@ export default function App() {
   // The underlying formula, used as the header tooltip so a custom name never hides
   // what the column actually computes.
   const exprFor = s => exprLabel(s, statsById, nameOf);
-  // Plain-stat columns available as operands in the derived calculator, each with its
-  // value on the current sample for the live preview.
+  // Plain-stat columns available as operands in the Collect Statistics formulas.
   const operandCols = trackedStats
     .filter(s => s.kind !== "derived")
-    .map(s => ({ id:s.id, label:statLabel(s, nameOf), value: currentSample ? computeStat(s, currentSample.rows) : NaN }));
+    .map(s => ({ id:s.id, label:statLabel(s, nameOf) }));
   // The stop rule's target stage + its outcomes (for the "run until" value dropdown).
   const stopStage = stopRule ? pipeline.find(s => s.id === stopRule.stageId) : null;
   const stopStageOutcomes = stopStage ? stageOutcomes(stopStage) : [];
@@ -510,12 +570,14 @@ export default function App() {
 
   const updStage = (i, st) => {
     const old = pipeline[i];
+    if (!isRowSampleStage(old) && !isRowSampleStage(st) && old.varName !== st.varName && old.varName && st.varName)
+      setSampleFormulas(fs => fs.map(f => ({ ...f, text: renameInFormula(f.text, old.varName, st.varName) })));
     const structural = samplingShape(old) !== samplingShape(st);
     const dependent = trackedStats.some(s => statDependsOn(s, old.id));
     // Post-edit pipeline + its live COLUMN ids (a row-sample stage owns many columns; an edit
     // can also change which columns exist — e.g. reverting to a normal mixer).
     const postPipeline = pipeline.map((s, j) => j === i ? st : s);
-    const liveIds = pipelineColumns(postPipeline).map(c => c.id);
+    const liveIds = [...pipelineColumns(postPipeline).map(c => c.id), ...formulaKeys];
     // Outcome edits can flip a variable's kind (numeric ↔ categorical) — even a pure
     // relabel ("5" → "x") that samplingShape ignores. Apply outcome-relabel propagation
     // first, then find numeric-only stats (mean/SD/…) orphaned because their variable is
@@ -569,7 +631,7 @@ export default function App() {
       if (!window.confirm("Removing this column deletes the statistics already collected in the table, and any tracked column or branch that depends on it. Continue?")) { rejectEdit(); return; }
       clearCollected();
     }
-    const liveIds = pipelineColumns(pipeline.filter((_, j) => j !== i)).map(c => c.id);
+    const liveIds = [...pipelineColumns(pipeline.filter((_, j) => j !== i)).map(c => c.id), ...formulaKeys];
     setTrackedStats(ts => dropInvalid(ts, liveIds));
     setPipeline(p => p.filter((_, j) => j !== i).map(s => {
       // Drop any branch that conditioned on the removed stage; the default branch
@@ -645,13 +707,13 @@ export default function App() {
         // Per-run accumulation (always on): append one row of every tracked stat
         // computed on the finished sample, tagged with this sample's id.
         if (trackedStats.length) {
-          const statRow = { _id: sample.id, ...computeStatRow(trackedStats, rows, computeStat) };
+          const statRow = { _id: sample.id, ...computeStatRow(trackedStats, statRows(rows), computeStat) };
           setCollectRows(cr => [...cr, statRow]);
         }
       },
       cancelRef,
     });
-  }, [pipeline, sampleSize, runMode, stopRule, sampling, trackedStats, hasNameError]);
+  }, [pipeline, sampleSize, runMode, stopRule, sampling, trackedStats, hasNameError, statRows]);
 
   // Batch accumulation for the tracked-stat table: draw `batchSize` samples and
   // append one row per sample (each tracked stat computed on that sample). Same
@@ -696,7 +758,7 @@ export default function App() {
       do {
         const rows = drawSample(pipeline, sampleSize, { runMode, stopRule });
         lastRows = rows;
-        newRows.push({ _id: uid(), ...computeStatRow(specs, rows, computeStat) });
+        newRows.push({ _id: uid(), ...computeStatRow(specs, statRows(rows), computeStat) });
         rep++;
       } while (rep < batchSize && !batchCancelRef.current && performance.now() - t0 < SLICE_MS);
       const done = rep >= batchSize || batchCancelRef.current;
@@ -767,7 +829,7 @@ export default function App() {
   const saveSession = () => {
     const state = {
       hidden, hiddenData, pipeline, sampleSize, runMode, stopRule,
-      dataset, sampleData, currentSample,
+      dataset, sampleData, currentSample, sampleFormulas,
       trackedStats, collectRows, collectSelectedIds, batchSize,
       codeLang, cbMode, animSpeed, dark,
       // Each slot's blob is a JSON string; parse back to an object for the plain-JSON file.
@@ -804,6 +866,7 @@ export default function App() {
     setDataset(session.dataset || null);
     setSampleData(identity ? session.sampleData : []);
     setCurrentSample(identity ? session.currentSample : null);
+    setSampleFormulas(identity ? (session.sampleFormulas || []) : []);
     setCollectRows(identity ? session.collectRows : []);
     setCollectSelectedIds(new Set(identity ? session.collectSelectedIds : []));
     setCollectScroll(null);
@@ -866,14 +929,14 @@ export default function App() {
   // render, so suppressDirtyRef lets that single run clear the flag instead of re-setting it;
   // Save touches none of them and clears dirtyRef directly.
   useEffect(() => {
-    const snap = [pipeline, dataset, sampleData, currentSample, collectRows, trackedStats, sampleSize, runMode, stopRule];
+    const snap = [pipeline, dataset, sampleData, currentSample, collectRows, trackedStats, sampleSize, runMode, stopRule, sampleFormulas];
     const prev = dirtyDeps.current;
     dirtyDeps.current = snap;
     if (prev === null) return;                                  // first observation — seed only
     if (!snap.some((v, i) => v !== prev[i])) return;            // no real change (StrictMode re-run)
     if (suppressDirtyRef.current) { suppressDirtyRef.current = false; dirtyRef.current = false; return; }
     dirtyRef.current = true;
-  }, [pipeline, dataset, sampleData, currentSample, collectRows, trackedStats, sampleSize, runMode, stopRule]);
+  }, [pipeline, dataset, sampleData, currentSample, collectRows, trackedStats, sampleSize, runMode, stopRule, sampleFormulas]);
 
   // Warn before leaving with unsaved work (Phase 7). dirtyRef is only ever true after a genuine
   // edit (the mount fire is skipped, Save/Open reset it), so a fresh or just-saved session never
@@ -894,8 +957,8 @@ export default function App() {
   // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
   // collect-plot); the generators read the same specs the UI uses (see lib/codegen.js).
   const code = useMemo(
-    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState, overlays: overlayState, hidden: concealed }, codeLang)),
-    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState, overlayState, concealed]
+    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState, overlays: overlayState, hidden: concealed, formulas: sampleApplied.results }, codeLang)),
+    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState, overlayState, concealed, sampleApplied.results]
   );
 
   return (
@@ -973,7 +1036,9 @@ export default function App() {
         {dataset ? (
           <div>
             <EDAPlot key={sessionKey} rows={dataset.rows} headers={dataset.headers}
-              onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })}
+              onChange={(headers, rows) => setDataset(d => ({ ...d, headers, rows }))}
+              formulas={dataset.formulas || []} formulaResult={edaApplied}
+              onFormulasChange={formulas => setDataset(d => ({ ...d, formulas }))}
               initialView={initialViews.eda} onViewChange={onEdaView} />
             <div style={{ fontSize:12, color:"var(--text-faint)", marginTop:8 }}>
               Build a Stacks or Mixer in the sampler below, then use its <strong>Fill from data</strong> control to load a column from this dataset.
@@ -1111,7 +1176,7 @@ export default function App() {
               ) : (
                 <StageCard stage={stage} index={i} total={pipeline.length} upstreamStages={pipeline.slice(0, i)}
                   nameOf={nameOf} onChange={st => updStage(i, st)} onRemove={() => remStage(i)} onMove={movStage}
-                  animStates={animStates} locked={sampling} nameError={invalidNameIds.has(stage.id)} dataset={dataset}
+                  animStates={animStates} locked={sampling} nameError={invalidNameIds.has(stage.id)} dataset={edaDataset}
                   casesEligible={pipeline.length === 1 && !!dataset} />
               )}
               {i < pipeline.length - 1 && <div style={{ alignSelf:"center", color:"#ccc", fontSize:20, flexShrink:0 }}>→</div>}
@@ -1129,8 +1194,14 @@ export default function App() {
           <h2 style={{ margin:0, fontSize:18, fontWeight:700, color:"var(--text)" }}>Sample Results</h2>
           {sampleData.length > 0 && <span style={{ fontSize:12, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
         </div>
-        <SampleResults key={sessionKey} sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats}
+        <SampleResults key={sessionKey} sampleData={sampleApplied.rows} computedCols={sampleFormulaCols} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats}
           initialView={initialViews.sample} onViewChange={onSampleView} />
+        {pipeline.length > 0 && (
+          <FormulaPanel formulas={sampleFormulas} results={sampleApplied.results}
+            colNames={columns.map(c => c.name)} onChange={changeSampleFormulas}
+            onTrack={sampleData.length ? trackFormulaSummary : null}
+            isTracked={r => trackedStats.some(s => s.fn === "formula" && s.variable === r.key)} />
+        )}
        </CodeBeside>
       </div>
 
@@ -1160,8 +1231,8 @@ export default function App() {
             )}
           </div>
         </div>
-        {/* Stacked top-to-bottom: the tracked-statistic table, then the manual
-            builder (a table-authoring tool), then the sampling-distribution plot. */}
+        {/* Stacked top-to-bottom: the tracked-statistic table, then the derived-statistic
+            builder, then the sampling-distribution plot. */}
         <div style={{ marginBottom:14 }}>
           <CodeBeside sectionId="collect" lines={code && code.collect} cbMode={cbMode}>
             <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} onRename={renameStat} labelFor={labelFor} titleFor={exprFor}
@@ -1171,49 +1242,9 @@ export default function App() {
 
         {/* Derived-statistic calculator — combine collected columns into a new column
             (e.g. a difference of two means, or an ANOVA-style total variation). */}
-        {operandCols.length > 0 && (
-          <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
-            <button onClick={() => setDerivedOpen(o => !o)} aria-expanded={derivedOpen}
-              style={{ background:"none", border:"none", cursor:"pointer", fontSize:12, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
-              <span style={{ transform: derivedOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
-              Build a derived statistic
-            </button>
-            {derivedOpen && (
-              <div style={{ marginTop:8 }}>
-                <div style={{ fontSize:12, color:"var(--text-3)", marginBottom:8 }}>
-                  Combine the statistics you've collected — click a column chip, then operators — to make a new column (e.g. <code>A − B</code> for a difference of means). It fills in for every collected row at once.
-                </div>
-                <DerivedBuilder columns={operandCols} onAdd={addDerivedStat} />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Manual statistic builder — advanced, hidden behind a toggle. Adds a column
-            to the same tracked-stat table above instead of a separate workflow. */}
         <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
-          <button onClick={() => setManualOpen(o => !o)} aria-expanded={manualOpen}
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:12, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
-            <span style={{ transform: manualOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
-            Define a statistic manually
-          </button>
-          {manualOpen && (
-            <div style={{ marginTop:8 }}>
-              <div style={{ fontSize:12, color:"var(--text-3)", marginBottom:6 }}>
-                Build a statistic from the sampler's variables and add it as a column. Most statistics are easier to add by clicking their value on the Sample Results plot above — this is for cases that aren't shown there.
-              </div>
-              <div style={{ display:"flex", gap:8, alignItems:"flex-start", flexWrap:"wrap" }}>
-                <div style={{ flex:"1 1 360px", minWidth:300 }}>
-                  <StatDefiner stat={manualStat} varNames={varIds} nameOf={nameOf} sampleData={sampleData}
-                    onChange={setManualStat} onRemove={() => setManualOpen(false)} />
-                </div>
-                <button onClick={addManualStat} disabled={!manualStat.variable}
-                  style={{ padding:"7px 16px", background:"#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:manualStat.variable ? "pointer" : "not-allowed", opacity:manualStat.variable ? 1 : 0.5 }}>
-                  ＋ Add to table
-                </button>
-              </div>
-            </div>
-          )}
+          <DerivedBuilder columns={operandCols} derived={trackedStats.filter(s => s.kind === "derived")}
+            onAdd={addDerivedStat} onUpdate={updateDerivedStat} onRename={renameStat} onRemove={untrackStat} />
         </div>
 
         {/* Sampling-distribution plot for a chosen tracked column. */}

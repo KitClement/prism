@@ -273,7 +273,8 @@ function derivedExprCode(tokens, refOf, lang) {
     if (t.k === "num") out.push(String(t.v));
     else if (t.k === "col") { const r = refOf(t.id); if (r == null) return null; out.push(r); }
     else if (t.k === "op") out.push(t.v === "^" ? (lang === "r" ? " ^ " : " ** ") : ` ${t.v} `);
-    else if (t.k === "fn") out.push(lang === "r" ? t.v : "np." + t.v);   // sqrt | abs
+    else if (t.k === "fn") out.push(lang === "r" ? t.v : "np." + t.v);   // abs | sqrt | round | log | exp
+    else if (t.k === "comma") out.push(", ");                              // round(x, places)
     else if (t.k === "lp") out.push("(");
     else if (t.k === "rp") out.push(")");
   }
@@ -317,7 +318,7 @@ function derivedCollectLines(dcols, vecRef, lang) {
     return `${vecRef(id)}${lang === "r" ? " <- " : " = "}${expr}   # derived column`;
   });
 }
-// True when any emittable derived column uses a numpy function (sqrt/abs) in Python — so the caller
+// True when any emittable derived column uses a numpy function (abs/sqrt/round/log/exp) in Python — so the caller
 // knows to keep the `import numpy as np` line even when nothing else needs it.
 const derivedNeedsNp = dcols => dcols.cols.some(({ s }) => (s.tokens || []).some(t => t.k === "fn"));
 // The inference body lines for a divider: optional setup (py list→array conversions) then
@@ -450,8 +451,9 @@ function drawVec(col, dev, lang, resetIndex = false) {
 // the columns align row-for-row (each `.sample()` keeps random population labels, which would
 // misalign / error when combined). `statDfLinePy` builds the post-loop sampling-distribution
 // `samp_dist` from the collected stat lists. Shared by genCompact + genIntegrated.
-function sampleFrameLinePy(cfg, names) {
-  const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}`);
+function sampleFrameLinePy(cfg, names, fcols = []) {
+  const cells = [...cfg.pipeline.map(st => names[st.id]), ...fcols.filter(f => f.kind === "column").map(f => names[f.key])]
+    .map(id => `${key(id)}: ${id}`);
   return `sample = pd.DataFrame({${cells.join(", ")}})`;
 }
 const statDfLinePy = stats => `samp_dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`;
@@ -513,6 +515,7 @@ function vStat(s, v, lang) {
       case "proportion": return `mean(${v} == ${lit(s.target)})`;
       case "countBetween": return `sum(${regionExpr(v, s, "r")})`;
       case "propBetween": return `mean(${regionExpr(v, s, "r")})`;
+      case "formula": return v;
       default: return "NA";
     }
   }
@@ -529,12 +532,163 @@ function vStat(s, v, lang) {
     case "proportion": return `(${v} == ${lit(s.target)}).mean()`;
     case "countBetween": return `(${regionExpr(v, s, "py")}).sum()`;
     case "propBetween": return `(${regionExpr(v, s, "py")}).mean()`;
+    case "formula": return v;
     default: return "float('nan')";
   }
 }
 
-function genCompact(cfg, names, lang) {
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  FORMULAS — Sample Results formulas (lib/formula.js ASTs) as R / Python          ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+// cfg.formulas = the applied results ({ id, name, kind:"column"|"summary"|"error", ast, key }).
+// A COLUMN formula becomes a vector assignment, a SUMMARY a scalar (`sd_x <- sd(x)`), exactly as
+// a student would write it. References resolve the way the engine does (stage name, then formula
+// name, then case-insensitively). Blank-cell handling (the engine skips blanks) isn't reproduced —
+// drawn samples have none.
+const FAGG = ["mean", "median", "sd", "sum", "count", "min", "max", "q1", "q3"];
+const fIsAgg = n => n.t === "call" && FAGG.includes(n.fn) && n.args.length === 1;
+const RESERVED = new Set(["n", "N", "i", "df", "sample", "pop", "samp", "samp_dist", "dist", "sub", "rows", "pools",
+  "if", "else", "for", "while", "function", "repeat", "break", "next", "in", "TRUE", "FALSE", "NA", "NULL", "Inf", "NaN",
+  "True", "False", "None", "and", "or", "not", "def", "return", "import", "pd", "np", "smf", "random", "c", "T", "F"]);
+// The usable formulas, dependency-ordered (a formula follows every formula it reads), each with a
+// resolved identifier added to `names` under its row key (so tracked stats over a formula column,
+// or a tracked summary, find it like any stage column).
+function formulaPlan(cfg, names) {
+  const fs = (cfg.formulas || []).filter(f => f && f.ast && (f.kind === "column" || f.kind === "summary"));
+  if (!fs.length) return null;
+  const used = new Set([...Object.values(names), ...RESERVED]);
+  fs.forEach(f => {
+    const base = safeName(f.name); let n = base, k = 2;
+    while (used.has(n)) n = base + "_" + k++;
+    used.add(n); names[f.key] = n;
+  });
+  const stages = cfg.pipeline || [];
+  const resolve = nm => {
+    const st = stages.find(x => x.varName === nm), f = fs.find(x => x.name === nm);
+    if (st) return { kind: "col", id: names[st.id] };
+    if (f) return { kind: f.kind, id: names[f.key], f };
+    const lw = String(nm).toLowerCase();
+    const st2 = stages.find(x => String(x.varName).toLowerCase() === lw);
+    if (st2) return { kind: "col", id: names[st2.id] };
+    const f2 = fs.find(x => x.name.toLowerCase() === lw);
+    return f2 ? { kind: f2.kind, id: names[f2.key], f: f2 } : null;
+  };
+  const deps = f => {
+    const out = new Set();
+    const walk = a => {
+      if (!a) return;
+      if (a.t === "ref") { const r = resolve(a.name); if (r && r.f && r.f !== f) out.add(r.f); }
+      walk(a.a); walk(a.b); (a.args || []).forEach(walk);
+    };
+    walk(f.ast);
+    return out;
+  };
+  const order = [], done = new Set();
+  let progress = true;
+  while (progress) {
+    progress = false;
+    fs.forEach(f => { if (!done.has(f) && [...deps(f)].every(d => done.has(d))) { done.add(f); order.push(f); progress = true; } });
+  }
+  return { order, resolve, deps };
+}
+// The formulas a set of tracked stats needs (transitively), in dependency order.
+function formulasFor(plan, stats) {
+  if (!plan) return [];
+  const want = new Set();
+  const add = f => { if (want.has(f)) return; want.add(f); plan.deps(f).forEach(add); };
+  const byKey = k => plan.order.find(f => f.key === k);
+  stats.forEach(({ s }) => [s.variable, s.variable2, s.condVar].forEach(k => { const f = k && byKey(k); if (f) add(f); }));
+  return plan.order.filter(f => want.has(f));
+}
+// One formula AST → code. `frame` (split path) is the per-sample data frame (R `df`, Python
+// `sample`); the compact path (frame null) reads the bare drawn vectors.
+function formulaExpr(ast, plan, lang, frame) {
+  const R = lang === "r";
+  const isVec = a => {
+    if (!a) return false;
+    if (a.t === "ref") { const r = plan.resolve(a.name); return !!r && r.kind !== "summary"; }
+    if (fIsAgg(a)) return false;
+    return isVec(a.a) || isVec(a.b) || (a.args || []).some(isVec);
+  };
+  // [code, precedence]; a child binding looser than `min` is parenthesized.
+  const wrap = ([c, p], min) => (p < min ? `(${c})` : c);
+  const PREC = { or: 1, and: 2, "=": 3, "!=": 3, "<": 3, "<=": 3, ">": 3, ">=": 3, "+": 5, "-": 5, "*": 6, "/": 6 };
+  const concatParts = a => (a.t === "bin" && a.op === "&") ? [...concatParts(a.a), ...concatParts(a.b)] : [a];
+  const pyText = a => {
+    if (a.t === "str") return JSON.stringify(a.v);
+    const c = wrap(go(a), 9);
+    return isVec(a) ? `${c}.astype(str)` : `str(${c})`;
+  };
+  const go = a => {
+    switch (a.t) {
+      case "num": return [String(a.v), 9];
+      case "str": return [JSON.stringify(a.v), 9];
+      case "ref": {
+        const r = plan.resolve(a.name);
+        if (!r) return [R ? "NA" : "float('nan')", 9];
+        if (r.kind === "summary" || !frame) return [r.id, 9];
+        return [R ? `${frame}$${r.id}` : `${frame}[${key(r.id)}]`, 9];
+      }
+      case "neg": return [`-${wrap(go(a.a), 7)}`, 7];
+      case "not": return [`${R ? "!" : "~"}${wrap(go(a.a), 9)}`, 7];
+      case "bin": {
+        const op = a.op;
+        if (op === "&") {
+          const parts = concatParts(a);
+          return R ? [`paste0(${parts.map(x => go(x)[0]).join(", ")})`, 9] : [parts.map(pyText).join(" + "), 5];
+        }
+        if (op === "^") return [`${wrap(go(a.a), 9)}${R ? "^" : " ** "}${wrap(go(a.b), 8)}`, 8];
+        if ((op === "and" || op === "or") && !R)   // Python's & / | bind tighter than comparisons
+          return [`${wrap(go(a.a), 4)} ${op === "and" ? "&" : "|"} ${wrap(go(a.b), 4)}`, PREC[op]];
+        const p = PREC[op], cmp = p === 3;
+        const sym = op === "=" ? "==" : op === "and" ? "&" : op === "or" ? "|" : op;
+        return [`${wrap(go(a.a), cmp ? 4 : p)} ${sym} ${wrap(go(a.b), cmp ? 4 : p + 1)}`, p];
+      }
+      case "call": {
+        const f = a.fn, args = a.args;
+        if (fIsAgg(a)) {
+          const x = go(args[0]);
+          if (R) {
+            const q = f === "q1" ? 0.25 : f === "q3" ? 0.75 : null;
+            if (q !== null) return [`as.numeric(quantile(${x[0]}, ${q}, type = 7))`, 9];
+            return [`${f === "count" ? "length" : f}(${x[0]})`, 9];
+          }
+          const m = { mean: "mean()", median: "median()", sd: "std()", sum: "sum()", count: "count()",
+            min: "min()", max: "max()", q1: "quantile(0.25)", q3: "quantile(0.75)" }[f];
+          return [`${wrap(x, 9)}.${m}`, 9];
+        }
+        const A = args.map(x => go(x)[0]);
+        if (f === "if") return R ? [`ifelse(${A.join(", ")})`, 9] : [`pd.Series(np.where(${A.join(", ")}))`, 9];
+        if (f === "join" || f === "concat") {
+          if (R) return [f === "join" ? `paste(${A.join(", ")}, sep = ",")` : `paste0(${A.join(", ")})`, 9];
+          return [args.map(pyText).join(f === "join" ? ' + "," + ' : " + "), 5];
+        }
+        if (f === "min" || f === "max") {
+          if (R) return [`${f === "min" ? "pmin" : "pmax"}(${A.join(", ")})`, 9];
+          return [A.slice(1).reduce((acc, x) => `np.${f === "min" ? "minimum" : "maximum"}(${acc}, ${x})`, A[0]), 9];
+        }
+        if (f === "round") return [`${R ? "" : "np."}round(${A.join(", ")})`, 9];
+        return [`${R ? "" : "np."}${f}(${A[0]})`, 9];
+      }
+      default: return [R ? "NA" : "float('nan')", 9];
+    }
+  };
+  return go(ast)[0];
+}
+// Assignment lines for formulas `fs`, at indent `ind`. Column → R `x <- …` / `df$x <- …`,
+// Python `x = …` / `sample["x"] = …`; summary → a plain scalar assignment.
+function formulaLines(fs, plan, lang, frame, ind = "") {
+  return fs.map(f => {
+    const id = plan.resolve(f.name).id, e = formulaExpr(f.ast, plan, lang, frame);
+    const lhs = f.kind === "column" && frame ? (lang === "r" ? `${frame}$${id}` : `${frame}[${key(id)}]`) : id;
+    return `${ind}${lhs} ${lang === "r" ? "<-" : "="} ${e}`;
+  });
+}
+const formulasNeedNp = (fs, plan) => fs.some(f => formulaExpr(f.ast, plan, "py", null).includes("np."));
+
+function genCompact(cfg, names, lang, plan = null) {
   const stats = withIds(plainStats(cfg), names);
+  const allF = plan ? plan.order : [], loopF = formulasFor(plan, stats);
   const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
   const first = stats[0];
@@ -547,6 +701,7 @@ function genCompact(cfg, names, lang) {
     cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "r")));
 
     const single = mk("single");
+    if (allF.length) { single.push("# Formulas (this sample)"); formulaLines(allF, plan, "r", null).forEach(t => single.push(t)); }
     if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
     else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} <- ${compactStatExpr(s, names)}`)); }
 
@@ -557,6 +712,7 @@ function genCompact(cfg, names, lang) {
       stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
       collect.push("for (i in 1:N) {");
       cfg.pipeline.forEach(st => collect.push("  " + drawVec(names[st.id], defDevice(st), "r")));
+      formulaLines(loopF, plan, "r", null, "  ").forEach(t => collect.push(t));
       stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${compactStatExpr(s, names)}`));
       collect.push("}");
       derivedCollectLines(dcols, e => e, "r").forEach(t => collect.push(t));
@@ -570,20 +726,27 @@ function genCompact(cfg, names, lang) {
   // Python (pandas / numpy) — each device is drawn as its own vector, then assembled into the
   // per-sample DataFrame `sample`; every statistic is computed off `sample` with df syntax.
   const needsFrame = compactNeedsFrame(stats);
+  // Formulas combine the separately drawn Series, so they need a shared 0…n-1 index too.
+  const resetIdx = needsFrame || allF.length > 0;
   const derPy = derivedCollectLines(dcols, e => `samp_dist[${key(e)}]`, "py");
   const sampler = mk("sampler");
   sampler.push("import pandas as pd");
-  if (compactNeedsNp(cfg) || derivedNeedsNp(dcols)) sampler.push("import numpy as np");
+  if (compactNeedsNp(cfg) || derivedNeedsNp(dcols) || formulasNeedNp(allF, plan)) sampler.push("import numpy as np");
   if (compactNeedsSm(stats)) sampler.push("import statsmodels.formula.api as smf");
   sampler.push("");
   sampler.push("# Sampler — draw one sample of n (one vector per device)");
   if (anySource(cfg)) sampler.push(`df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push(`n = ${cfg.sampleSize}`);
   cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) sampler.push(pd); });
-  cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py", needsFrame)));
-  if (needsFrame) sampler.push(sampleFrameLinePy(cfg, names));
+  cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "py", resetIdx)));
+  if (needsFrame && !allF.length) sampler.push(sampleFrameLinePy(cfg, names));
 
   const single = mk("single");
+  if (allF.length) {
+    single.push("# Formulas (this sample)");
+    formulaLines(allF, plan, "py", null).forEach(t => single.push(t));
+    if (needsFrame) single.push(sampleFrameLinePy(cfg, names, allF));
+  }
   if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
   else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => compactStatLinesPy(s, id, names, e => `${id} = ${e}`).forEach(t => single.push(t))); }
 
@@ -593,8 +756,9 @@ function genCompact(cfg, names, lang) {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
-    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py", needsFrame)));
-    if (needsFrame) collect.push("    " + sampleFrameLinePy(cfg, names));
+    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py", resetIdx)));
+    formulaLines(loopF, plan, "py", null, "    ").forEach(t => collect.push(t));
+    if (needsFrame) collect.push("    " + sampleFrameLinePy(cfg, names, loopF));
     stats.forEach(({ s, id }) => compactStatLinesPy(s, id, names, e => `${id}.append(${e})`).forEach(t => collect.push("    " + t)));
     collect.push(statDfLinePy(stats));
     derPy.forEach(t => collect.push(t));
@@ -723,6 +887,7 @@ function rStatExpr(s, v, v2, D) {
     case "intercept": return `unname(coef(lm(${v2} ~ ${v}, data = ${D}))[1])`;
     case "countBetween": return `sum(${regionExpr(x, s, "r")})`;
     case "propBetween": return `mean(${regionExpr(x, s, "r")})`;
+    case "formula": return v;
     default: return "NA";
   }
 }
@@ -743,6 +908,7 @@ function pyStatExpr(s, v, v2, D) {
     case "intercept": return `smf.ols(${key(`${v2} ~ ${v}`)}, data=${D}).fit().params["Intercept"]`;
     case "countBetween": return `(${regionExpr(c, s, "py")}).sum()`;
     case "propBetween": return `(${regionExpr(c, s, "py")}).mean()`;
+    case "formula": return v;
     default: return "float('nan')";
   }
 }
@@ -765,7 +931,7 @@ function pyStatAssign(s, id, names, D, ind, target) {
   return [`${ind}${target(pyStatExpr(s, v, v2, D))}`];
 }
 
-function genSplit(cfg, names, lang) {
+function genSplit(cfg, names, lang, plan = null) {
   const { pipeline, sampleSize, runMode, stopRule } = cfg;
   const until = runMode === "until" && stopRule && stopRule.stageId;
   const cap = until ? "max_draws" : "n";
@@ -783,6 +949,7 @@ function genSplit(cfg, names, lang) {
   const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
   const first = stats[0];
+  const allF = plan ? plan.order : [], loopF = formulasFor(plan, stats);
   // `push(text)` tags the line with the array's own section; `push(text, sec)` overrides it — so a
   // draw / statistic line inside the For-loop can carry its true section (★ sampler / ● single) for
   // the integrated gutter, even though it lives in the green ▲ collect array.
@@ -830,12 +997,13 @@ function genSplit(cfg, names, lang) {
     sampler.push(`${cap} <- ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
 
     const single = mk("single");
-    if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-    else {
-      single.push("# Draw one sample, then one value per enabled statistic");
+    if (stats.length || allF.length) {
+      single.push(stats.length ? "# Draw one sample, then one value per enabled statistic" : "# Draw one sample");
       single.push(`df <- draw_sample(${cap})`);
-      stats.forEach(({ s, id }) => single.push(`${id} <- ${rStatValue(s, names)}`));
+      if (allF.length) { single.push("# Formulas (this sample)"); formulaLines(allF, plan, "r", "df").forEach(t => single.push(t)); }
     }
+    if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+    else stats.forEach(({ s, id }) => single.push(`${id} <- ${rStatValue(s, names)}`));
 
     const collect = mk("collect");
     if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -844,6 +1012,7 @@ function genSplit(cfg, names, lang) {
       stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
       collect.push("for (i in 1:N) {");
       collect.push(`  df <- draw_sample(${cap})`, "sampler");
+      formulaLines(loopF, plan, "r", "df", "  ").forEach(t => collect.push(t, "single"));
       stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${rStatValue(s, names)}`, "single"));
       collect.push("}");
       collect.push(`dist <- data.frame(${stats.map(({ id }) => id).join(", ")})`);
@@ -900,12 +1069,13 @@ function genSplit(cfg, names, lang) {
   sampler.push(`${cap} = ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
 
   const single = mk("single");
-  if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-  else {
-    single.push("# Draw one sample, then one value per enabled statistic");
+  if (stats.length || allF.length) {
+    single.push(stats.length ? "# Draw one sample, then one value per enabled statistic" : "# Draw one sample");
     single.push(`sample = draw_sample(${cap})`);
-    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "", e => `${id} = ${e}`).forEach(t => single.push(t)));
+    if (allF.length) { single.push("# Formulas (this sample)"); formulaLines(allF, plan, "py", "sample").forEach(t => single.push(t)); }
   }
+  if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+  else stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "", e => `${id} = ${e}`).forEach(t => single.push(t)));
 
   const collect = mk("collect");
   if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -914,6 +1084,7 @@ function genSplit(cfg, names, lang) {
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
     collect.push(`    sample = draw_sample(${cap})`, "sampler");
+    formulaLines(loopF, plan, "py", "sample", "    ").forEach(t => collect.push(t, "single"));
     stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "sample", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t, "single")));
     collect.push(`samp_dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`);
     derivedCollectLines(dcols, e => `samp_dist[${key(e)}]`, "py").forEach(t => collect.push(t));
@@ -960,14 +1131,15 @@ function compactInfLines(cfg, stats, lang) {
 // One runnable program with per-line `section` tags driving the color-coded gutter. In the
 // compact case the loop body's draws (★ red) and statistics (● orange) sit INSIDE the green
 // (▲) for-loop; the split case lays the function defs / loop / inference out in order.
-function genIntegrated(cfg, names, lang) {
+function genIntegrated(cfg, names, lang, plan = null) {
   const stats = withIds(plainStats(cfg), names);
+  const loopF = formulasFor(plan, stats);
   const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const L = [], push = (text, section) => L.push({ text, section });
   if (isSimple(cfg)) {
     const ind = lang === "r" ? "  " : "    ";
-    const needsFrame = compactNeedsFrame(stats);
-    if (lang === "py") { push("import pandas as pd", "sampler"); if (compactNeedsNp(cfg) || derivedNeedsNp(dcols)) push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
+    const needsFrame = compactNeedsFrame(stats), resetIdx = needsFrame || loopF.length > 0;
+    if (lang === "py") { push("import pandas as pd", "sampler"); if (compactNeedsNp(cfg) || derivedNeedsNp(dcols) || formulasNeedNp(loopF, plan)) push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.formula.api as smf", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
     if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
@@ -976,8 +1148,9 @@ function genIntegrated(cfg, names, lang) {
     push(lang === "r" ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
     stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
     push(lang === "r" ? "for (i in 1:N) {" : "for i in range(N):", "collect");
-    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang, needsFrame), "sampler"));
-    if (lang === "py" && needsFrame) push(ind + sampleFrameLinePy(cfg, names), "sampler");
+    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang, resetIdx), "sampler"));
+    formulaLines(loopF, plan, lang, null, ind).forEach(t => push(t, "single"));
+    if (lang === "py" && needsFrame) push(ind + sampleFrameLinePy(cfg, names, loopF), "sampler");
     stats.forEach(({ s, id }) => {
       if (lang === "r") push(ind + `${id}[i] <- ${compactStatExpr(s, names)}`, "single");
       else compactStatLinesPy(s, id, names, e => `${id}.append(${e})`).forEach(t => push(ind + t, "single"));
@@ -993,7 +1166,7 @@ function genIntegrated(cfg, names, lang) {
   // Split: the sampler defs, the inline collect for-loop, and the inference already carry the
   // right section tags; stitch them in order. The standalone single-sample demo is omitted —
   // the collect loop already draws and computes every sample (mirroring the compact case).
-  const secs = genSplit(cfg, names, lang);
+  const secs = genSplit(cfg, names, lang, plan);
   ["sampler", "collect", "inference"].forEach((k, i) => {
     if (i > 0) push("", secs[k][0] ? secs[k][0].section : k);
     secs[k].forEach(ln => push(ln.text, ln.section));
@@ -1150,12 +1323,15 @@ export function generateCode(cfg, lang) {
   const language = lang === "python" ? "py" : "r";
   if (isRowSample(cfg)) {
     const secs = genRowSample(cfg, language);
+    if ((cfg.formulas || []).some(f => f && f.ast)) secs.single.unshift({ text: "# (Formulas aren't reproduced here for a whole-row resample yet)", section: "single" });
     const integrated = cfg.hidden ? hideSampler(genRowSampleIntegrated(cfg, language)) : genRowSampleIntegrated(cfg, language);
     return { ...secs, integrated };
   }
   const names = buildNames(cfg.pipeline || []);
+  const plan = formulaPlan(cfg, names);   // adds each formula's identifier to `names`
   const { sampler, single, collect, inference } =
-    isSimple(cfg) ? genCompact(cfg, names, language) : genSplit(cfg, names, language);
-  const integrated = cfg.hidden ? hideSampler(genIntegrated(cfg, names, language)) : genIntegrated(cfg, names, language);
+    isSimple(cfg) ? genCompact(cfg, names, language, plan) : genSplit(cfg, names, language, plan);
+  const integ = genIntegrated(cfg, names, language, plan);
+  const integrated = cfg.hidden ? hideSampler(integ) : integ;
   return { sampler, single, collect, inference, integrated };
 }

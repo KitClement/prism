@@ -112,6 +112,11 @@ function computeStat(stat, rows) {
       const cnt = nums.filter(inR).length;
       return stat.fn === "countBetween" ? cnt : (nums.length ? cnt / nums.length : NaN);
     }
+    // A tracked summary formula (lib/formula.js withFormulas carries its value on every row).
+    case "formula": {
+      const v = rows.length ? rows[0][stat.variable] : undefined;
+      return v === undefined || v === "" || isNaN(Number(v)) ? NaN : Number(v);
+    }
     default: return NaN;
   }
 }
@@ -147,6 +152,7 @@ function statLabel(s, nameOf) {
   const c = s.condVar ? " | " + nm(s.condVar) + "=\"" + s.condVal + "\"" : "", v = s.variable ? nm(s.variable) : "?";
   if (s.fn === "countBetween" || s.fn === "propBetween")
     return (s.fn === "countBetween" ? "count(" : "prop(") + regionDesc(s, v) + c + ")";
+  if (s.fn === "formula") return v;
   const v2 = s.variable2 ? nm(s.variable2) : "?";
   const mp = { count:"count(" + v + c + ")", countVal:"count(" + v + "=\"" + s.target + "\"" + c + ")", proportion:"prop(" + v + "=\"" + s.target + "\"" + c + ")", mean:"mean(" + v + c + ")", sd:"SD(" + v + c + ")", median:"median(" + v + c + ")", min:"min(" + v + c + ")", max:"max(" + v + c + ")", q1:"Q1(" + v + c + ")", q3:"Q3(" + v + c + ")", slope:"slope(" + v + "~" + v2 + c + ")", intercept:"intercept(" + v + "~" + v2 + c + ")" };
   return mp[s.fn] || s.fn;

@@ -2,12 +2,14 @@ import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } fr
 import { toCanvas } from "html-to-image";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { colorAt, clamp, toNum, minutesToTime, colKind, sortCats, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
-import { numericSummary, kdeCurve, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
-import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
+import { numericSummary, kdeCurve, lsFit, statLabel, statKey, computeStat, quantile } from "../lib/stats";
+import { validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
 import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
+import { FormulaPanel, FormulaMenu, DERIVED_FN_GROUPS } from "./formulas";
+import { renameInFormula, fmtFormulaVal } from "../lib/formula";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
 // match the proportion-valued collected statistics (e.g. 0.851, not 85%).
@@ -1520,147 +1522,171 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   );
 }
 
-function StatDefiner({ stat, varNames, nameOf, sampleData, onChange, onRemove }) {
-  // `varNames` are device IDS; the Sels show display names via `nm` but store the id in
-  // the spec. `allVals`/`condVals` read rows by that id (correct, rows are id-keyed).
-  const nm = nameOf || (h => h);
-  const allVals = stat.variable && sampleData.length ? [...new Set(sampleData.map(r => r[stat.variable]))] : [];
-  const condVals = stat.condVar && sampleData.length ? [...new Set(sampleData.map(r => r[stat.condVar]))] : [];
-  const needsTarget = ["proportion", "countVal"].includes(stat.fn);
-  const needsTwo = ["slope", "intercept"].includes(stat.fn);
+// ══════════════════════════════════════════════════════════════════════════════
+// DERIVED-STATISTIC FORMULAS (Collect Statistics) — the same persistent-row behaviour as
+// the EDA / Sample Results formula panel: "＋ formula" adds a row, and every derived
+// column stays listed as an editable  name = formula  row. Formulas use the collected
+// columns' letters (A, B, …) plus numbers, + − × ÷ ^ ( ) abs sqrt round log exp (lib/expr.js).
+// A valid formula commits on Enter / blur / menu insert: a new row becomes a column, an
+// edited row refills its column for every collected row (no re-sampling). An invalid
+// edit shows an error and the column keeps its last valid formula.
+// Every formula is worked out row by row over the collected table, so the result is always
+// a column (there is no single-value case here, unlike the within-sample formula panel).
+//   columns: [{ id, label }]   plain tracked stats
+//   derived: the derived tracked stats { id, tokens, inputs, name? }
+//   onAdd(tokens, inputIds, name, id) · onUpdate(id, tokens, inputIds) · onRename(id, name) · onRemove(id)
+// ══════════════════════════════════════════════════════════════════════════════
+const OP_TXT = { "+": " + ", "-": " - ", "*": " * ", "/": " / ", "^": "^" };
+// A stored formula as typed text, using the columns' current letters.
+function tokensToText(tokens, aliasOf) {
+  return (tokens || []).map(t => t.k === "num" ? String(t.v) : t.k === "col" ? (aliasOf[t.id] || "?")
+    : t.k === "op" ? (OP_TXT[t.v] || t.v) : t.k === "fn" ? t.v : t.k === "lp" ? "(" : t.k === "rp" ? ")" : t.k === "comma" ? ", " : "").join("");
+}
 
-  // Auto-fill a sensible default target so the stat is never silently misconfigured
-  useEffect(() => {
-    if (needsTarget && (!stat.target || stat.target === "") && allVals.length > 0) {
-      onChange({ ...stat, target: String(allVals[0]) });
-    }
-  }, [stat.fn, stat.variable, allVals.length]);
+function DerivedBuilder({ columns, derived = [], onAdd, onUpdate, onRename, onRemove }) {
+  // A row added with ＋ formula that isn't a column yet: { id, name }. Its id is reused
+  // for the column it becomes, so the row (and its caret) survives that switch.
+  const [draft, setDraft] = useState(null);
+  const colIds = columns.map(c => c.id).join(",");
+  const aliasOf = useMemo(() => {
+    const m = {}; columns.forEach((c, i) => { m[c.id] = aliasFor(i); }); return m;
+  }, [colIds]);
+  const aliasToId = useMemo(() => {
+    const m = {}; columns.forEach((c, i) => { m[aliasFor(i)] = c.id; }); return m;
+  }, [colIds]);
+  useEffect(() => { if (!columns.length) setDraft(null); }, [columns.length]);
+
+  const parse = text => {
+    const { tokens, ok } = lexExpr(text, aliasToId);
+    const structOk = validateExpr(tokens);
+    return { tokens, lexOk: ok, structOk, valid: text.trim().length > 0 && ok && structOk };
+  };
+  const inputsOf = tokens => [...new Set(tokens.filter(t => t.k === "col").map(t => t.id))];
+  const chips = columns.map(c => ({ key: c.id, letter: aliasOf[c.id], name: c.label, insert: aliasOf[c.id],
+    desc: `Inserts ${aliasOf[c.id]}, the collected column ${c.label}: one value per collected sample.` }));
+
+  const rows = [
+    ...derived.map(s => ({ id: s.id, text: tokensToText(s.tokens, aliasOf), name: s.name || "", isDraft: false })),
+    ...(draft ? [{ id: draft.id, text: "", name: draft.name, isDraft: true }] : []),
+  ];
+  const commitText = (row, text, name) => {
+    const p = parse(text);
+    if (!p.valid) return;
+    if (row.isDraft) { onAdd(p.tokens, inputsOf(p.tokens), (name || "").trim(), row.id); setDraft(null); }
+    else onUpdate(row.id, p.tokens, inputsOf(p.tokens));
+  };
+  const rename = (row, name) => {
+    if (row.isDraft) setDraft(d => d && { ...d, name });
+    else if (name.trim() !== row.name) onRename(row.id, name.trim());
+  };
+  const remove = row => { if (row.isDraft) setDraft(null); else onRemove(row.id); };
+
   return (
-    <div style={{ background:"var(--surface-2)", borderRadius:9, padding:10, border:"1px solid var(--border)", position:"relative" }}>
-      <button onClick={onRemove} style={{ ...btnX, position:"absolute", top:7, right:7, fontSize:14 }}>×</button>
-      <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", paddingRight:20 }}>
-        <Sel label="Stat" value={stat.fn} onChange={v => onChange({ ...stat, fn:v })} options={FN_OPTS.map(o => o.v)} labels={FN_OPTS.map(o => o.l)} />
-        <Sel label="Variable" value={stat.variable || ""} onChange={v => onChange({ ...stat, variable:v })} options={["", ...varNames]} labels={["—", ...varNames.map(nm)]} />
-        {needsTwo && <Sel label="vs" value={stat.variable2 || ""} onChange={v => onChange({ ...stat, variable2:v })} options={["", ...varNames]} labels={["—", ...varNames.map(nm)]} />}
-        {needsTarget && allVals.length > 0 && <Sel label="= value" value={stat.target || ""} onChange={v => onChange({ ...stat, target:v })} options={["", ...allVals]} labels={["—", ...allVals]} />}
-        {needsTarget && !allVals.length && <label style={ctrlLbl}>= <input value={stat.target || ""} onChange={e => onChange({ ...stat, target:e.target.value })} style={{ ...iSm, width:50, marginLeft:3 }} /></label>}
-        <Sel label="| filter" value={stat.condVar || "none"} onChange={v => onChange({ ...stat, condVar:v === "none" ? "" : v, condVal:"" })} options={["none", ...varNames]} labels={["(none)", ...varNames.map(nm)]} />
-        {stat.condVar && <Sel label="=" value={stat.condVal || ""} onChange={v => onChange({ ...stat, condVal:v })} options={["", ...condVals]} labels={["—", ...condVals]} />}
+    <div>
+      <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:2 }}>
+        <div style={{ fontSize:12, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase" }}>Formulas</div>
+        <button onClick={() => { if (!draft) setDraft({ id: uid(), name: "" }); }} disabled={!columns.length}
+          title={columns.length ? "Combine collected columns into a new column" : "Track a statistic first"}
+          style={{ ...btnPlus, color:"var(--accent-ink)", cursor:columns.length ? "pointer" : "not-allowed", opacity:columns.length ? 1 : 0.5 }}>＋ formula</button>
       </div>
-      <div style={{ marginTop:5, fontSize:12, color:"var(--accent-ink)", fontFamily:"monospace" }}>→ {statLabel(stat, nameOf)}</div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize:12, color:"var(--text-faint)" }}>
+          {columns.length
+            ? <>Add a formula to combine collected columns into a new column (like <code>A - B</code> for a difference of means). It fills in every collected row at once, with no re-sampling.</>
+            : <>Track at least one statistic first, then add a formula to combine collected columns (like <code>A - B</code> for a difference of two means).</>}
+        </div>
+      ) : rows.map(row => (
+        <DerivedRow key={row.id} row={row} chips={chips} parse={parse}
+          multi={columns.length > 1} autoFocus={row.isDraft}
+          onCommitText={(t, n) => commitText(row, t, n)} onRename={n => rename(row, n)} onRemove={() => remove(row)} />
+      ))}
     </div>
   );
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// DERIVED-STATISTIC CALCULATOR (Phase 5) — assemble a new column from the statistics
-// already collected. The expression is TYPED into a text field using short column
-// aliases (A, B, …) plus operators / numbers / parens / sqrt / abs; column chips
-// insert their alias at the cursor as a shortcut. A live preview evaluates on the
-// current sample, and the value backfills every existing row when the column is added.
-//   columns: [{ id, label, value }]   (value = stat computed on the current sample)
-//   onAdd(tokens, inputIds)
-// ══════════════════════════════════════════════════════════════════════════════
-function DerivedBuilder({ columns, onAdd }) {
-  const [text, setText] = useState("");
-  const [name, setName] = useState("");
+function DerivedRow({ row, chips, parse, multi, autoFocus, onCommitText, onRename, onRemove }) {
+  const [text, setText] = useState(row.text);
+  const [name, setName] = useState(row.name);
+  const [menuOpen, setMenuOpen] = useState(!!autoFocus);
+  const rowRef = useRef(null);
   const inputRef = useRef(null);
-  // Position-based aliases (A, B, …) ↔ stat ids, for both the chip legend and lexing.
-  const aliasOf = useMemo(() => {
-    const m = {}; columns.forEach((c, i) => { m[c.id] = aliasFor(i); }); return m;
-  }, [columns.map(c => c.id).join(",")]);
-  const aliasToId = useMemo(() => {
-    const m = {}; columns.forEach((c, i) => { m[aliasFor(i)] = c.id; }); return m;
-  }, [columns.map(c => c.id).join(",")]);
-  const valById = useMemo(() => {
-    const m = {}; columns.forEach(c => { m[c.id] = c.value; }); return m;
-  }, [columns]);
+  const selRef = useRef(null);
+  const focused = useRef(false);
+  // Follow the stored formula (e.g. letters shifting after a column is removed) unless
+  // the student is mid-edit in the field.
+  useLayoutEffect(() => { if (!focused.current) setText(row.text); }, [row.text]);
+  useLayoutEffect(() => { setName(row.name); }, [row.name]);
+  useEffect(() => { if (autoFocus && inputRef.current) inputRef.current.focus(); }, []);
+  const noteSel = e => { selRef.current = { s: e.currentTarget.selectionStart, e: e.currentTarget.selectionEnd }; };
+  // Blurring into this row's own controls (the ƒx menu) isn't a commit; the insert commits.
+  const leavingRow = e => !(e.relatedTarget && rowRef.current && rowRef.current.contains(e.relatedTarget));
+  const commit = t => onCommitText(t, name);
 
-  const { tokens, ok: lexOk } = lexExpr(text, aliasToId);
-  const structOk = validateExpr(tokens);
-  const valid = text.trim().length > 0 && lexOk && structOk;
-  const preview = valid ? evalExpr(tokens, id => valById[id]) : NaN;
-  const fmt = v => (typeof v === "number" && isFinite(v) ? parseFloat(v.toFixed(4)) : "—");
-
-  // Insert a snippet at the caret (falls back to append) and keep focus after it.
-  const insertAtCaret = snippet => {
-    const el = inputRef.current;
-    const start = el && el.selectionStart != null ? el.selectionStart : text.length;
-    const end = el && el.selectionEnd != null ? el.selectionEnd : text.length;
-    const next = text.slice(0, start) + snippet + text.slice(end);
+  // Insert at the remembered caret (wrapping a selection), commit, and put the caret back.
+  const insert = (open, close = "") => {
+    const sel = selRef.current || { s: text.length, e: text.length };
+    const s = Math.min(sel.s, text.length), e = Math.min(Math.max(sel.e, s), text.length);
+    const mid = text.slice(s, e);
+    const next = text.slice(0, s) + open + mid + close + text.slice(e);
+    const p = s + open.length + mid.length + (mid ? close.length : 0);
+    selRef.current = { s: p, e: p };
     setText(next);
-    requestAnimationFrame(() => { if (el) { el.focus(); const p = start + snippet.length; el.setSelectionRange(p, p); } });
+    commit(next);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      try { el.setSelectionRange(p, p); } catch { /* not focusable here */ }
+    });
   };
 
-  const add = () => {
-    if (!valid) return;
-    const inputIds = [...new Set(tokens.filter(t => t.k === "col").map(t => t.id))];
-    onAdd(tokens, inputIds, name.trim());
-    setText(""); setName("");
-  };
-
-  if (!columns.length) {
-    return <div style={{ fontSize:12, color:"var(--text-faint)", padding:"6px 0" }}>
-      Track at least one statistic above first — then combine collected columns here (e.g. a difference of two means).
-    </div>;
-  }
-  const msg = !text.trim() ? null : !lexOk ? "unrecognised symbol — use the column letters, numbers, + − × ÷ ^ ( ) sqrt abs" : !structOk ? "incomplete" : null;
+  const p = parse(text);
+  const summaryFn = (text.match(/\b(mean|median|sd|sum|count|min|max|q1|q3|if|join)\s*\(/i) || [])[1];
+  const msg = !text.trim() ? null
+    : summaryFn && !p.lexOk ? (/^(if|join)$/i.test(summaryFn)
+      ? `${summaryFn.toLowerCase()}() isn't available here: these formulas stay numeric`
+      : `${summaryFn.toLowerCase()}() isn't available here: each row is one sample, so a summary of the column belongs on the Collect plot`)
+    : !p.lexOk ? "Unrecognised symbol: use the column letters, numbers, + − × ÷ ^ ( ) and abs sqrt round log exp"
+    : !p.structOk ? "Incomplete formula" : null;
+  const stale = !row.isDraft && !p.valid; // the column keeps its last valid formula
   return (
-    <div>
-      {/* Column chips — click to insert the alias at the caret; legend shows full label */}
-      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
-        {columns.map(c => (
-          <button key={c.id} onClick={() => insertAtCaret(aliasOf[c.id])} title={"Insert " + aliasOf[c.id] + " = " + c.label + " (" + fmt(c.value) + " on this sample)"}
-            style={{ ...btnPlus, color:"var(--accent-ink)", borderColor:"#a5b4fc", background:"var(--xsel-cell)", display:"inline-flex", gap:5, alignItems:"center" }}>
-            <strong>{aliasOf[c.id]}</strong>
-            <span style={{ fontFamily:"monospace", fontSize:12, color:"var(--accent-ink)", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
-          </button>
-        ))}
-        <span style={{ width:1, height:18, background:"var(--border)", margin:"2px 1px" }} />
-        {/* Math palette — typing works too; these are discoverability shortcuts that
-            insert at the caret. Binary operators carry surrounding spaces for legibility
-            (the lexer ignores whitespace). */}
-        {[[" + ", "+"], [" − ", "−"], [" × ", "×"], [" ÷ ", "÷"], ["^", "^"], ["(", "("], [")", ")"]].map(([snip, lbl]) => (
-          <button key={lbl} onClick={() => insertAtCaret(snip)} style={{ ...btnPlus, fontFamily:"monospace", minWidth:26, color:"var(--text-2)" }}>{lbl}</button>
-        ))}
-        <button onClick={() => insertAtCaret("sqrt(")} style={{ ...btnPlus, fontFamily:"monospace", color:"var(--text-2)" }}>sqrt(</button>
-        <button onClick={() => insertAtCaret("abs(")} style={{ ...btnPlus, fontFamily:"monospace", color:"var(--text-2)" }}>abs(</button>
-      </div>
-      {/* Typed expression + live preview */}
-      <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        <span style={{ fontSize:13, color:"var(--text-3)", fontWeight:700 }}>=</span>
-        <input ref={inputRef} value={text} onChange={e => setText(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") add(); }}
-          placeholder="e.g. (A − B)  or  (A − M)^2 + (B − M)^2"
-          style={{ ...iSm, flex:"1 1 260px", minWidth:220, fontFamily:"monospace", fontSize:13, padding:"7px 10px",
-            border: msg ? "1px solid #fca5a5" : "1px solid var(--border-2)" }} />
-        {valid && (
-          <span style={{ fontSize:12, color:"var(--text-2)" }}>
-            on this sample → <strong style={{ color: isFinite(preview) ? "#10b981" : "var(--derived-text)", fontFamily:"monospace" }}>{fmt(preview)}</strong>
-          </span>
-        )}
-      </div>
-      {msg && <div style={{ fontSize:12, color:"var(--red-ink)", marginTop:4 }}>{msg}</div>}
-      <div style={{ marginTop:8, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        <label style={{ ...ctrlLbl, fontSize:12 }}>Name
-          <input value={name} onChange={e => setName(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") add(); }}
-            placeholder="optional — defaults to the formula"
-            style={{ ...iSm, width:220, marginLeft:5 }} />
-        </label>
-        <button onClick={add} disabled={!valid}
-          style={{ padding:"7px 16px", background:"#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:valid ? "pointer" : "not-allowed", opacity:valid ? 1 : 0.5 }}>
-          ＋ Add derived column
-        </button>
-        <span style={{ fontSize:12, color:"var(--text-faint)" }}>Backfills every collected row instantly — no re-sampling.</span>
-      </div>
+    <div ref={rowRef} style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap", padding:"5px 0", borderBottom:"1px solid var(--border)" }}>
+      <input value={name} onChange={e => setName(e.target.value)}
+        onBlur={() => { if (name !== row.name) onRename(name); }}
+        onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); if (e.key === "Escape") setName(row.name); }}
+        placeholder="name" aria-label="Derived column name (optional)" title="Optional: defaults to the formula"
+        style={{ ...iSm, width:90, fontWeight:700 }} />
+      <span style={{ color:"var(--text-3)", fontSize:13 }}>=</span>
+      <input ref={inputRef} value={text} spellCheck={false} aria-label="Derived statistic formula"
+        placeholder={multi ? "e.g. A - B" : "e.g. 2 * A"}
+        onChange={e => { setText(e.target.value); noteSel(e); }}
+        onSelect={noteSel}
+        onFocus={() => { focused.current = true; }}
+        onBlur={e => { focused.current = false; if (leavingRow(e)) commit(text); }}
+        onKeyDown={e => {
+          if (e.key === "Enter") { e.preventDefault(); commit(text); }
+          if (e.key === "Escape") { setText(row.text); e.currentTarget.blur(); }
+        }}
+        style={{ ...iSm, flex:"1 1 180px", minWidth:140, fontFamily:"ui-monospace, Consolas, monospace",
+          ...(msg ? { border:"1px solid #fca5a5" } : null) }} />
+      <button onClick={() => setMenuOpen(o => !o)} aria-expanded={menuOpen} aria-label="Columns and functions menu"
+        title="Insert a column, function or operator"
+        style={{ ...btnPlus, fontStyle:"italic", fontWeight:700, color:"var(--accent-ink)", background: menuOpen ? "var(--xsel-cell)" : undefined }}>ƒx</button>
+      <span style={{ flex:"0 0 auto", minWidth:110, fontSize:12 }} aria-live="polite">
+        {!text.trim() ? <span style={{ color:"var(--text-faint)" }}>type a formula</span>
+          : msg ? <span role="alert" style={{ color:"var(--red-ink, #b91c1c)" }}>{msg}{stale ? " (the column keeps its last formula)" : ""}</span>
+          : <span style={{ color:"var(--green-ink)" }} title="Worked out for every collected row, so it's a new column in the table">→ new column</span>}
+      </span>
+      <button title="Delete formula" aria-label={`Delete formula ${row.name || row.text || "draft"}`} onClick={onRemove} style={{ ...btnX }}>×</button>
+      {menuOpen && <FormulaMenu chips={chips} onInsert={insert} groups={DERIVED_FN_GROUPS}
+        chipsTitle="Collected columns · type the letter" />}
     </div>
   );
 }
 
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 // DISTRIBUTION PLOT \u2014 sampling-distribution view over collected-statistic columns.
-// Each column is one tracked (or manually-defined) statistic's accumulated values;
+// Each column is one tracked statistic's accumulated values;
 // the shared Plot's X selector doubles as the column selector and its overlay
 // toggles (mean/SD/box) apply to the chosen distribution. Replaces the old
 // StatDistPlot small-multiples with one EDA-grade, selectable plot.
@@ -1689,7 +1715,7 @@ function scrollRowIntoView(container, id) {
 
 function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
   // Disambiguate any repeated labels so each column is a distinct header/key
-  // (tracked stats are already unique; manually-defined ones may collide).
+  // (tracked stats are already unique; custom names may collide).
   const headers = useMemo(() => {
     const out = [], seen = {};
     columns.forEach(c => {
@@ -1761,7 +1787,11 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect,
 // ══════════════════════════════════════════════════════════════════════════════
 // EDA PLOT — exploratory plot with toggleable statistics overlays
 // ══════════════════════════════════════════════════════════════════════════════
-function EDAPlot({ rows, headers, onChange, initialView, onViewChange }) {
+// `formulas` / `formulaResult` (optional): the dataset's formulas and their applied result
+// (lib/formula.js applyFormulas, computed once in App so the sampler's Fill-from-data sees the
+// same columns). Column formulas show as read-only table columns and are plottable; summary
+// formulas show once in the Formulas panel.
+function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasChange, initialView, onViewChange }) {
   // X/Y selection lives here so the sibling DataTable can highlight the chosen
   // columns; the Plot owns dot size + overlay toggles. (Plot keeps X/Y valid.)
   // `initialView` (optional, from an opened session) seeds these; each falls back
@@ -1794,15 +1824,51 @@ function EDAPlot({ rows, headers, onChange, initialView, onViewChange }) {
   // The table is editable whenever the host supplies an onChange (EDA's single
   // dataset slot — both uploaded CSVs and manually-entered data flow back up).
   const editable = !!onChange;
+  const fList = formulas || [];
+  const fResults = (formulaResult && formulaResult.results) || [];
+  const fCols = fResults.filter(r => r.kind === "column");
+  // Plot over data + column formulas. (A formula column's key is its name in EDA.)
+  const plotRows = formulaResult && fCols.length ? formulaResult.rows : rows;
+  const plotHeaders = fCols.length ? [...headers, ...fCols.map(c => c.key)] : headers;
+  // A renamed data column carries its new name into every formula that uses it, and the
+  // X/Y selection follows it. (DataTable reports a rename as a same-length header list with
+  // one entry changed.)
+  const handleChange = (nh, nr) => {
+    if (onFormulasChange && fList.length && nh.length === headers.length) {
+      const diff = nh.map((h, i) => h !== headers[i] ? i : -1).filter(i => i >= 0);
+      if (diff.length === 1 && !nh.includes(headers[diff[0]])) {
+        const oldN = headers[diff[0]], newN = nh[diff[0]];
+        onFormulasChange(fList.map(f => ({ ...f, text: renameInFormula(f.text, oldN, newN, [...headers, ...fList.map(x => x.name)]) })));
+      }
+    }
+    if (nh.length === headers.length) {
+      const i = headers.indexOf(xVar); if (i >= 0 && nh[i] !== xVar) setXVar(nh[i]);
+      const j = headers.indexOf(yVar); if (j >= 0 && nh[j] !== yVar) setYVar(nh[j]);
+    }
+    onChange(nh, nr);
+  };
+  // Renaming a formula that is plotted keeps the plot on it.
+  const handleFormulas = next => {
+    const ren = Object.fromEntries(fList.map(f => { const n = next.find(x => x.id === f.id); return [f.name, n ? n.name : null]; }));
+    if (ren[xVar]) setXVar(ren[xVar]);
+    if (ren[yVar]) setYVar(ren[yVar]);
+    onFormulasChange(next);
+  };
   if (!rows.length && !editable) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data loaded.</div>;
 
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
-      {/* LEFT: data viewer / editor */}
-      <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} editable={editable} onChange={onChange}
-        selectedIds={selectedIds} onToggleSelect={toggleId} scrollTarget={scrollTarget} />
+      {/* LEFT: data viewer / editor, then the formulas that extend it */}
+      <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:420 }}>
+        <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} editable={editable} onChange={handleChange}
+          selectedIds={selectedIds} onToggleSelect={toggleId} scrollTarget={scrollTarget}
+          formulaCols={fCols} computedRows={formulaResult && formulaResult.rows} />
+        {onFormulasChange && (
+          <FormulaPanel formulas={fList} results={fResults} colNames={headers} onChange={handleFormulas} />
+        )}
+      </div>
       {/* RIGHT: shared interactive plot */}
-      <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
+      <Plot rows={plotRows} headers={plotHeaders} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
         selectedIds={selectedIds} onToggleSelect={toggleId}
         initialView={initialView?.plot} onViewChange={setPlotView} />
     </div>
@@ -1814,7 +1880,9 @@ function EDAPlot({ rows, headers, onChange, initialView, onViewChange }) {
 // raw draws of a sampler run. The table is chronological: newest rows append at
 // the BOTTOM and the scroll view auto-follows as draws stream in.
 // ══════════════════════════════════════════════════════════════════════════════
-function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats, initialView, onViewChange }) {
+// `computedCols` (optional): formula columns ({ key, numeric }) among `varNames` — shown
+// italic and number-formatted in the Draws table (their values are computed, not drawn).
+function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats, initialView, onViewChange, computedCols }) {
   // `varNames` are device IDS (the plot/table headers); `nameOf(id)` resolves the
   // display name. `nm` falls back to identity so this still works if no map is passed.
   // `initialView` (optional) seeds the view for Save/Open; xVar here is a column id, so it
@@ -1859,6 +1927,8 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
   }
 
   const cols = ["_sample", ...varNames];
+  const computed = Object.fromEntries((computedCols || []).map(c => [c.key, c]));
+  const cellText = (c, v) => computed[c] && computed[c].numeric && v !== "" && v !== undefined ? fmtFormulaVal(Number(v)) : v;
   const HL = "var(--highlight)"; // selected-row highlight (amber); overrides column tint
   const cellColor = c => c === "_sample" ? "var(--text-faint)" : (c === xVar ? "var(--accent-ink)" : (c === yVar ? "var(--green-ink)" : "var(--text)"));
   const cellBg = (c, sel) => sel ? HL : (c === xVar ? "var(--xsel-cell)" : (c === yVar ? "var(--ysel-cell)" : "transparent"));
@@ -1874,7 +1944,7 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
             <thead>
               <tr>
                 {cols.map(c => (
-                  <th key={c} scope="col" style={{ position:"sticky", top:0, background: c === xVar ? "var(--xsel-head)" : (c === yVar ? "var(--ysel-head)" : "var(--surface-2)"), color: c === "_sample" ? "var(--text-faint)" : "var(--text)", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : nm(c)}</th>
+                  <th key={c} scope="col" style={{ position:"sticky", top:0, background: c === xVar ? "var(--xsel-head)" : (c === yVar ? "var(--ysel-head)" : "var(--surface-2)"), color: c === "_sample" ? "var(--text-faint)" : "var(--text)", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : (computed[c] ? <><span style={{ color:"var(--accent-ink)", marginRight:3 }}>ƒ</span><i>{nm(c)}</i></> : nm(c))}</th>
                 ))}
               </tr>
             </thead>
@@ -1884,7 +1954,7 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
                 return (
                 <tr key={row._id || i} data-rowid={row._id} aria-selected={sel} onClick={() => toggleId(row._id)} style={{ borderBottom:"1px solid var(--border)", cursor:"pointer" }}>
                   {cols.map(c => (
-                    <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c, sel), textAlign: c === "_sample" ? "right" : "left", whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{row[c]}</td>
+                    <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c, sel), textAlign: c === "_sample" || (computed[c] && computed[c].numeric) ? "right" : "left", fontStyle: computed[c] ? "italic" : undefined, whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{cellText(c, row[c])}</td>
                   ))}
                 </tr>
                 );
@@ -1908,7 +1978,10 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
 
 const WIN_ROWS = 500, WIN_COLS = 25; // initial render window; grows as you scroll (RStudio-style)
 
-function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, selectedIds, onToggleSelect, scrollTarget }) {
+// `formulaCols` (optional): column formulas ({ key, name, numeric }) shown read-only after
+// the data columns; their values come from `computedRows` (index-aligned with `rows`). The
+// editing helpers only ever touch `rows`/`headers`, so a formula value is never written back.
+function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, selectedIds, onToggleSelect, scrollTarget, formulaCols = [], computedRows }) {
   // Windowed rendering (no virtualization library): a large CSV would otherwise paint every
   // row × column at once and stall. Render only the first WIN_ROWS × WIN_COLS, appending a
   // page as the user scrolls toward an edge. Edit/select helpers still operate on the full
@@ -2026,7 +2099,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
   const delRow = id => onChange(headers, rows.filter(r => r._id !== id));
 
   return (
-    <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
+    <div style={{ minWidth:200 }}>
       <div style={{ fontSize:12, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
       <div ref={scrollRef} onScroll={onScroll} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:12, width:"100%" }}>
@@ -2049,6 +2122,12 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
                   <button title="Add column" onClick={addCol} style={{ ...btnX, color:"var(--accent-ink)", fontSize:15 }}>＋</button>
                 </th>
               )}
+              {formulaCols.map(fc => (
+                <th key={"f:" + fc.key} scope="col" title="Formula column (computed, read-only)"
+                  style={{ position:"sticky", top:0, background:headBg(fc.key), color:"var(--text)", fontWeight:700, fontStyle:"italic", padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
+                  <span style={{ color:"var(--accent-ink)", fontStyle:"normal", marginRight:3 }}>ƒ</span>{fc.name}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -2081,6 +2160,14 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
                   </td>
                 ))}
                 {editable && <td style={{ background: sel ? HL : undefined }} />}
+                {formulaCols.map(fc => {
+                  const v = computedRows && computedRows[i] ? computedRows[i][fc.key] : "";
+                  return (
+                    <td key={"f:" + fc.key} style={{ padding:"3px 8px", color:"var(--text-3)", fontStyle:"italic", background:cellBg(fc.key, sel), whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", textAlign: fc.numeric ? "right" : "left" }}>
+                      {fc.numeric && v !== "" ? fmtFormulaVal(Number(v)) : v}
+                    </td>
+                  );
+                })}
               </tr>
               );
             })}
@@ -2751,4 +2838,4 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
 }
 
 
-export { Plot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };
+export { Plot, SampleResults, DerivedBuilder, DistributionPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };

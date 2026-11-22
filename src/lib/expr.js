@@ -6,15 +6,20 @@
 //   { k:"num", v:Number }      numeric constant
 //   { k:"col", id:String }     reference to a collected-statistic column
 //   { k:"op",  v:"+|-|*|/|^" } binary operator (also unary "-")
-//   { k:"fn",  v:"sqrt|abs" }  function (followed by a parenthesised group)
+//   { k:"fn",  v:"sqrt|abs|round|log|exp" }  function (followed by a parenthesised group)
 //   { k:"lp" } / { k:"rp" }    parentheses
+//   { k:"comma" }              argument separator (only round(x, places) takes two)
 //
 // Grammar (precedence low→high):
 //   expr   := term (('+'|'-') term)*
 //   term   := factor (('*'|'/') factor)*
 //   factor := '-' factor | power
 //   power  := atom ('^' factor)?            // right-associative
-//   atom   := num | col | fn '(' expr ')' | '(' expr ')'
+//   atom   := num | col | fn '(' expr (',' expr)? ')' | '(' expr ')'
+//
+// Numeric only, and per collected row: every function works on one value (no mean/sd —
+// those would summarize the column; the Collect plot shows them). round/log/exp follow
+// lib/formula.js exactly (round halves up, 0 places by default; log is natural).
 //
 // A missing operand (column absent in a row → undefined/NaN) propagates NaN through
 // the arithmetic, so a partial sample yields NaN rather than a silently-coerced 0.
@@ -50,15 +55,17 @@ function parse(tokens, valueOf) {
   }
   function parseAtom() {
     const t = peek();
-    if (!t || t.k === "op" || t.k === "rp") { ok = false; return NaN; }
+    if (!t || t.k === "op" || t.k === "rp" || t.k === "comma") { ok = false; return NaN; }
     if (t.k === "num") { i++; return t.v; }
     if (t.k === "col") { i++; const r = valueOf(t.id); return r === undefined || r === "" ? NaN : Number(r); }
     if (t.k === "fn") {
       i++;
       if (!peek() || peek().k !== "lp") { ok = false; return NaN; }
-      i++; const v = parseExpr();
+      i++; const args = [parseExpr()];
+      while (peek() && peek().k === "comma") { i++; args.push(parseExpr()); }
       if (peek() && peek().k === "rp") i++; else ok = false;
-      return t.v === "sqrt" ? Math.sqrt(v) : Math.abs(v);
+      if (args.length > (FN_MAX_ARGS[t.v] || 1)) ok = false;
+      return applyFn(t.v, args);
     }
     if (t.k === "lp") {
       i++; const v = parseExpr();
@@ -71,6 +78,21 @@ function parse(tokens, valueOf) {
   const value = parseExpr();
   if (i !== tokens.length) ok = false; // trailing tokens (e.g. "A B") are invalid
   return { value, ok };
+}
+
+const FN_MAX_ARGS = { round: 2 };
+const EXPR_FNS = ["sqrt", "abs", "round", "log", "exp"];
+const FN_ALIAS = { ln: "log" };
+function applyFn(f, [x, d]) {
+  if (f === "sqrt") return Math.sqrt(x);
+  if (f === "abs") return Math.abs(x);
+  if (f === "log") return Math.log(x);
+  if (f === "exp") return Math.exp(x);
+  if (f === "round") {
+    const p = Math.pow(10, Math.round(d === undefined ? 0 : d));
+    return Math.round(x * p) / p;
+  }
+  return NaN;
 }
 
 // Lex a *typed* expression string into the same token array the click-to-insert path
@@ -95,11 +117,13 @@ function lexExpr(text, aliasToId) {
     if ("+-*/^".includes(c)) { tokens.push({ k:"op", v:c }); i++; continue; }
     if (c === "(") { tokens.push({ k:"lp" }); i++; continue; }
     if (c === ")") { tokens.push({ k:"rp" }); i++; continue; }
+    if (c === ",") { tokens.push({ k:"comma" }); i++; continue; }
     if (/[A-Za-z]/.test(c)) {
       let j = i + 1;
       while (j < s.length && /[A-Za-z0-9]/.test(s[j])) j++;
       const word = s.slice(i, j), lw = word.toLowerCase();
-      if (lw === "sqrt" || lw === "abs") tokens.push({ k:"fn", v:lw });
+      const fn = FN_ALIAS[lw] || lw;
+      if (EXPR_FNS.includes(fn)) tokens.push({ k:"fn", v:fn });
       else if (aliasToId[word.toUpperCase()]) tokens.push({ k:"col", id:aliasToId[word.toUpperCase()] });
       else ok = false;
       i = j; continue;
@@ -144,6 +168,7 @@ function renderExpr(tokens, labelOf) {
     if (t.k === "fn") return t.v;
     if (t.k === "lp") return "(";
     if (t.k === "rp") return ")";
+    if (t.k === "comma") return ", ";
     return "";
   }).join("");
 }

@@ -62,8 +62,8 @@ dependency-light and self-contained (no chart lib, no state lib).
   - `plots.jsx` — `Plot` (the unified controls+body primitive), `EDAPlot`,
     `SampleResults`, `DistributionPlot`, `DataTable`/`CollectTable`, `CatCatGrid`,
     `SplitDotPlots`, `UniCatPlot`, the measurement overlays `DividerLines` / `RulerOverlay`
-    / `ResidualOverlay` / `MeasureConnector`, plus the manual authoring UIs `StatDefiner`
-    and `DerivedBuilder`.
+    / `ResidualOverlay` / `MeasureConnector`, plus the derived-statistic builder
+    `DerivedBuilder`.
   - `devices.jsx` — `StageCard` (wraps a stage; renders forked branch sub-cards +
     `BranchConditionEditor`), `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
   - `code.jsx` — Task E UI: `CodeControls` (page-header off/R/Python + color-blind toggle),
@@ -195,11 +195,24 @@ domain and `SplitDotPlots` must keep using the same ordering.
   *per-run* (`doSample`→`runAnimatedSample`, appends one row on every draw) and *batch*
   (`doCollectTracked`→`drawSample`, "Collect N", default 500). Both compute every tracked
   column via `computeStatRow`.
-- **Derived columns.** `DerivedBuilder` lets students assemble a new column from collected
-  ones (e.g. `(A − B)` difference of means) via `lib/expr.js`; it backfills existing rows.
-- **Manual authoring (kept).** `StatDefiner` lives behind a "Define a statistic manually"
-  toggle and feeds the same tracked-stat table — the only way to author Q1/Q3/min/max,
-  which aren't click-trackable. Its **＋ Add to table** calls the shared `addTrackedStat`.
+- **Derived columns.** `DerivedBuilder` (the "Formulas" area under the Collect table: like the
+  EDA/Sample Results panels, every derived column stays listed as an editable `name = formula`
+  row (`DerivedRow`), and **＋ formula** adds a draft row whose pre-assigned id becomes the
+  column's id on its first valid commit, so the row keeps focus/caret. A row commits on Enter /
+  blur / menu insert (`updateDerivedStat` refills every collected row; an invalid edit keeps the
+  last valid formula); the text re-renders from tokens with the current letters (`tokensToText`).
+  It shares `FormulaMenu` with `DERIVED_FN_GROUPS`. A derived formula runs **per collected row**,
+  so it is always a column (the row shows "→ new column", never a single-sample value) and is
+  **strictly numeric**: `abs sqrt round(x[, places]) log exp` + arithmetic, no summaries
+  (`mean`/`sd`/… — a column summary belongs on the Collect plot) and no `if`/`join`/text, which
+  get a specific error. `round`/`log`/`exp` mirror `lib/formula.js` exactly; codegen emits the
+  same R names / `np.*`.) lets students assemble a new
+  column from collected ones (e.g. `(A − B)` difference of means) via `lib/expr.js`; it
+  backfills existing rows.
+- **No manual stat form.** The old `StatDefiner` ("Define a statistic manually") was removed:
+  a tracked **summary formula** in Sample Results (`q1(x)`, `sum(x = "H") / count(x)`, …)
+  covers everything it offered except LS slope/intercept, which are click-trackable on the
+  scatter's LS line.
 - **Invalidation guards.** Sample-size change clears the accumulated rows but keeps the
   columns; a distribution-structure device change clears rows and drops columns whose vars
   vanished; pure relabels propagate seamlessly (`propagateRenames`). See Resolved

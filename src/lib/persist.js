@@ -71,6 +71,8 @@ export function buildSaveFile(state) {
     results: {
       sampleData: asArr(s.sampleData),
       currentSample: s.currentSample || null,
+      // Formulas over the sampler's columns (stage ids stay out — they reference by name).
+      formulas: coerceFormulas(s.sampleFormulas),
     },
     collect: {
       trackedStats: asArr(s.trackedStats),
@@ -160,6 +162,7 @@ export function coerceSession(raw) {
 
     sampleData: asArr(results.sampleData).filter(isObj),
     currentSample: coerceCurrentSample(results.currentSample),
+    sampleFormulas: coerceFormulas(results.formulas),
 
     trackedStats: asArr(collect.trackedStats).filter(isTrackedStat),
     collectRows: asArr(collect.rows).filter(r => isObj(r) && "_id" in r),
@@ -177,7 +180,18 @@ export function coerceSession(raw) {
 
 function coerceDataset(d) {
   if (!isObj(d) || !Array.isArray(d.headers) || !Array.isArray(d.rows)) return null;
-  return { name: typeof d.name === "string" ? d.name : "data.csv", headers: d.headers, rows: d.rows };
+  const out = { name: typeof d.name === "string" ? d.name : "data.csv", headers: d.headers, rows: d.rows };
+  const fs = coerceFormulas(d.formulas);
+  if (fs.length) out.formulas = fs;
+  return out;
+}
+
+// Formulas [{id,name,text}] (lib/formula.js) — the text is the source of truth; shape is
+// re-derived by the engine on load, so nothing else is stored.
+export function coerceFormulas(fs) {
+  if (!Array.isArray(fs)) return [];
+  return fs.filter(f => isObj(f) && typeof f.id === "string" && typeof f.name === "string" && typeof f.text === "string")
+    .map(f => ({ id: f.id, name: f.name, text: f.text }));
 }
 
 function coerceCurrentSample(cs) {
