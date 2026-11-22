@@ -6,7 +6,7 @@ import { numericSummary, kdeCurve, lsFit, ladFit, statLabel, statKey, computeSta
 import { validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand, clipLine } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand, clipLine, makeBins, MAX_BINS } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 import { FormulaPanel, FormulaMenu, DERIVED_FN_GROUPS } from "./formulas";
 import { renameInFormula, fmtFormulaVal } from "../lib/formula";
@@ -771,7 +771,18 @@ export function CopyImageButton({ targetRef, options, label = "⧉ Copy image", 
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
+// Drop one key from an object (immutable).
+const dropKey = (o, k) => { const n = { ...o }; delete n[k]; return n; };
+// A category axis's levels in display order: a binned variable's intervals (every one, empty
+// ones filled to 0 in `counts` so they still draw), else the observed categories, sorted.
+const levelsOf = (levels, v, counts) => {
+  const L = levels && levels[v];
+  if (!L) return sortCats(Object.keys(counts));
+  L.forEach(c => { if (!(c in counts)) counts[c] = 0; });
+  return L;
+};
+
+function Plot({ rows: rowsIn, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
   // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
   // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
   // there and every label renders unchanged.
@@ -797,7 +808,11 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // indicators, a handful of years). View-only: it changes the plot mode, never the data or
   // the device-derived kinds App uses to validate tracked stats. An array so it's JSON-safe.
   const [asCat, setAsCat] = useState(() => iv?.asCat ?? []);
-  const toggleAsCat = h => setAsCat(a => (a.includes(h) ? a.filter(x => x !== h) : [...a, h]));
+  const toggleAsCat = h => { setAsCat(a => (a.includes(h) ? a.filter(x => x !== h) : [...a, h])); setBins(b => dropKey(b, h)); };
+  // Headers binned into equal-width intervals { [h]: { n } | { w } }: a numeric variable
+  // grouped as interval categories ("0–29", "30–59", …). View-only like `asCat`.
+  const [bins, setBins] = useState(() => iv?.bins ?? {});
+  const toggleBins = h => { setBins(b => (b[h] ? dropKey(b, h) : { ...b, [h]: { n: 4 } })); setAsCat(a => a.filter(x => x !== h)); };
   // Divider measurement tool (Phase 6): off by default; opt-in per plot. The on-plot
   // count / proportion read-outs are themselves off until toggled (like the categorical
   // # Count / % Percent labels).
@@ -854,7 +869,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     const t = setTimeout(() => setSweepSt(m => m && { ...m, count: m.count + 1 }), sweepSt.dt);
     return () => clearTimeout(t);
   }, [sweepSt]);
-  useEffect(() => { setSweepSt(null); }, [rows]);
+  useEffect(() => { setSweepSt(null); }, [rowsIn]);
   useEffect(() => { if (!rulerOn) setSweepSt(null); }, [rulerOn]);
 
   // Report the raw view state up so a host can persist it (Save/Open). Mirrors the proven
@@ -866,9 +881,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     if (!onViewChange) return;
     onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
       expandCats, divOn, divMode, divCuts, divShowCount, divShowPct,
-      divDir, divBy, divPct, divBand, rulerOn, asCat, refOn, refLine, measFn, measOf, measOpt });
+      divDir, divBy, divPct, divBand, rulerOn, asCat, bins, refOn, refLine, measFn, measOf, measOpt });
   }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
-      expandCats, asCat.join("\u0001"), divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
+      expandCats, asCat.join("\u0001"), JSON.stringify(bins), divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
       divDir, divBy, divPct, divBand, rulerOn, refOn, refLine, measFn, measOf, measOpt]);
 
   const plotRef = useRef(null);
@@ -884,15 +899,43 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // top (plain numeric only — a time column keeps its time axis).
   const detected = useMemo(() => {
     const map = {};
-    headers.forEach(h => { map[h] = (varKinds && varKinds[h]) || colKind(rows, h); });
+    headers.forEach(h => { map[h] = (varKinds && varKinds[h]) || colKind(rowsIn, h); });
     return map;
-  }, [rows, headers, varKinds]);
+  }, [rowsIn, headers, varKinds]);
   const canAsCat = h => !!(detected[h] && detected[h].numeric && !detected[h].time);
+  // Binned headers: each value becomes its interval's label (rows keep their _id, so
+  // selection still links to the table); `binLevels` lists every interval in order, empty
+  // ones included, for the category plots. Everything below reads the binned `rows`.
+  const binKey = JSON.stringify(bins);
+  const binned = useMemo(() => {
+    const out = {};
+    Object.keys(bins).forEach(h => {
+      if (!canAsCat(h) || !headers.includes(h)) return;
+      const b = makeBins(rowsIn.map(r => toNum(r[h])), bins[h]);
+      if (b) out[h] = b;
+    });
+    return out;
+  }, [rowsIn, detected, binKey, headers.join("\u0001")]);
+  const rows = useMemo(() => {
+    const hs = Object.keys(binned);
+    if (!hs.length) return rowsIn;
+    return rowsIn.map(r => {
+      const o = { ...r };
+      hs.forEach(h => { const v = toNum(r[h]); o[h] = Number.isFinite(v) ? binned[h].labels[binned[h].index(v)] : ""; });
+      return o;
+    });
+  }, [rowsIn, binned]);
+  const binLevels = useMemo(() => {
+    const L = {};
+    Object.keys(binned).forEach(h => { L[h] = binned[h].labels; });
+    return L;
+  }, [binned]);
   const colInfo = useMemo(() => {
     const map = { ...detected };
     asCat.forEach(h => { if (canAsCat(h)) map[h] = { numeric:false, time:false }; });
+    Object.keys(binned).forEach(h => { map[h] = { numeric:false, time:false }; });
     return map;
-  }, [detected, asCat.join("\u0001")]);
+  }, [detected, asCat.join("\u0001"), binned]);
 
   // Keep X/Y valid as the available columns change (callbacks into the parent's state)
   useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
@@ -979,7 +1022,10 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // ── Show values ──
   // Numeric overlay values appear automatically whenever any stat overlay is on (and are
   // always on in the click-to-track Sample Results context). There is no separate toggle.
-  const trackable = !!onTrackStat;
+  // A binned variable is a view of the data that App can't recompute per sample, so stats
+  // aren't collectable while one is on an axis.
+  const binnedInView = !!(binned[xVar] || (yVar !== "none" && binned[yVar]));
+  const trackable = !!onTrackStat && !binnedInView;
   const showVals = trackable || showMean || showSD || showBox || showLS;
   // Univariate numeric overlays hug the axis: the mean triangle's tip sits on the
   // x-axis, the ±SD bar is directly beneath it (adjacent to the mean), and the
@@ -1046,8 +1092,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     const mn = Math.min(...nums), mx = Math.max(...nums), range = (mx - mn) || 1, pad = range * 0.05;
     const catCount = {};
     rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
-    const allCats = sortCats(Object.keys(catCount));
-    const cats = collapseCats(allCats, catCount, expandCats).shown;
+    const allCats = levelsOf(binLevels, catVar, catCount);
+    const cats = collapseCats(allCats, catCount, expandCats || !!binLevels[catVar]).shown;
     const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
     const groupOf = v => catSet.has(v) ? v : OTHER_CAT;
     const groups = cats.map(cat => ({ label: cat,
@@ -1461,14 +1507,37 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     );
   };
 
+  // "Bins": group a numeric variable into equal-width intervals. While on, a bin-count and a
+  // bin-width box (linked: typing one sets the other) sit beside it.
+  const binChip = h => {
+    if (!canAsCat(h)) return null;
+    const b = binned[h], on = !!bins[h];
+    return (<>
+      <button onClick={() => toggleBins(h)} aria-pressed={on}
+        title={on ? `Grouping ${nm(h)} into intervals — click to plot it as numbers` : `Group ${nm(h)} into equal-width intervals`}
+        style={{ padding:"2px 7px", marginLeft:-4, border:"1px solid var(--border-2)", borderRadius:6,
+          background: on ? "#6366f1" : "var(--surface)", color: on ? "#fff" : "var(--text-2)",
+          fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>Bins</button>
+      {on && b && (
+        <span style={{ display:"inline-flex", gap:4, alignItems:"center", fontSize:12, color:"var(--text-2)" }}>
+          <NumInput min={2} max={MAX_BINS} step={1} value={b.k} aria-label={`Number of bins for ${nm(h)}`}
+            onChange={v => v >= 2 && setBins(s => ({ ...s, [h]: { n: Math.min(MAX_BINS, Math.round(v)) } }))} style={{ ...iSm, width:44 }} />
+          bins, width
+          <NumInput min={0} step="any" value={b.w} aria-label={`Bin width for ${nm(h)}`}
+            onChange={v => v > 0 && setBins(s => ({ ...s, [h]: { w: v } }))} style={{ ...iSm, width:60 }} />
+        </span>
+      )}
+    </>);
+  };
+
   return (
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
       <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
         <Sel label="X" value={xVar} onChange={setXVar} options={headers} labels={headers.map(nm)} />
-        {asCatChip(xVar)}
+        {asCatChip(xVar)}{binChip(xVar)}
         <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar).map(nm)]} />
-        {yVar !== "none" && asCatChip(yVar)}
+        {yVar !== "none" && asCatChip(yVar)}{yVar !== "none" && binChip(yVar)}
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
@@ -1651,7 +1720,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       {(() => {
         // MODE 1: both categorical → grid of cells with stacked dots + count/%
         if (bivariate && !xNumeric && !yNumeric) {
-          return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} nameOf={nameOf} R={R} width={W}
+          return <CatCatGrid rows={rows} levels={binLevels} xVar={xVar} yVar={yVar} nameOf={nameOf} R={R} width={W}
             showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand}
             {...trackProps} {...selProps} measure={measure} />;
         }
@@ -1662,14 +1731,14 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
           const catVar = xNumeric ? yVar : xVar;
           const numVar = xNumeric ? xVar : yVar;
           const numTime = xNumeric ? xTime : yTime;
-          return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} nameOf={nameOf} R={R} width={W} isTime={numTime}
+          return <SplitDotPlots rows={rows} levels={binLevels} catVar={catVar} numVar={numVar} nameOf={nameOf} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
             showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals} showDensity={showDensity}
             expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps} {...divProps} {...rulerProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
-          return <UniCatPlot rows={rows} catVar={xVar} nameOf={nameOf} R={R} width={W}
+          return <UniCatPlot rows={rows} levels={binLevels} catVar={xVar} nameOf={nameOf} R={R} width={W}
             showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps}
             measure={measure} />;
         }
@@ -2620,7 +2689,7 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
 // UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
 // (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
 // ══════════════════════════════════════════════════════════════════════════════
-function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure, selectedIds, onToggleSelect }) {
+function UniCatPlot({ rows, levels, catVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
   const selectable = !!onToggleSelect;
@@ -2632,9 +2701,9 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) { (rowsByCat[v] = rowsByCat[v] || []).push(r); } });
   const counts = {};
   Object.keys(rowsByCat).forEach(c => { counts[c] = rowsByCat[c].length; });
-  const allCats = sortCats(Object.keys(counts));
+  const allCats = levelsOf(levels, catVar, counts);
   const total = allCats.reduce((a, c) => a + counts[c], 0);
-  const { shown } = collapseCats(allCats, counts, expanded);
+  const { shown } = collapseCats(allCats, counts, expanded || !!(levels && levels[catVar]));
   const namedSet = new Set(shown.filter(c => c !== OTHER_CAT));
   // Rows for a shown cell: named category → its bucket; the "Other" cell collects
   // every row whose category fell outside the shown named set.
@@ -2718,7 +2787,7 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
 
-function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure, selectedIds, onToggleSelect }) {
+function CatCatGrid({ rows, levels, xVar, yVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
   const selectable = !!onToggleSelect;
@@ -2731,8 +2800,8 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
     if (xc !== "" && xc !== undefined) xCount[xc] = (xCount[xc] || 0) + 1;
     if (yc !== "" && yc !== undefined) yCount[yc] = (yCount[yc] || 0) + 1;
   });
-  const allX = sortCats(Object.keys(xCount)), allY = sortCats(Object.keys(yCount));
-  const X = collapseCats(allX, xCount, expanded), Y = collapseCats(allY, yCount, expanded);
+  const allX = levelsOf(levels, xVar, xCount), allY = levelsOf(levels, yVar, yCount);
+  const X = collapseCats(allX, xCount, expanded || !!(levels && levels[xVar])), Y = collapseCats(allY, yCount, expanded || !!(levels && levels[yVar]));
   const xCats = X.shown, yCats = Y.shown;
   const xSet = new Set(xCats.filter(c => c !== OTHER_CAT));
   const ySet = new Set(yCats.filter(c => c !== OTHER_CAT));
@@ -2851,7 +2920,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, divMulti, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
+function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, divMulti, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const selectable = !!onToggleSelect;
   const isSel = id => !!(selectedIds && selectedIds.has(id));
@@ -2862,8 +2931,8 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
   // Collapse high-cardinality grouping variable into top 10 + "Other"
   const catCount = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
-  const allCats = sortCats(Object.keys(catCount));
-  const { shown: cats, isCollapsed } = collapseCats(allCats, catCount, expanded);
+  const allCats = levelsOf(levels, catVar, catCount);
+  const { shown: cats, isCollapsed } = collapseCats(allCats, catCount, expanded || !!(levels && levels[catVar]));
   const catSet = new Set(cats.filter(c => c !== OTHER_CAT));
   const groupOf = v => catSet.has(v) ? v : OTHER_CAT;
 

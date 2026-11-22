@@ -147,3 +147,50 @@ export function clipLine(m, b, xlo, xhi, ylo, yhi) {
   }
   return [{ x: a, y: m * a + b }, { x: c, y: m * c + b }];
 }
+
+// ── Numeric binning (a numeric variable as interval categories) ──────────────────
+// Equal-width bins with "nice" edges, left-closed / right-open except the last, which also
+// holds its upper edge when the max lands on it ({ n } only: a typed width keeps every bin
+// that wide, so a max on an edge opens one more bin). `spec` is { n } or { w } (a bin width).
+// For { n } the width is (range / n) rounded UP to a nice step (25, 30, 40, 0.2, …),
+// whole for integer data, and the start is the largest multiple of the width ≤ min; if that
+// shift leaves the max uncovered the width steps up. Returns { start, w, k, labels, index }
+// (index(v) → bin 0..k-1), or null with no finite values. Integer data with whole edges
+// gets "0–29" labels (an integer range); otherwise "1.5 to <3" ("a to b" for a closed last bin).
+export const MAX_BINS = 10, MAX_WIDTH_BINS = 30;
+export function makeBins(values, spec) {
+  const xs = values.filter(Number.isFinite);
+  if (!xs.length) return null;
+  let mn = Infinity, mx = -Infinity;
+  for (const v of xs) { if (v < mn) mn = v; if (v > mx) mx = v; }
+  const intData = xs.every(Number.isInteger), eps = 1e-9;
+  // Round a width UP to the next "nice" step: 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 (× a power of 10).
+  const NICE = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+  const ceil1 = x => { const mag = 10 ** Math.floor(Math.log10(x)), r = x / mag; return NICE.find(s => s >= r - eps) * mag; };
+  const fix = x => parseFloat(x.toPrecision(12));
+  const startOf = w => fix(Math.floor(mn / w + eps) * w);
+  let w, start, k;
+  if (spec && spec.w > 0) {
+    w = spec.w;
+    if ((mx - startOf(w)) / w > MAX_WIDTH_BINS) w = ceil1((mx - mn) / MAX_WIDTH_BINS || 1);
+    start = startOf(w);
+    k = Math.floor((mx - start) / w + eps) + 1; // every bin half-open: a max on an edge opens a bin
+  } else {
+    const n = Math.max(2, Math.min(MAX_BINS, Math.round((spec && spec.n) || 4)));
+    w = mx > mn ? ceil1((mx - mn) / n) : 1;
+    if (intData) w = Math.max(1, Math.ceil(w));
+    start = startOf(w);
+    while (start + n * w < mx - eps) { w = fix(ceil1(w * (1 + 1e-6))); start = startOf(w); }
+    k = Math.max(1, Math.ceil((mx - start) / w - eps));
+  }
+  w = fix(w);
+  const f = x => String(fix(x));
+  const whole = intData && Number.isInteger(w) && Number.isInteger(start);
+  const labels = Array.from({ length: k }, (_, j) => {
+    const a = fix(start + j * w), b = fix(start + (j + 1) * w), last = j === k - 1;
+    if (whole) { const hi = last && mx >= b - eps ? b : b - 1; return hi === a ? String(a) : a + (a < 0 || hi < 0 ? " to " : "–") + hi; }
+    return f(a) + (last && mx >= b - eps ? " to " : " to <") + f(b);
+  });
+  const index = v => Math.min(k - 1, Math.max(0, Math.floor((v - start) / w + eps)));
+  return { start, w, k, labels, index };
+}

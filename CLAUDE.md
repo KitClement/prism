@@ -55,7 +55,8 @@ dependency-light and self-contained (no chart lib, no state lib).
     `computeStatRow` (two-pass: plain stats then derived), `colLabel`/`exprLabel`,
     `aliasFor`.
   - `measure.js` — measurement-tool math: `clampVal`, `snapValue`/`snapMeasure` (snap a
-    handle to dots/visible measures), `regions` (divider proportions).
+    handle to dots/visible measures), `regions` (divider proportions), `makeBins` (numeric
+    binning into nice equal-width intervals).
   - `styles.js` — shared style consts (`iSm`, `btnX`, `Sel`, …) plus the code-panel palette
     `CODE_SECTIONS` / `sectionColor` / `SHAPE_PATH` (Task E); `hooks.js` — `useContainerWidth`.
 - **`src/components/`**
@@ -184,6 +185,20 @@ App's device-derived kinds (and so tracked-stat invalidation) are untouched; cli
 `lit()` prints numeric labels as bare numbers. Category axes order via `util.js` `sortCats`
 (numeric when every label is a number — 1, 2, …, 10 — else lexical); the divider's num×cat
 domain and `SplitDotPlots` must keep using the same ordering.
+
+**Bins (numeric as interval categories).** Beside the chip, **Bins** groups a numeric variable
+into equal-width intervals (`bins`, `{[h]: {n}|{w}}` in Plot's view state, saved with views;
+mutually exclusive with `asCat`). A linked bin-count / bin-width pair of boxes drives
+`measure.js` `makeBins`: `{n}` rounds range/n up to a nice width (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 ×
+10^k, whole for integer data), starts at a multiple of it, and yields **exactly n** bins (the last
+holds its upper edge if the max lands there); `{w}` keeps every bin that wide (a max on an edge
+opens one more bin; capped at 30 bins). Bins are left-closed / right-open; integer data with whole
+edges labels `0–29`, else `1.5 to <3`. `Plot` maps the binned header's values to labels in a
+derived `rows` (the prop is `rowsIn`; `_id`s kept so selection links), marks it categorical in
+`colInfo`, and passes `levels` (`binLevels`) to `UniCatPlot` / `CatCatGrid` / `SplitDotPlots` and the
+num×cat divider, whose shared `levelsOf` keeps interval order, **draws empty bins**, and skips the
+top-10 "Other" collapse. View-only: while a binned variable is on an axis, click-to-track is off
+(`binnedInView`), since App can't recompute a binned spec per sample; no generated code.
 
 ### Sample Results & Collect Statistics (the overhaul)
 - **Click-to-track.** Only a statistic whose number is currently on the plot is
