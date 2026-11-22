@@ -878,6 +878,9 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   // Stat overlay toggles
   const [showBox, setShowBox] = useState(() => iv?.showBox ?? false);
   const [showMean, setShowMean] = useState(() => iv?.showMean ?? false);
+  // num×cat only: one dashed line across every group at the mean of all the values, so the
+  // group means can be compared against it (its value is click-to-track as the plain mean).
+  const [showOverall, setShowOverall] = useState(() => iv?.showOverall ?? false);
   const [showSD, setShowSD] = useState(() => iv?.showSD ?? false);
   const [showLS, setShowLS] = useState(() => iv?.showLS ?? false);
   const [showDensity, setShowDensity] = useState(() => iv?.showDensity ?? false);
@@ -974,10 +977,10 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   // and would throw "Rendered more hooks" the day a host stops guarding for empty rows.
   useEffect(() => {
     if (!onViewChange) return;
-    onViewChange({ dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
+    onViewChange({ dotSize, showBox, showMean, showOverall, showSD, showLS, showDensity, showCount, showPct,
       expandCats, divOn, divMode, divCuts, divShowCount, divShowPct,
       divDir, divBy, divPct, divBand, rulerOn, asCat, bins, refOn, refLine, measFn, measOf, measOpt, mmOn, mmWin, mmTrace });
-  }, [onViewChange, dotSize, showBox, showMean, showSD, showLS, showDensity, showCount, showPct,
+  }, [onViewChange, dotSize, showBox, showMean, showOverall, showSD, showLS, showDensity, showCount, showPct,
       expandCats, asCat.join("\u0001"), JSON.stringify(bins), divOn, divMode, divCuts.join(","), divShowCount, divShowPct,
       divDir, divBy, divPct, divBand, rulerOn, refOn, refLine, measFn, measOf, measOpt, mmOn, mmWin, mmTrace]);
 
@@ -1751,6 +1754,7 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
           <>
             <ChkLabel checked={showBox} onChange={setShowBox} label="Boxplot" />
             <ChkLabel checked={showMean} onChange={setShowMean} label="△ Mean" />
+            {bivariate && <ChkLabel checked={showOverall} onChange={setShowOverall} label="┆ Overall mean" />}
             <ChkLabel checked={showSD} onChange={setShowSD} label="↔ ±1 SD" />
             {((xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric))) && <ChkLabel checked={showDensity} onChange={setShowDensity} label="∿ Density" />}
           </>
@@ -1950,7 +1954,7 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
           const numTime = xNumeric ? xTime : yTime;
           return <SplitDotPlots rows={rows} levels={binLevels} catVar={catVar} numVar={numVar} nameOf={nameOf} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
-            showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals} showDensity={showDensity}
+            showBox={showBox} showMean={showMean} showOverall={showOverall} showSD={showSD} showValues={showVals} showDensity={showDensity}
             expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...selProps} {...divProps} {...rulerProps} />;
         }
         // MODE 2b: Y only (X = none), numeric → one vertical dot plot (the split plot's
@@ -3187,7 +3191,7 @@ function CatCatGrid({ rows, levels, xVar, yVar, nameOf, R, width, showCount = tr
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, divMulti, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
+function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showOverall, showSD, showValues, showDensity, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, divMulti, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff, selectedIds, onToggleSelect }) {
   const nm = nameOf || (h => h);
   const selectable = !!onToggleSelect;
   const isSel = id => !!(selectedIds && selectedIds.has(id));
@@ -3214,6 +3218,10 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
   const mn = Math.min(...allNums), mx = Math.max(...allNums);
   const range = mx - mn || 1, pad = range * 0.05, lo = mn - pad, hi = mx + pad;
   const fmt = isTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
+  // Overall mean (every value, all groups pooled) — a plain univariate mean spec when tracked.
+  const overallOn = showOverall && !single;
+  const overall = allNums.reduce((a, b) => a + b, 0) / allNums.length;
+  const overallSpec = trackable ? { fn:"mean", variable:numVar } : null;
 
   const W = width || 520;
   const dotR = Math.max(3, Math.min(R, 6));
@@ -3330,6 +3338,12 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
               </g>
             );
           })}
+          {overallOn && (
+            <g>
+              <line x1={PL} y1={sy(overall)} x2={W - PR} y2={sy(overall)} stroke="var(--text-2)" strokeWidth={1.5} strokeDasharray="6 4" style={{ pointerEvents:"none" }} />
+              <TrackText x={W - PR - 2} y={sy(overall) - 5} anchor="end" color="var(--text-2)" fontSize={12} label={"overall mean = " + fmt(overall)} spec={overallSpec} {...tp} />
+            </g>
+          )}
           <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
           {!single && <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600}>{nm(catVar)}</text>}
           <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={13} fill="var(--text-2)" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
@@ -3344,7 +3358,7 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
   }
 
   // ── Horizontal orientation (default): numeric on X, groups stacked vertically ──
-  const PL = 90, PR = 20, PT = 10, PB = 44;
+  const PL = 90, PR = 20, PT = overallOn ? 26 : 10, PB = 44;  // room above the bands for the overall-mean label
   const iW = W - PL - PR;
   const GROUP_H = 116;
   const H = PT + cats.length * GROUP_H + PB;
@@ -3486,6 +3500,14 @@ function SplitDotPlots({ rows, levels, catVar, numVar, nameOf, R, width, isTime,
           { value: c, cut: k, spec: null,
             label: divMulti ? "cut " + (k + 1) : divCuts.length > 1 ? (k === 0 ? "low cut" : "high cut") : "cut", y: null })), null) : null}
 
+        {/* overall mean — one dashed line through every group band */}
+        {overallOn && rulerOn && rulerCands.push({ value: overall, spec: { fn:"mean", variable:numVar }, label: "overall mean", y: null }) && null}
+        {overallOn && (
+          <g>
+            <line x1={sx(overall)} y1={PT} x2={sx(overall)} y2={H - PB} stroke="var(--text-2)" strokeWidth={1.5} strokeDasharray="6 4" style={{ pointerEvents:"none" }} />
+            <TrackText x={sx(overall)} y={PT - 6} anchor={sx(overall) > PL + iW * 0.8 ? "end" : sx(overall) < PL + iW * 0.2 ? "start" : "middle"} color="var(--text-2)" fontSize={12} label={"overall mean = " + fmt(overall)} spec={overallSpec} {...tp} />
+          </g>
+        )}
         {/* x axis */}
         <line x1={PL} y1={H - PB} x2={W - PR} y2={H - PB} stroke="var(--axis)" strokeWidth={1.5} />
         {ticks.map((t, i) => (

@@ -222,6 +222,13 @@ formula); combining on a combined column edits it in place (picked group labels 
 and **Separate** removes a group (the last one deletes the column, back to the source). `combineOps`
 holds the logic for both hosts (Sample Results keys `"ƒ:"+id`, EDA keys names); the Collect plot has none.
 
+**Overall mean (num×cat).** An **Overall mean** toggle (beside △ Mean, num×cat only — not the Y-only
+plot) draws one dashed line through every group at the pooled mean of the numeric variable, labelled
+`overall mean = …` (above the bands in the horizontal layout, so `PT` grows; at the line's right end in
+the vertical one). The label is click-to-track as the plain spec `{fn:"mean", variable}`, and the line
+is a ruler snap target. `showOverall` persists with the view. Deliberately **no** built-in
+"spread of group means" statistic: students build it from tracked group means + formulas themselves.
+
 **Second linked EDA plot.** `EDAPlot`'s **＋ Add plot** mounts a second `Plot` (its own X/Y/toggles,
 state `second = {xVar, yVar, plot}`, saved in the EDA view blob, null when removed) sharing the same
 `selectedIds`/`toggleId`, so a click in either plot or a table row highlights the case everywhere.
