@@ -9,7 +9,7 @@ import { makeScale, stackDots } from "../lib/scale";
 import { clampVal, snapValue, snapMeasure, regions, binRegions, evenCuts, conservativeBand, clipLine, makeBins, MAX_BINS, movingMean } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 import { FormulaPanel, FormulaMenu, DERIVED_FN_GROUPS } from "./formulas";
-import { renameInFormula, fmtFormulaVal } from "../lib/formula";
+import { renameInFormula, fmtFormulaVal, combineOps } from "../lib/formula";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
 // match the proportion-valued collected statistics (e.g. 0.851, not 85%).
@@ -857,7 +857,7 @@ const levelsOf = (levels, v, counts) => {
   return L;
 };
 
-function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange }) {
+function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider, onOverlays, initialView, onViewChange, combine }) {
   // X = "none" with a Y: a Y-only plot. Everything below treats it as the univariate case on
   // the Y variable (the effective `xVar`), so stats/overlays/specs are the plain univariate
   // ones; only the drawing differs (a vertical dot plot). `yOnly` never pairs with Y = none —
@@ -1040,6 +1040,14 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   }, [headers.join(","), xVarIn, yVarIn]);
   // Picking X = none with no Y moves the current X onto Y, so the same variable turns upright.
   const pickX = v => { if (v === "none" && yVarIn === "none") setYVar(xVarIn); setXVar(v); };
+
+  // Combine categories (the `combine` prop: Sample Results / EDA). The open editor is
+  // { axis: "x"|"y", h, sel: [], label } — `label` null follows the selection ("a or b").
+  // Combining writes a formula column (lib/formula.js combineOps) and switches that axis to it.
+  const [combining, setCombining] = useState(null);
+  useEffect(() => {
+    if (combining && combining.h !== (combining.axis === "x" ? xVarIn : yVarIn)) setCombining(null);
+  }, [xVarIn, yVarIn]);
 
   if (!rows.length) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data yet.</div>;
   if (!xVar) return null;
@@ -1660,21 +1668,82 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
     </>);
   };
 
+  // "Combine": on a categorical axis variable (not binned), opens the combine row below.
+  const canCombine = h => !!combine && h && h !== "none" && !(colInfo[h] || {}).numeric && !binned[h];
+  const combineChip = (h, axis) => {
+    if (!canCombine(h)) return null;
+    const on = !!combining && combining.h === h;
+    return (
+      <button onClick={() => setCombining(on ? null : { axis, h, sel: [], label: null })} aria-pressed={on}
+        title={`Combine categories of ${nm(h)} into one group (adds a formula column)`}
+        style={{ padding:"2px 7px", marginLeft:-4, border:"1px solid var(--border-2)", borderRadius:6,
+          background: on ? "#6366f1" : "var(--surface)", color: on ? "#fff" : "var(--text-2)",
+          fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>Combine</button>
+    );
+  };
+  const combineRow = (() => {
+    if (!combining || !canCombine(combining.h)) return null;
+    const { axis, h, sel } = combining;
+    const counts = {};
+    rows.forEach(r => { const v = r[h]; if (v !== "" && v != null) counts[v] = (counts[v] || 0) + 1; });
+    const cats = sortCats(Object.keys(counts));
+    const info = combine.infoOf(h);
+    const groupOf = new Map((info ? info.groups : []).map(g => [g.label, g]));
+    const label = combining.label ?? sel.join(" or ");
+    const go = header => {
+      if (header == null) return;
+      if (header !== h) (axis === "x" ? setXVar : setYVar)(header);
+      setCombining({ axis, h: header, sel: [], label: null });
+    };
+    const chipBtn = (c, picked) => ({
+      padding:"2px 8px", borderRadius:12, cursor:"pointer", fontFamily:"inherit", fontSize:12,
+      border: "1px solid " + (picked ? "#6366f1" : "var(--border-2)"),
+      background: picked ? "#6366f1" : "var(--surface)", color: picked ? "#fff" : "var(--text-2)",
+      fontWeight: groupOf.has(c) ? 700 : 400,
+    });
+    return (
+      <div role="group" aria-label={`Combine categories of ${nm(h)}`}
+        style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginBottom:8, padding:"6px 8px",
+          background:"var(--surface-2)", border:"1px solid var(--border)", borderRadius:8, fontSize:12, color:"var(--text-2)" }}>
+        <span>Pick categories of <b>{nm(h)}</b> to combine:</span>
+        {cats.map(c => {
+          const picked = sel.includes(c);
+          return <button key={c} aria-pressed={picked} style={chipBtn(c, picked)}
+            title={groupOf.has(c) ? `${c} = ${groupOf.get(c).cats.join(", ")}` : undefined}
+            onClick={() => setCombining(st => ({ ...st, sel: picked ? st.sel.filter(x => x !== c) : [...st.sel, c] }))}>{c}</button>;
+        })}
+        <label style={{ display:"inline-flex", gap:4, alignItems:"center" }}>as
+          <input value={label} onChange={e => setCombining(st => ({ ...st, label: e.target.value }))}
+            aria-label="Name of the combined category" placeholder="new category" style={{ ...iSm, width:140 }} />
+        </label>
+        <button disabled={sel.length < 2 || !label.trim()} onClick={() => go(combine.apply(h, sel, label.trim()))}
+          style={{ ...btnNav, opacity: sel.length < 2 || !label.trim() ? 0.5 : 1 }}
+          title="Make the selected categories one category (a formula column you can track)">Combine</button>
+        {info && info.groups.map(g => (
+          <button key={g.label} onClick={() => go(combine.separate(h, g.label))} style={btnNav}
+            title={`Split "${g.label}" back into ${g.cats.join(", ")}`}>Separate “{g.label}” ×</button>
+        ))}
+        <button onClick={() => setCombining(null)} style={btnNav}>Done</button>
+      </div>
+    );
+  })();
+
   return (
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
       <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
         <Sel label="X" value={xVarIn} onChange={pickX} options={["none", ...headers]} labels={["— none —", ...headers.map(nm)]} />
-        {!yOnly && asCatChip(xVar)}{!yOnly && binChip(xVar)}
+        {!yOnly && <>{asCatChip(xVar)}{binChip(xVar)}{combineChip(xVar, "x")}</>}
         {yOnly
           ? <Sel label="Y" value={xVar} onChange={setYVar} options={headers} labels={headers.map(nm)} />
           : <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar).map(nm)]} />}
-        {yOnly ? <>{asCatChip(xVar)}{binChip(xVar)}</> : yVar !== "none" && <>{asCatChip(yVar)}{binChip(yVar)}</>}
+        {yOnly ? <>{asCatChip(xVar)}{binChip(xVar)}{combineChip(xVar, "y")}</> : yVar !== "none" && <>{asCatChip(yVar)}{binChip(yVar)}{combineChip(yVar, "y")}</>}
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
         <CopyImageButton targetRef={bodyRef} />
       </div>
+      {combineRow}
 
       {/* Stat toggles — adapt to the variable types */}
       <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap", fontSize:12 }}>
@@ -2440,6 +2509,11 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
     if (second && ren[second.yVar]) setY2(ren[second.yVar]);
     onFormulasChange(next);
   };
+  // Combine categories on a plot axis — adds/edits a formula column (keyed by name in EDA).
+  const edaCombine = onFormulasChange ? combineOps({
+    formulas: fList, results: fResults, colNames: headers, keyOf: f => f.name, headerOf: n => n,
+    nameOf: h => h, newId: uid, onChange: onFormulasChange,
+  }) : null;
   if (!rows.length && !editable) return <div style={{ color:"var(--text-faint)", padding:24, textAlign:"center" }}>No data loaded.</div>;
 
   return (
@@ -2456,7 +2530,7 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
       {/* RIGHT: shared interactive plot(s) — a second plot links through the same selection */}
       <div style={{ flex:"2 1 460px", minWidth:320 }}>
         <Plot rows={plotRows} headers={plotHeaders} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-          selectedIds={selectedIds} onToggleSelect={toggleId}
+          selectedIds={selectedIds} onToggleSelect={toggleId} combine={edaCombine}
           initialView={initialView?.plot} onViewChange={setPlotView} />
         {second ? (
           <div style={{ marginTop:14, paddingTop:12, borderTop:"1px solid var(--border)" }}>
@@ -2465,7 +2539,7 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
               <button onClick={() => setSecond(null)} style={btnNav} title="Remove the second plot">× Remove plot</button>
             </div>
             <Plot rows={plotRows} headers={plotHeaders} xVar={second.xVar} yVar={second.yVar} setXVar={setX2} setYVar={setY2}
-              selectedIds={selectedIds} onToggleSelect={toggleId}
+              selectedIds={selectedIds} onToggleSelect={toggleId} combine={edaCombine}
               initialView={second.plot} onViewChange={setPlot2} />
           </div>
         ) : rows.length > 0 && (
@@ -2483,7 +2557,7 @@ function EDAPlot({ rows, headers, onChange, formulas, formulaResult, onFormulasC
 // ══════════════════════════════════════════════════════════════════════════════
 // `computedCols` (optional): formula columns ({ key, numeric }) among `varNames` — shown
 // italic and number-formatted in the Draws table (their values are computed, not drawn).
-function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats, initialView, onViewChange, computedCols }) {
+function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats, initialView, onViewChange, computedCols, combine }) {
   // `varNames` are device IDS (the plot/table headers); `nameOf(id)` resolves the
   // display name. `nm` falls back to identity so this still works if no map is passed.
   // `initialView` (optional) seeds the view for Save/Open; xVar here is a column id, so it
@@ -2567,7 +2641,7 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
       {/* RIGHT: shared interactive plot */}
       <Plot rows={sampleData} headers={varNames} nameOf={nameOf} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
         varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedKeys={trackedKeys}
-        selectedIds={selectedIds} onToggleSelect={toggleId}
+        selectedIds={selectedIds} onToggleSelect={toggleId} combine={combine}
         initialView={initialView?.plot} onViewChange={setPlotView} />
     </div>
   );

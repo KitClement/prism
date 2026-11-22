@@ -360,7 +360,7 @@ function applyFormulas(rows, cols, formulas, keyOf = f => f.name) {
   const allNames = [...cols.map(c => c.name), ...formulas.map(f => (f.name || "").trim())];
   const parsed = formulas.map(f => {
     const name = (f.name || "").trim();
-    const r = { id:f.id, name, text:f.text || "", kind:"error", error:null, value:null, key:keyOf(f), ast:null, numeric:false };
+    const r = { id:f.id, name, text:f.text || "", kind:"error", error:null, value:null, key:keyOf(f), ast:null, numeric:false, auto:f.auto || null };
     if (!name) { r.error = "Give this formula a name"; return r; }
     if (colByName.has(name)) { r.error = `"${name}" is already a column name`; return r; }
     const p = parseFormula(f.text, allNames);
@@ -510,4 +510,89 @@ function fmtFormulaVal(v) {
   return String(Number(v.toFixed(a >= 100 ? 2 : a >= 1 ? 3 : 4)));
 }
 
-export { parseFormula, applyFormulas, withFormulas, FORMULA_KEY, renameInFormula, expandAliases, refText, fmtFormulaVal, refsOf, freeRefs, isAggCall, AGG_FNS };
+// ─── Generated formulas: Join and combined categories ───────────────────────────
+// The default Join column of a multi-stage sampler: join(A, B, …) over the stage names.
+const joinText = names => "join(" + names.map(refText).join(", ") + ")";
+
+// A category value as a literal: a number stays bare (so `x = 1` also matches in the
+// generated Python, where a numeric column never equals the string "1"), else quoted.
+const catLit = v => {
+  const t = String(v);
+  if (t.trim() !== "" && Number.isFinite(Number(t))) return t.trim();
+  return strLit(t);
+};
+const strLit = t => (String(t).includes('"') ? `'${t}'` : `"${t}"`);
+// A "combined categories" column is an ordinary formula in one recognisable shape:
+//   if(S = "a" or S = "b", "a or b", if(S = "c" or S = "d", "c or d", S))
+// one if() per group, ending in the source column S, so every other category passes through.
+// `combineText(src, groups)` writes it ({ label, cats }[]); `combineInfo(ast)` reads it back
+// (→ { src, groups } or null), so a combined column needs no saved metadata: it survives a
+// rename (the text is rewritten), and a hand edit that breaks the shape makes it a plain formula.
+function combineText(src, groups) {
+  const S = refText(src);
+  return groups.reduceRight((rest, g) =>
+    `if(${g.cats.map(c => `${S} = ${catLit(c)}`).join(" or ")}, ${strLit(g.label)}, ${rest})`, S);
+}
+function combineInfo(ast) {
+  if (!ast) return null;
+  const groups = [];
+  let node = ast, src = null;
+  const litOf = n => n && (n.t === "str" || n.t === "num") ? String(n.v) : null;
+  const condCats = n => {
+    if (n.t === "bin" && n.op === "or") { const a = condCats(n.a), b = condCats(n.b); return a && b ? [...a, ...b] : null; }
+    if (n.t === "bin" && n.op === "=" && n.a.t === "ref" && litOf(n.b) != null) {
+      if (src == null) src = n.a.name; else if (src !== n.a.name) return null;
+      return [litOf(n.b)];
+    }
+    return null;
+  };
+  while (node.t === "call" && node.fn === "if" && node.args.length === 3) {
+    const cats = condCats(node.args[0]), label = node.args[1];
+    if (!cats || label.t !== "str") return null;
+    groups.push({ label: label.v, cats });
+    node = node.args[2];
+  }
+  if (!groups.length || node.t !== "ref" || node.name !== src) return null;
+  return { src, groups };
+}
+// Combine / separate on a plot's categorical axis, over one host's formula list. Hosts differ
+// only in how a formula is keyed (`keyOf`: Sample Results "ƒ:id", EDA its name) and how a name
+// maps back to a plot header (`headerOf`). Combining on a column that already IS a combined
+// column edits its text in place (selected group labels are merged with their categories), so
+// the plot keeps its header; combining on any other column adds "<name> combined". Each op
+// returns the header to show next, or null when the host refused the edit (onChange → false).
+function combineOps({ formulas, results, colNames, keyOf, headerOf, nameOf, onChange, newId }) {
+  const resOf = h => results.find(r => r.key === h && r.kind === "column");
+  const infoOf = h => { const r = resOf(h); return r ? combineInfo(r.ast) : null; };
+  // An in-place edit also tells the host which category values it relabels (`touched`), so a
+  // tracked stat over an untouched category (its counts can't change) keeps its collected rows.
+  const edit = (r, groups, touched) => {
+    const next = groups.length
+      ? formulas.map(f => f.id === r.id ? { ...f, text: combineText(combineInfo(r.ast).src, groups), auto: null } : f)
+      : formulas.filter(f => f.id !== r.id);
+    return onChange(next, { key: r.key, touched }) !== false;
+  };
+  const apply = (h, cats, label) => {
+    const r = resOf(h), info = r && combineInfo(r.ast);
+    if (info) {
+      const sel = new Set(cats), byLabel = new Map(info.groups.map(g => [g.label, g]));
+      const merged = [...new Set(cats.flatMap(c => byLabel.has(c) ? byLabel.get(c).cats : [c]))];
+      return edit(r, [...info.groups.filter(g => !sel.has(g.label)), { label, cats: merged }], [...cats, ...merged, label]) ? h : null;
+    }
+    const src = nameOf(h), taken = new Set([...colNames, ...formulas.map(f => (f.name || "").trim())]);
+    let name = src + " combined";
+    for (let k = 2; taken.has(name); k++) name = `${src} combined ${k}`;
+    const f = { id: newId(), name, text: combineText(src, [{ label, cats }]) };
+    return onChange([...formulas, f]) === false ? null : keyOf(f);
+  };
+  const separate = (h, label) => {
+    const r = resOf(h), info = r && combineInfo(r.ast);
+    if (!info) return null;
+    const groups = info.groups.filter(g => g.label !== label);
+    const gone = info.groups.find(g => g.label === label);
+    return edit(r, groups, gone ? [label, ...gone.cats] : [label]) ? (groups.length ? h : headerOf(info.src)) : null;
+  };
+  return { infoOf, apply, separate };
+}
+
+export { joinText, combineText, combineInfo, combineOps, parseFormula, applyFormulas, withFormulas, FORMULA_KEY, renameInFormula, expandAliases, refText, fmtFormulaVal, refsOf, freeRefs, isAggCall, AGG_FNS };

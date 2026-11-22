@@ -209,6 +209,19 @@ labels, dots stacking sideways off a numeric y axis); a categorical Y uses `UniC
 and ruler are off in Y-only. Y never pairs with X none as "none": picking X = none with no Y moves
 the old X onto Y (`pickX`), and Y's selector drops its none option meanwhile.
 
+**Join + combined categories.** A sampler with 2+ normal stages gets an automatic **Join** formula
+(`auto:"join"`, `join(A, B, …)` via `formula.js` `joinText`) that App's sync effect keeps in step with the
+stage names; editing its text drops `auto`, deleting it sets `joinOff` (saved in `.prism` results) so it
+stays gone, and a pre-existing formula named "Join" blocks it. Codegen's `shownFormulas` omits an auto
+Join nothing reads. **Combine** (a chip beside a categorical, non-binned X/Y, when the host passes
+`combine`) opens a row of category chips + a label box: it writes an ordinary formula
+`if(S = "a" or S = "b", "a or b", …, S)` (`combineText`; numeric categories as bare literals) as a new
+"<S> combined" column and switches the axis to it, so it's trackable, collectable and in the code like any
+formula. `combineInfo(ast)` reads that shape back (no metadata — a hand edit that breaks it is just a
+formula); combining on a combined column edits it in place (picked group labels merge their categories),
+and **Separate** removes a group (the last one deletes the column, back to the source). `combineOps`
+holds the logic for both hosts (Sample Results keys `"ƒ:"+id`, EDA keys names); the Collect plot has none.
+
 **Second linked EDA plot.** `EDAPlot`'s **＋ Add plot** mounts a second `Plot` (its own X/Y/toggles,
 state `second = {xVar, yVar, plot}`, saved in the EDA view blob, null when removed) sharing the same
 `selectedIds`/`toggleId`, so a click in either plot or a table row highlights the case everywhere.

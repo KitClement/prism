@@ -9,7 +9,7 @@ import { buildSaveFile, parseSaveFile, suggestFilename, downloadJSON } from "./l
 import { StageCard } from "./components/devices";
 import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
 import { generateCode } from "./lib/codegen";
-import { applyFormulas, withFormulas, renameInFormula } from "./lib/formula";
+import { applyFormulas, withFormulas, renameInFormula, joinText, combineOps, refsOf } from "./lib/formula";
 import { NumInput } from "./components/ui";
 import { FormulaPanel } from "./components/formulas";
 import { EDAPlot, SampleResults, DerivedBuilder, DistributionPlot, CollectTable, CopyImageButton } from "./components/plots";
@@ -227,6 +227,9 @@ export default function App() {
   // with `columns` below) is the ONE place sample rows gain those values — every stat call
   // goes through it, on both accumulation paths.
   const [sampleFormulas, setSampleFormulas] = useState([]);
+  // A sampler with 2+ stages gets an automatic Join column (`auto: "join"`, `join(A, B, …)`)
+  // that follows the stages; deleting it sets joinOff so it doesn't come back (saved with Save).
+  const [joinOff, setJoinOff] = useState(false);
   // Bumped to force a re-render after a guard is declined, so controlled inputs
   // (sample-size box, device fields) snap back to their unchanged state instead of
   // showing the rejected edit.
@@ -450,7 +453,26 @@ export default function App() {
   // follow it) changes no value, so results are kept. Any other change to an existing formula
   // that a tracked stat reads would mix old and new values in one distribution, so it clears
   // the collected rows (after a confirm); deleting a formula drops the stats over it.
-  const changeSampleFormulas = next => {
+  // A combine/separate edit passes `combined = { key, touched }` (the formula column it rewrites
+  // and the category values it relabels): it clears only if a tracked stat can actually change —
+  // one reading a touched category, a non-count stat over the column, or (conservatively) any
+  // formula-reading stat when another formula builds on the combined column.
+  const combineAffects = ({ key, touched }, next) => {
+    const f = sampleFormulas.find(o => "ƒ:" + o.id === key);
+    const readsAny = trackedStats.some(s => [s.variable, s.variable2, s.condVar].some(isFormulaRef));
+    if (!f) return readsAny;
+    if (sampleApplied.results.some(r => r.id !== f.id && r.ast && refsOf(r.ast).has(f.name))) return readsAny;
+    if (!next.some(x => x.id === f.id)) return false;   // deleted: the stats over it are dropped
+    const T = new Set(touched.map(String));
+    return trackedStats.some(s => {
+      if (s.variable2 === key) return true;
+      if (s.condVar === key && s.condVal !== "" && T.has(String(s.condVal))) return true;
+      if (s.variable !== key) return false;
+      if (s.fn === "count") return false;
+      return !((s.fn === "countVal" || s.fn === "proportion") && !T.has(String(s.target)));
+    });
+  };
+  const changeSampleFormulas = (next, combined) => {
     const prev = sampleFormulas;
     const renameAll = t => prev.reduce((acc, o) => {
       const n = next.find(x => x.id === o.id);
@@ -459,12 +481,19 @@ export default function App() {
     const changed = prev.some(o => { const n = next.find(x => x.id === o.id); return !n || renameAll(o.text) !== n.text; });
     const removedKeys = new Set(prev.filter(o => !next.some(x => x.id === o.id)).map(o => "ƒ:" + o.id));
     const readsFormula = s => [s.variable, s.variable2, s.condVar].some(isFormulaRef);
-    if (changed && collectRows.length && trackedStats.some(readsFormula)) {
-      if (!safeConfirm("Changing a formula that a tracked statistic uses clears the statistics already collected in the table. Continue?")) { rejectEdit(); return; }
+    if (changed && collectRows.length && (combined ? combineAffects(combined, next) : trackedStats.some(readsFormula))) {
+      if (!safeConfirm("Changing a formula that a tracked statistic uses clears the statistics already collected in the table. Continue?")) { rejectEdit(); return false; }
       clearCollected();
     }
     if (removedKeys.size) setTrackedStats(ts => dropDependents(ts, ts.filter(s => [s.variable, s.variable2, s.condVar].some(r => removedKeys.has(r))).map(s => s.id)));
-    setSampleFormulas(next);
+    // The automatic Join stops following the stages once the student edits its text, and
+    // stays gone once deleted.
+    if (prev.some(o => o.auto === "join" && !next.some(x => x.id === o.id))) setJoinOff(true);
+    setSampleFormulas(next.map(n => {
+      const o = n.auto && prev.find(x => x.id === n.id);
+      return o && renameAll(o.text) !== n.text ? { ...n, auto: null } : n;
+    }));
+    return true;
   };
   // Track a summary formula's value (one number per sample), like clicking a plot statistic.
   const trackFormulaSummary = r => trackStat({ fn: "formula", variable: r.key });
@@ -481,6 +510,24 @@ export default function App() {
   // Sample formulas reference sampler columns by display name; applied rows gain each column
   // formula under FORMULA_KEY (and each summary's value — see withFormulas).
   const formulaCols = useMemo(() => columns.map(c => ({ key: c.id, name: c.name })), [columns]);
+  // Keep the automatic Join in step with the stages (one name per normal stage; a row-sample
+  // stage's CSV columns aren't separate draws). It's added first in the list, unless the
+  // student removed it (joinOff) or already has something named "Join".
+  const joinWant = (() => {
+    const names = columns.filter(c => !String(c.id).includes("::")).map(c => c.name);
+    return names.length >= 2 ? joinText(names) : null;
+  })();
+  useEffect(() => {
+    setSampleFormulas(fs => {
+      const auto = fs.find(f => f.auto === "join");
+      if (auto) {
+        if (!joinWant) return fs.filter(f => f !== auto);
+        return auto.text === joinWant ? fs : fs.map(f => f === auto ? { ...f, text: joinWant } : f);
+      }
+      if (!joinWant || joinOff || fs.some(f => (f.name || "").trim() === "Join")) return fs;
+      return [{ id: uid(), name: "Join", text: joinWant, auto: "join" }, ...fs];
+    });
+  }, [joinWant, joinOff]);
   const statRows = useCallback(rows => withFormulas(rows, formulaCols, sampleFormulas).rows, [formulaCols, sampleFormulas]);
   const sampleApplied = useMemo(() => withFormulas(sampleData, formulaCols, sampleFormulas), [sampleData, formulaCols, sampleFormulas]);
   const currentSampleStatRows = useMemo(() => currentSample ? statRows(currentSample.rows) : null, [currentSample, statRows]);
@@ -493,6 +540,12 @@ export default function App() {
     ...sampleApplied.results.map(r => [r.key, r.name || "formula"]),
   ]), [columns, sampleApplied]);
   const nameOf = useCallback(id => (id in nameMap ? nameMap[id] : id), [nameMap]);
+  // Combine / separate categories on a Sample Results plot axis — writes a formula column.
+  const sampleCombine = combineOps({
+    formulas: sampleFormulas, results: sampleApplied.results, colNames: columns.map(c => c.name),
+    keyOf: f => "ƒ:" + f.id, nameOf, newId: uid, onChange: changeSampleFormulas,
+    headerOf: name => { const c = columns.find(x => x.name === name); if (c) return c.id; const r = sampleApplied.results.find(x => x.name === name); return r ? r.key : null; },
+  });
   // Authoritative num/cat kind for each sampler column, keyed by column id. A normal column's
   // kind comes from the device's DECLARED outcomes (so a plot's type can't flip when a rare
   // non-numeric outcome first appears); a row-sample column uses colKind over its snapshot.
@@ -829,7 +882,7 @@ export default function App() {
   const saveSession = () => {
     const state = {
       hidden, hiddenData, pipeline, sampleSize, runMode, stopRule,
-      dataset, sampleData, currentSample, sampleFormulas,
+      dataset, sampleData, currentSample, sampleFormulas, joinOff,
       trackedStats, collectRows, collectSelectedIds, batchSize,
       codeLang, cbMode, animSpeed, dark,
       // Each slot's blob is a JSON string; parse back to an object for the plain-JSON file.
@@ -867,6 +920,7 @@ export default function App() {
     setSampleData(identity ? session.sampleData : []);
     setCurrentSample(identity ? session.currentSample : null);
     setSampleFormulas(identity ? (session.sampleFormulas || []) : []);
+    setJoinOff(identity ? !!session.joinOff : false);
     setCollectRows(identity ? session.collectRows : []);
     setCollectSelectedIds(new Set(identity ? session.collectSelectedIds : []));
     setCollectScroll(null);
@@ -1195,7 +1249,7 @@ export default function App() {
           {sampleData.length > 0 && <span style={{ fontSize:12, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
         </div>
         <SampleResults key={sessionKey} sampleData={sampleApplied.rows} computedCols={sampleFormulaCols} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats}
-          initialView={initialViews.sample} onViewChange={onSampleView} />
+          combine={sampleCombine} initialView={initialViews.sample} onViewChange={onSampleView} />
         {pipeline.length > 0 && (
           <FormulaPanel formulas={sampleFormulas} results={sampleApplied.results}
             colNames={columns.map(c => c.name)} onChange={changeSampleFormulas}

@@ -73,6 +73,8 @@ export function buildSaveFile(state) {
       currentSample: s.currentSample || null,
       // Formulas over the sampler's columns (stage ids stay out — they reference by name).
       formulas: coerceFormulas(s.sampleFormulas),
+      // The student deleted the default Join column — don't add it back on open.
+      joinOff: !!s.joinOff,
     },
     collect: {
       trackedStats: asArr(s.trackedStats),
@@ -163,6 +165,7 @@ export function coerceSession(raw) {
     sampleData: asArr(results.sampleData).filter(isObj),
     currentSample: coerceCurrentSample(results.currentSample),
     sampleFormulas: coerceFormulas(results.formulas),
+    joinOff: results.joinOff === true,
 
     trackedStats: asArr(collect.trackedStats).filter(isTrackedStat),
     collectRows: asArr(collect.rows).filter(r => isObj(r) && "_id" in r),
@@ -191,7 +194,7 @@ function coerceDataset(d) {
 export function coerceFormulas(fs) {
   if (!Array.isArray(fs)) return [];
   return fs.filter(f => isObj(f) && typeof f.id === "string" && typeof f.name === "string" && typeof f.text === "string")
-    .map(f => ({ id: f.id, name: f.name, text: f.text }));
+    .map(f => (f.auto === "join" ? { id: f.id, name: f.name, text: f.text, auto: "join" } : { id: f.id, name: f.name, text: f.text }));
 }
 
 function coerceCurrentSample(cs) {

@@ -600,6 +600,16 @@ function formulasFor(plan, stats) {
   stats.forEach(({ s }) => [s.variable, s.variable2, s.condVar].forEach(k => { const f = k && byKey(k); if (f) add(f); }));
   return plan.order.filter(f => want.has(f));
 }
+// The formulas the code shows: every one the student wrote, but the automatic Join column
+// (a multi-stage sampler's default) only when a tracked stat or another formula reads it — so a
+// plain two-device sampler's code doesn't grow a line nobody asked for.
+function shownFormulas(plan, stats) {
+  if (!plan) return [];
+  const want = new Set(formulasFor(plan, stats));
+  const add = f => { if (want.has(f)) return; want.add(f); plan.deps(f).forEach(add); };
+  plan.order.filter(f => !f.auto).forEach(add);
+  return plan.order.filter(f => want.has(f));
+}
 // One formula AST → code. `frame` (split path) is the per-sample data frame (R `df`, Python
 // `sample`); the compact path (frame null) reads the bare drawn vectors.
 function formulaExpr(ast, plan, lang, frame) {
@@ -688,7 +698,7 @@ const formulasNeedNp = (fs, plan) => fs.some(f => formulaExpr(f.ast, plan, "py",
 
 function genCompact(cfg, names, lang, plan = null) {
   const stats = withIds(plainStats(cfg), names);
-  const allF = plan ? plan.order : [], loopF = formulasFor(plan, stats);
+  const allF = shownFormulas(plan, stats), loopF = formulasFor(plan, stats);
   const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
   const first = stats[0];
@@ -949,7 +959,7 @@ function genSplit(cfg, names, lang, plan = null) {
   const dcols = derivedCols(cfg, stats);   // derived columns to add to the collect table
   const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
   const first = stats[0];
-  const allF = plan ? plan.order : [], loopF = formulasFor(plan, stats);
+  const allF = shownFormulas(plan, stats), loopF = formulasFor(plan, stats);
   // `push(text)` tags the line with the array's own section; `push(text, sec)` overrides it — so a
   // draw / statistic line inside the For-loop can carry its true section (★ sampler / ● single) for
   // the integrated gutter, even though it lives in the green ▲ collect array.
