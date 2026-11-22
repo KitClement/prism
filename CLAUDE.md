@@ -491,7 +491,14 @@ Planning docs live in **`.claude/plans/`** (`plan.md`, `QOL.md`, `WCAG.md`, `fil
 Both roadmaps are complete: the Phase 0–7 plan (`.claude/plans/plan.md` — module split, shared
 `Plot`, the Sample Results / Collect Statistics overhaul, divider + ruler) and the next feature
 wave Tasks A–F (forked/conditional stages, run-until, URL sharing, hidden samplers, R/Python
-code panels, serialization polish) all shipped. Possible follow-ons:
+code panels, serialization polish) all shipped. So has the **Stat 200 activity gap list**
+(TinkerPlots parity for the course's 12 activities + pre-work): formula columns & summary values,
+the movable reference line + residuals + LAD, Bins, the Y-only plot + second linked EDA plot, the
+moving mean, Join + combined categories, and the overall-mean line. Its Tier 3 polish (a counter/ID
+device, a one-click column shuffle, the row-resample mixer beside other stages) was reviewed and
+**declined as unnecessary** — the activities run without them. A built-in "spread of group means"
+statistic was also declined on purpose (students build it from tracked group means + formulas).
+Possible follow-ons:
 - **Save / open a session to a `.prism` file** — ✅ **shipped** (all 7 phases in
   `.claude/plans/file-structure.md`). `⬇ Save` / `📂 Open` in the page header persist what Share
   deliberately omits — the dataset, drawn samples, tracked stats, collected rows, and per-plot view
