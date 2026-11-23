@@ -23,20 +23,25 @@
 // Aggregates take ONE argument evaluated over every case. min/max with 2+ args are the
 // row-wise (scalar) versions instead.
 const AGG_FNS = ["mean", "median", "sd", "sum", "count", "min", "max", "q1", "q3"];
+// Two-column aggregates: cor(x, y) is Pearson's r over the cases where both are numbers,
+// rsq(x, y) its square (R² of the least-squares line).
+const PAIR_FNS = ["cor", "rsq"];
 const ROW_FNS = ["abs", "sqrt", "round", "log", "exp", "if", "join", "concat"];
-const FN_ALIASES = { stddev: "sd", stdev: "sd", std: "sd", avg: "mean", average: "mean", ln: "log" };
+const FN_ALIASES = { stddev: "sd", stdev: "sd", std: "sd", avg: "mean", average: "mean", ln: "log",
+  corr: "cor", correlation: "cor", r2: "rsq", rsquared: "rsq", rsquare: "rsq" };
 const FN_ARITY = { abs:[1,1], sqrt:[1,1], round:[1,2], log:[1,1], exp:[1,1], if:[3,3], join:[1,99], concat:[1,99] };
 const KEYWORDS = ["and", "or", "not"];
 
 function canonFn(name) {
   const lw = name.toLowerCase();
   if (FN_ALIASES[lw]) return FN_ALIASES[lw];
-  const all = [...AGG_FNS, ...ROW_FNS];
+  const all = [...AGG_FNS, ...PAIR_FNS, ...ROW_FNS];
   return all.find(f => f.toLowerCase() === lw) || null;
 }
 // A call is an aggregate when its function is one AND it has a single argument
 // (min(a, b) is the row-wise minimum).
-const isAggCall = n => n.t === "call" && AGG_FNS.includes(n.fn) && n.args.length === 1;
+const isAggCall = n => n.t === "call" &&
+  ((AGG_FNS.includes(n.fn) && n.args.length === 1) || (PAIR_FNS.includes(n.fn) && n.args.length === 2));
 
 // ─── Lexer ─────────────────────────────────────────────────────────────────────
 // Tokens carry [start,end) so a column rename can rewrite references in place.
@@ -150,7 +155,9 @@ function parseFormula(text, names = []) {
             fail(`${fn}( is missing its closing )`);
           }
         }
-        if (AGG_FNS.includes(fn)) {
+        if (PAIR_FNS.includes(fn)) {
+          if (args.length !== 2) fail(`${fn}() takes two columns, e.g. ${fn}(x, y)`);
+        } else if (AGG_FNS.includes(fn)) {
           if (!args.length) fail(`${fn}() needs a column`);
           if (args.length > 1 && fn !== "min" && fn !== "max") fail(`${fn}() takes one column`);
         } else {
@@ -245,6 +252,21 @@ function aggregate(fn, vals) {
   }
 }
 
+// cor / rsq over paired values: a case counts only when both are numbers (R's
+// use = "complete.obs"). No answer with fewer than 2 pairs or a constant column.
+function pairAggregate(fn, xs, ys) {
+  const pts = [];
+  xs.forEach((x, i) => { const a = asNum(x), b = asNum(ys[i]); if (!isNaN(a) && !isNaN(b)) pts.push([a, b]); });
+  const n = pts.length;
+  if (n < 2) return null;
+  const mx = pts.reduce((s, p) => s + p[0], 0) / n, my = pts.reduce((s, p) => s + p[1], 0) / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  pts.forEach(([a, b]) => { sxx += (a - mx) ** 2; syy += (b - my) ** 2; sxy += (a - mx) * (b - my); });
+  if (!(sxx > 0) || !(syy > 0)) return null;
+  const r = Math.max(-1, Math.min(1, sxy / Math.sqrt(sxx * syy)));
+  return fn === "rsq" ? r * r : r;
+}
+
 function equalVals(x, y) {
   const nx = asNum(x), ny = asNum(y);
   if (!isNaN(nx) && !isNaN(ny) && typeof x !== "boolean" && typeof y !== "boolean") return nx === ny;
@@ -294,8 +316,10 @@ function evalNode(ast, row, ctx) {
       if (isAggCall(ast)) {
         // Constant for the whole column — compute once per evaluation pass.
         if (!ctx.aggCache.has(ast)) {
-          const arg = ast.args[0];
-          ctx.aggCache.set(ast, aggregate(ast.fn, ctx.rows.map(r => evalNode(arg, r, ctx))));
+          const [arg, arg2] = ast.args;
+          ctx.aggCache.set(ast, arg2
+            ? pairAggregate(ast.fn, ctx.rows.map(r => evalNode(arg, r, ctx)), ctx.rows.map(r => evalNode(arg2, r, ctx)))
+            : aggregate(ast.fn, ctx.rows.map(r => evalNode(arg, r, ctx))));
         }
         return ctx.aggCache.get(ast);
       }
@@ -595,4 +619,4 @@ function combineOps({ formulas, results, colNames, keyOf, headerOf, nameOf, onCh
   return { infoOf, apply, separate };
 }
 
-export { joinText, combineText, combineInfo, combineOps, parseFormula, applyFormulas, withFormulas, FORMULA_KEY, renameInFormula, expandAliases, refText, fmtFormulaVal, refsOf, freeRefs, isAggCall, AGG_FNS };
+export { joinText, combineText, combineInfo, combineOps, parseFormula, applyFormulas, withFormulas, FORMULA_KEY, renameInFormula, expandAliases, refText, fmtFormulaVal, refsOf, freeRefs, isAggCall, AGG_FNS, PAIR_FNS };

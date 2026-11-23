@@ -262,6 +262,12 @@ Column/formula renames follow it like the first plot's X/Y. The table highlights
   a tracked **summary formula** in Sample Results (`q1(x)`, `sum(x = "H") / count(x)`, …)
   covers everything it offered except LS slope/intercept, which are click-trackable on the
   scatter's LS line.
+- **Two-column summaries.** The EDA / Sample Results formula editor (not the Collect-table
+  `DERIVED_FN_GROUPS`) has `cor(x, y)` (Pearson r) and `rsq(x, y)` (r²) — `formula.js` `PAIR_FNS`,
+  aggregates with exactly two args (`isAggCall`), so they classify as summaries and are trackable.
+  They use only cases where both values are numbers (R's `use = "complete.obs"`) and are blank with
+  < 2 pairs or a constant column. Aliases `corr`/`correlation`, `r2`/`rsquared`. Codegen: R
+  `cor(x, y)` / `cor(x, y)^2`, Python `x.corr(y)` / `x.corr(y) ** 2` (`FPAIR`).
 - **Invalidation guards.** Sample-size change clears the accumulated rows but keeps the
   columns; a distribution-structure device change clears rows and drops columns whose vars
   vanished; pure relabels propagate seamlessly (`propagateRenames`). See Resolved

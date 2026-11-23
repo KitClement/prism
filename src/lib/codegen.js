@@ -546,7 +546,9 @@ function vStat(s, v, lang) {
 // name, then case-insensitively). Blank-cell handling (the engine skips blanks) isn't reproduced —
 // drawn samples have none.
 const FAGG = ["mean", "median", "sd", "sum", "count", "min", "max", "q1", "q3"];
-const fIsAgg = n => n.t === "call" && FAGG.includes(n.fn) && n.args.length === 1;
+const FPAIR = ["cor", "rsq"];   // two-column aggregates (formula.js PAIR_FNS)
+const fIsAgg = n => n.t === "call" &&
+  ((FAGG.includes(n.fn) && n.args.length === 1) || (FPAIR.includes(n.fn) && n.args.length === 2));
 const RESERVED = new Set(["n", "N", "i", "df", "sample", "pop", "samp", "samp_dist", "dist", "sub", "rows", "pools",
   "if", "else", "for", "while", "function", "repeat", "break", "next", "in", "TRUE", "FALSE", "NA", "NULL", "Inf", "NaN",
   "True", "False", "None", "and", "or", "not", "def", "return", "import", "pd", "np", "smf", "random", "c", "T", "F"]);
@@ -656,6 +658,12 @@ function formulaExpr(ast, plan, lang, frame) {
       }
       case "call": {
         const f = a.fn, args = a.args;
+        if (fIsAgg(a) && FPAIR.includes(f)) {
+          const x = go(args[0]), y = go(args[1]), sq = f === "rsq";
+          if (R) return sq ? [`cor(${x[0]}, ${y[0]})^2`, 8] : [`cor(${x[0]}, ${y[0]})`, 9];
+          const c = `${wrap(x, 9)}.corr(${y[0]})`;
+          return sq ? [`${c} ** 2`, 8] : [c, 9];
+        }
         if (fIsAgg(a)) {
           const x = go(args[0]);
           if (R) {

@@ -27,6 +27,8 @@ const FN_GROUPS = [
     ["max", "max(", ")", "The largest value in a column. With two values, the larger one for each case.", "max(column)  ·  max(a, b)", "max(x)"],
     ["q1", "q1(", ")", "The lower quartile: 25% of the values are below it.", "q1(column)", "q1(x)"],
     ["q3", "q3(", ")", "The upper quartile: 75% of the values are below it.", "q3(column)", "q3(x)"],
+    ["cor", "cor(", ", )", "The correlation r between two numeric columns, from −1 to 1: how closely the points follow a straight line, and which way it slopes.", "cor(x, y)", "cor(Height, HandSpan)"],
+    ["rsq", "rsq(", ", )", "R², the square of the correlation: the fraction of the variation in y explained by the least-squares line on x.", "rsq(x, y)", "rsq(Height, HandSpan)"],
   ] },
   { title: "Math · per case", items: [
     ["abs", "abs(", ")", "The absolute value: drops a minus sign (the distance from 0).", "abs(value)", "abs(x - mean(x))"],
