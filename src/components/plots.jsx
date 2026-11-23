@@ -960,11 +960,17 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   const [mmSwept, setMmSwept] = useState(null);
   const mmClipId = "mclip" + useId().replace(/:/g, "");
 
-  // Measure All: draw one more residual every `dt` ms until all `measN` points are done.
-  // A new sample (rows) or turning the ruler off ends the sweep. Above the early returns.
+  // Measure All: every `dt` ms, draw as many residuals as are due by the elapsed time, so the
+  // sweep lasts `dur` ms however slow a re-render is (one residual per tick re-rendered a
+  // big scatter n times — minutes at n ≈ 2000). Always at least one more per tick. A new
+  // sample (rows) or turning the ruler off ends the sweep. Above the early returns.
   useEffect(() => {
     if (!sweepSt || sweepSt.count >= measN.current) return;
-    const t = setTimeout(() => setSweepSt(m => m && { ...m, count: m.count + 1 }), sweepSt.dt);
+    const t = setTimeout(() => setSweepSt(m => {
+      if (!m) return m;
+      const n = measN.current, due = Math.ceil(n * (performance.now() - m.t0) / m.dur);
+      return { ...m, count: Math.min(n, Math.max(m.count + 1, due)) };
+    }), sweepSt.dt);
     return () => clearTimeout(t);
   }, [sweepSt]);
   useEffect(() => { setSweepSt(null); }, [rowsIn]);
@@ -1583,7 +1589,10 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
   const startMeasure = () => {
     const n = sPts ? sPts.length : 0;
     if (!residMode || !n) return;
-    setSweepSt({ start: rawRuler().ends.find(e => e.pt != null).pt, count: 1, dt: Math.round(clampVal(2000 / n, 15, 60)) });
+    // 60 ms per residual for a small set, capped at 2.5 s in all (batches for large n).
+    const dur = Math.min(2500, n * 60);
+    setSweepSt({ start: rawRuler().ends.find(e => e.pt != null).pt, count: 1, t0: performance.now(), dur,
+      dt: Math.round(clampVal(dur / n, 25, 60)) });
   };
   // The summary once every residual is drawn: Sum / Mean / Median of the raw, absolute, or
   // squared residuals, for the measured line and (when measuring to the ref line with LS
@@ -1868,11 +1877,17 @@ function Plot({ rows: rowsIn, headers, nameOf, xVar: xVarIn, yVar: yVarIn, setXV
         <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
           {!sLine && <span style={{ color:"var(--text-3)" }}>Turn on Ref line (or LS Line) to measure residuals.</span>}
           {sLine && (
-            <button onClick={startMeasure} disabled={!residMode || !!(sweepSt && !measDone && sweep)} style={{ ...btnNav, opacity: residMode ? 1 : 0.5 }}
-              title={residMode ? "Measure every point's residual, left to right from this one" : "Put one end on a data point and the other on the line first"}>
-              Measure All</button>
+            // The how-to lives in the tooltip, not inline: an inline hint that vanished on entering
+            // residual mode re-wrapped this row on narrow screens, shifting the plot under the
+            // pointer mid-drag (in/out of the snap → the hint flickered back → a stutter). The
+            // wrapper carries the title, since a disabled button gets no hover in some browsers.
+            <span title={residMode ? "Measure every point's residual, left to right from this one"
+              : "Drag A over a data point and B onto the " + (sLine.who === "ref" ? "reference" : "LS") + " line above or below it to measure that point's residual."}
+              style={{ display:"inline-flex", cursor: residMode ? undefined : "help" }}>
+              <button onClick={startMeasure} disabled={!residMode || !!(sweepSt && !measDone && sweep)} style={{ ...btnNav, opacity: residMode ? 1 : 0.5, pointerEvents: residMode ? undefined : "none" }}>
+                Measure All</button>
+            </span>
           )}
-          {sLine && !residMode && <span style={{ color:"var(--text-3)" }}>Drag A over a data point and B onto the {sLine.who === "ref" ? "reference" : "LS"} line above or below it to measure that point's residual.</span>}
           {measDone && (<>
             <Sel label="Summary" value={measFn} onChange={setMeasFn} options={["sum","mean","median"]} labels={["Sum","Mean","Median"]} />
             <Sel label="Of" value={measOf} onChange={setMeasOf} options={["raw","abs","sq"]} labels={["Residuals","Absolute residuals","Squared residuals"]} />

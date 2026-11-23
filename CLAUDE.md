@@ -316,7 +316,9 @@ whose partner is on a point always resolves to the **foot at that point's x**, w
 it was snapped (with dense points, snap to the line somewhere clear). So one end on a point + the
 other on the line = **residual mode** (label `residual = y − ŷ`). **Measure All** is enabled only
 in residual mode: it draws every point's residual one at a time (`sweepSt {start, count, dt}`, a
-`setTimeout` effect above the early returns, `dt = clamp(2000/n, 15, 60)` ms) in x order starting
+`setTimeout` effect above the early returns; **time-based**: `dur = min(2500, 60·n)` ms, and each
+`dt = clamp(dur/n, 25, 60)` ms tick draws every residual due by the elapsed time — at least one — so a
+big dataset finishes in ~2.5 s however slow a re-render is; one-per-tick hung at n ≈ 1800) in x order starting
 at the ruler's point and **wrapping** past the right edge. Once all are drawn, an on-plot value shows
 **Sum / Mean / Median** of the **raw / absolute / squared** residuals (two `Sel`s; `measFn`/`measOf`
 persist), with squares drawn when Squared is chosen. For sum/mean of **squared** or **absolute**
